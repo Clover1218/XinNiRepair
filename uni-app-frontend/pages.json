@@ -1,0 +1,119 @@
+{
+  "easycom": {
+    "autoscan": true,
+    "custom": {
+      "^wd-(.*)": "wot-design-uni/components/wd-$1/wd-$1.vue"
+    }
+  },
+  "pages": [
+    {
+      "path": "pages/order/list",
+      "style": {
+        "navigationBarTitleText": "我的报修",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/auth/login",
+      "style": {
+        "navigationBarTitleText": "登录"
+      }
+    },
+    {
+      "path": "pages/auth/profile",
+      "style": {
+        "navigationBarTitleText": "完善资料"
+      }
+    },
+    {
+      "path": "pages/order/edit",
+      "style": {
+        "navigationBarTitleText": "编辑报修"
+      }
+    },
+    {
+      "path": "pages/order/detail",
+      "style": {
+        "navigationBarTitleText": "报修详情"
+      }
+    },
+    {
+      "path": "pages/profile/index",
+      "style": {
+        "navigationBarTitleText": "我的"
+      }
+    },
+    {
+      "path": "pages/enterprise/join",
+      "style": {
+        "navigationBarTitleText": "加入企业"
+      }
+    },
+    {
+      "path": "pages/admin/index",
+      "style": {
+        "navigationBarTitleText": "管理后台"
+      }
+    },
+    {
+      "path": "pages/admin/enterprise/list",
+      "style": {
+        "navigationBarTitleText": "企业管理",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/admin/enterprise/create",
+      "style": {
+        "navigationBarTitleText": "创建企业"
+      }
+    },
+    {
+      "path": "pages/admin/enterprise/detail",
+      "style": {
+        "navigationBarTitleText": "企业详情",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/admin/order/list",
+      "style": {
+        "navigationBarTitleText": "工单管理",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/admin/order/detail",
+      "style": {
+        "navigationBarTitleText": "工单处理"
+      }
+    }
+  ],
+  "tabBar": {
+    "color": "#999999",
+    "selectedColor": "#4d80f0",
+    "backgroundColor": "#ffffff",
+    "borderStyle": "black",
+    "list": [
+      {
+        "pagePath": "pages/order/list",
+        "text": "工单",
+        "iconPath": "static/tabbar/order.png",
+        "selectedIconPath": "static/tabbar/order-active.png"
+      },
+      {
+        "pagePath": "pages/profile/index",
+        "text": "我的",
+        "iconPath": "static/tabbar/profile.png",
+        "selectedIconPath": "static/tabbar/profile-active.png"
+      }
+    ]
+  },
+  "globalStyle": {
+    "navigationBarTextStyle": "black",
+    "navigationBarTitleText": "新泥报修",
+    "navigationBarBackgroundColor": "#F8F8F8",
+    "backgroundColor": "#F8F8F8"
+  },
+  "uniIdRouter": {}
+}
