@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -139,6 +140,7 @@ func Load(path string) (*Config, error) {
 	}
 
 	cfg.applyDefaults()
+	cfg.applyEnvOverrides()
 	return cfg, nil
 }
 
@@ -170,6 +172,45 @@ func expandEnv(s string) string {
 		}
 	}
 	return result.String()
+}
+
+// applyEnvOverrides 环境变量覆盖: 若对应环境变量非空, 则覆盖 YAML 配置值。
+// 映射关系与 .env.example 保持同步, 专为 Docker 容器化部署设计。
+func (c *Config) applyEnvOverrides() {
+	// ── 数据库 ──
+	if v := os.Getenv("DB_HOST"); v != "" {
+		c.Database.Host = v
+	}
+	if v := os.Getenv("DB_PORT"); v != "" {
+		if port, err := strconv.Atoi(v); err == nil {
+			c.Database.Port = port
+		}
+	}
+	if v := os.Getenv("DB_USER"); v != "" {
+		c.Database.User = v
+	}
+	if v := os.Getenv("DB_PASSWORD"); v != "" {
+		c.Database.Password = v
+	}
+	if v := os.Getenv("DB_NAME"); v != "" {
+		c.Database.DBName = v
+	}
+
+	// ── 微信 ──
+	if v := os.Getenv("WECHAT_APP_ID"); v != "" {
+		c.Wechat.AppID = v
+	}
+	if v := os.Getenv("WECHAT_APP_SECRET"); v != "" {
+		c.Wechat.AppSecret = v
+	}
+
+	// ── 图床 ──
+	if v := os.Getenv("EASYIMAGE_ENDPOINT"); v != "" {
+		c.ImageBed.Endpoint = v
+	}
+	if v := os.Getenv("EASYIMAGE_TOKEN"); v != "" {
+		c.ImageBed.Token = v
+	}
 }
 
 func (c *Config) applyDefaults() {

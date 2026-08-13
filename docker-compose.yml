@@ -1,17 +1,16 @@
-
 services:
   # 1. PostgreSQL 数据库
   postgres:
     image: postgres:16-alpine
     container_name: repair-postgres
     environment:
-      POSTGRES_USER: your_user       # 改成你自己的
-      POSTGRES_PASSWORD: your_password
-      POSTGRES_DB: repair_db
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
     ports:
-      - "5432:5432"                  # 映射到宿主机 5432（方便本地调试，可删除）
+      - "${POSTGRES_EXPOSE_HOST}:${POSTGRES_EXPOSE_PORT}:5432"
     volumes:
-      - ./postgres-data:/var/lib/postgresql/data  # 数据持久化
+      - ./postgres-data:/var/lib/postgresql/data
     restart: unless-stopped
 
   # 2. 图床服务 EasyImages
@@ -19,7 +18,7 @@ services:
     image: ddsderek/easyimage:latest
     container_name: repair-easyimage
     ports:
-      - "8080:80"                    # 宿主机 8080 映射到图床 80
+      - "${EASYIMAGE_EXPOSE_HOST}:${EASYIMAGE_EXPOSE_PORT}:80"
     environment:
       - TZ=Asia/Shanghai
     volumes:
@@ -29,17 +28,16 @@ services:
 
   # 3. Go 后端
   backend:
-    build: ./backend                  # 指向你的后端文件夹
+    build: ./backend
     container_name: repair-backend
-    # 不对外暴露端口，只供内部 Nginx 调用（安全）
-    # 如果调试需要，可以加上 ports: - "8081:8080"
     environment:
-      - DB_HOST=postgres              # ⚠️ 关键：必须改成 postgres（容器名）
+      - DB_HOST=postgres
       - DB_PORT=5432
-      - DB_USER=your_user
-      - DB_PASSWORD=your_password
-      - DB_NAME=repair_db
-      - EASYIMAGE_URL=http://easyimage:80  # 后端调用图床的内部地址
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_NAME=${DB_NAME}
+      - EASYIMAGE_URL=http://easyimage:80
+      - EASYIMAGE_TOKEN=${EASYIMAGE_TOKEN}
     depends_on:
       - postgres
       - easyimage
@@ -47,10 +45,10 @@ services:
 
   # 4. Vue 前端（Nginx）
   web-frontend:
-    build: ./web-frontend                 # 指向前端文件夹
+    build: ./web-frontend
     container_name: repair-frontend
     ports:
-      - "80:80"                      # 主入口，浏览器访问 http://IP 就到这里
+      - "${FRONTEND_EXPOSE_HOST}:${FRONTEND_EXPOSE_PORT}:80"
     depends_on:
       - backend
     restart: unless-stopped
