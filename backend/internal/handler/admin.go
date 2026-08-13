@@ -51,17 +51,14 @@ func (h *AdminHandler) ListOrders(c *gin.Context) {
 	}
 
 	filter := repository.OrderAdminFilter{
-		Status:       statuses,
-		Urgency:      c.Query("urgency"),
-		Keyword:      c.Query("keyword"),
-		EnterpriseID: c.Query("enterprise_id"),
-		OrderNo:      c.Query("order_no"),
-		ProjectName:  c.Query("project_name"),
-		DateFrom:     dateFrom,
-		DateTo:       dateTo,
-		ReporterID:   c.Query("reporter_id"),
-		SortBy:       c.Query("sort_by"),
-		SortOrder:    c.Query("sort_order"),
+		Status:     statuses,
+		Urgency:    c.Query("urgency"),
+		Keyword:    c.Query("keyword"),
+		DateFrom:   dateFrom,
+		DateTo:     dateTo,
+		ReporterID: c.Query("reporter_id"),
+		SortBy:     c.Query("sort_by"),
+		SortOrder:  c.Query("sort_order"),
 	}
 	result, err := h.orders.ListOrders(c.Request.Context(), filter, page, pageSize)
 	if err != nil {

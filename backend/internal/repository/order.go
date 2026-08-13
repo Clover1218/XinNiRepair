@@ -87,24 +87,20 @@ func (r *OrderRepository) ListByReporter(ctx context.Context, reporterID, enterp
 
 // OrderAdminFilter 管理端工单筛选条件 (5.1)
 type OrderAdminFilter struct {
-	Status       []string
-	Urgency      string
-	Keyword      string
-	EnterpriseID string // 企业精确筛选
-	OrderNo      string // 工单号模糊筛选
-	ProjectName  string // 项目名称模糊筛选
-	DateFrom     *time.Time
-	DateTo       *time.Time
-	ReporterID   string
-	SortBy       string // order_no | enterprise_name | reporter | project_name | urgency | status | submitted_at | created_at
-	SortOrder    string // asc | desc
+	Status     []string
+	Urgency    string
+	Keyword    string
+	DateFrom   *time.Time
+	DateTo     *time.Time
+	ReporterID string
+	SortBy     string // submitted_at | urgency | created_at
+	SortOrder  string // asc | desc
 }
 
-// ListForAdmin 管理端分页查询工单 (5.1), 支持多状态/紧急度/关键字/企业/工单号/项目名/时间范围/报修人筛选
+// ListForAdmin 管理端分页查询工单 (5.1), 支持多状态/紧急度/关键字/时间范围/报修人筛选
 func (r *OrderRepository) ListForAdmin(ctx context.Context, f OrderAdminFilter, offset, limit int) ([]model.RepairOrder, int64, error) {
 	base := r.db.WithContext(ctx).Model(&model.RepairOrder{}).
-		Joins("JOIN users ON users.id = repair_orders.reporter_id").
-		Joins("LEFT JOIN enterprises ON enterprises.id = repair_orders.enterprise_id")
+		Joins("JOIN users ON users.id = repair_orders.reporter_id")
 	if len(f.Status) > 0 {
 		base = base.Where("repair_orders.status IN ?", f.Status)
 	}
@@ -115,15 +111,6 @@ func (r *OrderRepository) ListForAdmin(ctx context.Context, f OrderAdminFilter, 
 		like := "%" + f.Keyword + "%"
 		base = base.Where("repair_orders.order_no LIKE ? OR repair_orders.project_name LIKE ? OR users.nickname LIKE ?",
 			like, like, like)
-	}
-	if f.EnterpriseID != "" {
-		base = base.Where("repair_orders.enterprise_id = ?", f.EnterpriseID)
-	}
-	if f.OrderNo != "" {
-		base = base.Where("repair_orders.order_no LIKE ?", "%"+f.OrderNo+"%")
-	}
-	if f.ProjectName != "" {
-		base = base.Where("repair_orders.project_name LIKE ?", "%"+f.ProjectName+"%")
 	}
 	if f.DateFrom != nil {
 		base = base.Where("repair_orders.submitted_at >= ?", *f.DateFrom)
@@ -142,18 +129,8 @@ func (r *OrderRepository) ListForAdmin(ctx context.Context, f OrderAdminFilter, 
 
 	sortField := "repair_orders.submitted_at" // 默认按提交时间
 	switch f.SortBy {
-	case "order_no":
-		sortField = "repair_orders.order_no"
-	case "enterprise_name":
-		sortField = "enterprises.name"
-	case "reporter":
-		sortField = "users.nickname"
-	case "project_name":
-		sortField = "repair_orders.project_name"
 	case "urgency":
 		sortField = "repair_orders.urgency"
-	case "status":
-		sortField = "repair_orders.status"
 	case "created_at":
 		sortField = "repair_orders.created_at"
 	}
@@ -194,21 +171,20 @@ func (r *OrderRepository) ListForExportByEnterprise(ctx context.Context, enterpr
 	return orders, nil
 }
 
-// ListForExportByRepairer 业务员模式下导出 (5.14): repairer_id 优先, 历史空值回退时间轴 complete 操作人, 完工时间正序
+// ListForExportByRepairer 业务员模式下导出 (5.14): 通过时间轴 complete 操作人关联查询工单, 完工时间正序
 func (r *OrderRepository) ListForExportByRepairer(ctx context.Context, repairerID, status string, from, to time.Time) ([]model.RepairOrder, error) {
 	sub := r.db.Model(&model.OrderTimeline{}).
 		Select("DISTINCT order_id").
 		Where("operator_id = ? AND action = ?", repairerID, string(model.ActionComplete))
 	base := r.db.WithContext(ctx).Model(&model.RepairOrder{}).
-		Where("(repair_orders.repairer_id = ? OR (repair_orders.repairer_id IS NULL AND repair_orders.id IN (?))) AND repair_orders.completed_at IS NOT NULL", repairerID, sub).
-		Where("repair_orders.completed_at >= ? AND repair_orders.completed_at <= ?", from, to)
+		Where("id IN (?) AND completed_at IS NOT NULL", sub).
+		Where("completed_at >= ? AND completed_at <= ?", from, to)
 	if status != "" {
 		base = base.Where("status = ?", status)
 	}
 	var orders []model.RepairOrder
 	err := base.Preload("Reporter").
 		Preload("Enterprise").
-		Preload("Repairer").
 		Order("enterprise_id ASC, completed_at ASC").
 		Find(&orders).Error
 	if err != nil {

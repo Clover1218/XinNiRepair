@@ -183,6 +183,8 @@ func (s *OrderExportService) buildExcel(req ExportRequest, orders []model.Repair
 
 	periodText := fmt.Sprintf("%s-%s", req.DateFrom.Format("2006年1月2日"), req.DateTo.Format("2006年1月2日"))
 	now := time.Now()
+	totalAmount := 0.0
+	totalCount := 0
 
 	// ── 表头区域 ──
 	// 行1: 店铺名 + 单据名 + 期间
@@ -203,11 +205,13 @@ func (s *OrderExportService) buildExcel(req ExportRequest, orders []model.Repair
 			}
 		}
 	} else {
-		infoLabel, infoValue = "维修员", ""
-		for _, o := range orders {
-			if v := s.repairerNameOf(o, repairerNames); v != "" {
-				infoValue = v
-				break
+		infoLabel, infoValue = "维修员", repairerNames[orders[0].ID]
+		if infoValue == "" {
+			for _, o := range orders {
+				if v := repairerNames[o.ID]; v != "" {
+					infoValue = v
+					break
+				}
 			}
 		}
 	}
@@ -223,84 +227,40 @@ func (s *OrderExportService) buildExcel(req ExportRequest, orders []model.Repair
 		f.SetCellValue(sheet, cellName(i+2)+fmt.Sprint(headerRow), exportFieldColumns[field])
 	}
 
-	// ── 数据行（repairer 模式按企业分组 + 每块小计） ──
+	// ── 数据行 ──
 	row := headerRow + 1
-	totalAmount := 0.0
-	totalCount := 0
+	for idx, o := range orders {
+		amount := amountOf(o)
+		content := o.RepairContent
+		if strings.TrimSpace(content) == "" {
+			content = o.ProjectName
+		}
+		metadata := s.parseMetadata(o.Metadata)
 
-	// 分组：按 Enterprise.Name 分组，保持查询顺序（已按 enterprise_id 排序）
-	type group struct {
-		name   string
-		orders []model.RepairOrder
-	}
-	var groups []group
-	groupIndex := make(map[string]int)
-	for _, o := range orders {
-		name := o.Enterprise.Name
-		if name == "" {
-			name = "（未分配企业）"
+		f.SetCellValue(sheet, "A"+fmt.Sprint(row), idx+1)
+		col := 2
+		for _, field := range fields {
+			f.SetCellValue(sheet, cellName(col)+fmt.Sprint(row), s.fieldValue(field, o, amount, content, metadata, repairerNames[o.ID]))
+			col++
 		}
-		if idx, ok := groupIndex[name]; ok {
-			groups[idx].orders = append(groups[idx].orders, o)
-		} else {
-			groupIndex[name] = len(groups)
-			groups = append(groups, group{name: name, orders: []model.RepairOrder{o}})
-		}
-	}
-
-	amountColIdx := -1
-	for i, field := range fields {
-		if field == "amount" {
-			amountColIdx = i + 2
-			break
-		}
-	}
-
-	for _, g := range groups {
-		if req.Mode == ExportModeRepairer && len(groups) > 1 {
-			// 小组标题行
-			f.SetCellValue(sheet, "A"+fmt.Sprint(row), g.name)
-			row++
-		}
-		groupAmount := 0.0
-		groupCount := 0
-		for _, o := range g.orders {
-			amount := amountOf(o)
-			content := o.RepairContent
-			if strings.TrimSpace(content) == "" {
-				content = o.ProjectName
-			}
-			metadata := s.parseMetadata(o.Metadata)
-			repairerName := s.repairerNameOf(o, repairerNames)
-
-			f.SetCellValue(sheet, "A"+fmt.Sprint(row), groupCount+1)
-			col := 2
-			for _, field := range fields {
-				f.SetCellValue(sheet, cellName(col)+fmt.Sprint(row), s.fieldValue(field, o, amount, content, metadata, repairerName))
-				col++
-			}
-			groupAmount += amount
-			groupCount++
-			row++
-		}
-		if req.Mode == ExportModeRepairer && len(groups) > 1 {
-			// 小组小计行
-			f.SetCellValue(sheet, "A"+fmt.Sprint(row), "小计")
-			if amountColIdx > 0 {
-				f.SetCellValue(sheet, cellName(amountColIdx)+fmt.Sprint(row), fmt.Sprintf("%.2f", groupAmount))
-			}
-			f.SetCellValue(sheet, cellName(len(fields)+1)+fmt.Sprint(row), fmt.Sprintf("共 %d 单", groupCount))
-			row++
-		}
-		totalAmount += groupAmount
-		totalCount += groupCount
+		totalAmount += amount
+		totalCount++
+		row++
 	}
 
 	// ── 合计行 ──
 	sumRow := row
 	f.SetCellValue(sheet, "A"+fmt.Sprint(sumRow), "合计")
-	if amountColIdx > 0 {
-		f.SetCellValue(sheet, cellName(amountColIdx)+fmt.Sprint(sumRow), fmt.Sprintf("%.2f", totalAmount))
+	// 合计金额落在 amount 字段所在列
+	amountCol := -1
+	for i, field := range fields {
+		if field == "amount" {
+			amountCol = i + 2
+			break
+		}
+	}
+	if amountCol > 0 {
+		f.SetCellValue(sheet, cellName(amountCol)+fmt.Sprint(sumRow), fmt.Sprintf("%.2f", totalAmount))
 	}
 	f.SetCellValue(sheet, cellName(len(fields)+1)+fmt.Sprint(sumRow), fmt.Sprintf("共 %d 单", totalCount))
 
@@ -377,14 +337,6 @@ func (s *OrderExportService) fieldValue(field string, o model.RepairOrder, amoun
 	default:
 		return ""
 	}
-}
-
-// repairerNameOf 维修员列取值: 优先 repair_orders.repairer_id, 为空回退时间轴 complete 操作人
-func (s *OrderExportService) repairerNameOf(o model.RepairOrder, repairerNames map[string]string) string {
-	if o.Repairer.Nickname != "" {
-		return o.Repairer.Nickname
-	}
-	return repairerNames[o.ID]
 }
 
 // amountOf 计算工单金额: 优先取数据库生成列 amount, 为空/为 0 时用 quantity*unit_price 兜底
