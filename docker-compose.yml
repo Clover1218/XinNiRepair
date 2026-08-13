@@ -44,6 +44,10 @@ services:
       # 微信配置（从 .env 注入，空则使用 YAML 默认值）
       - WECHAT_APP_ID=${WECHAT_APP_ID}
       - WECHAT_APP_SECRET=${WECHAT_APP_SECRET}
+      - CONFIG_PATH=/app/config/config.yaml
+    volumes:
+
+      - ./backend/config:/app/config
     depends_on:
       - postgres
       - easyimage
