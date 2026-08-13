@@ -3,6 +3,8 @@ FROM golang:1.26-alpine AS builder
 
 WORKDIR /app
 
+ENV GOPROXY=https://goproxy.cn,direct
+
 # 复制依赖文件并下载（利用 Docker 缓存，加快构建速度）
 COPY go.mod go.sum ./
 RUN go mod download
