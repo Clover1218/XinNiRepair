@@ -47,9 +47,7 @@ services:
     depends_on:
       - postgres
       - easyimage
-    # 暴露后端 API 端口：uni-app 小程序、主机直接调用 API 都需要通过主机 IP:BACKEND_EXPOSE_PORT 访问
-    ports:
-      - "${BACKEND_EXPOSE_HOST}:${BACKEND_EXPOSE_PORT}:8080"
+
     restart: unless-stopped
 
   # 4. Vue 前端（Nginx）
