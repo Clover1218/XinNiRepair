@@ -26,8 +26,6 @@ dist/
 dist-ssr/
 unpackage/
 
-# ── 敏感配置（含密钥/密码，通过环境变量注入） ──
-backend/config/config.yaml
 .env
 .env.*
 !.env.example

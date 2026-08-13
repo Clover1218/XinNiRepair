@@ -1,0 +1,79 @@
+# =============================================================================
+# 新泥报修系统 — 服务配置文件
+# 环境变量覆盖: 使用 ${ENV_VAR} 或 ${ENV_VAR:default} 语法
+# =============================================================================
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+  mode: "debug"           # debug | release | test
+  read_timeout: 30s
+  write_timeout: 30s
+  shutdown_timeout: 10s
+
+database:
+  host: "localhost"
+  port: 5432
+  user: "postgres"
+  password: "123456"            # 通过环境变量 DB_PASSWORD 注入
+  dbname: "xin_ni_repair"
+  sslmode: "disable"
+  max_open_conns: 25
+  max_idle_conns: 5
+  conn_max_lifetime: 5m
+  conn_max_idle_time: 5m
+
+log:
+  level: "debug"          # debug | info | warn | error
+  format: "console"       # console | json
+  output: "file"          # stdout | file
+  file:
+    path: "./logs/server.log"
+    max_size: 100         # MB
+    max_backups: 30
+    max_age: 30           # days
+    compress: true
+
+jwt:
+  secret: ""              # 通过环境变量 JWT_SECRET 注入
+  issuer: "xin-ni-repair"
+  access_token_ttl: 2h    # 管理员后台 Token 有效期
+  refresh_token_ttl: 168h # 7天
+
+wechat:
+  app_id: ""              # 微信公众号 AppID
+  app_secret: ""          # 通过环境变量 WECHAT_APP_SECRET 注入
+  token: ""
+  encoding_aes_key: ""
+
+oss:
+  endpoint: ""            # 图片存储 (本地文件系统或 OSS)
+  access_key_id: ""
+  access_key_secret: ""
+  bucket: ""
+  base_url: ""            # 图片访问 CDN 域名
+
+image_bed:
+  endpoint: "http://localhost:81/api/index.php"  # 图床上传接口
+  token: "1c17b11693cb5ec63859b091c5b9c1b2"      # 通过环境变量 IMAGE_BED_TOKEN 注入
+  timeout: 30s           # 上传请求超时
+
+shop:
+  name: "新泥百电脑经营部"   # 店铺名称 (用于导出对账单/汇总表表头)
+
+cors:
+  allowed_origins:
+    - "http://localhost:3000"
+    - "http://localhost:5173"
+  allowed_methods:
+    - "GET"
+    - "POST"
+    - "PUT"
+    - "DELETE"
+    - "OPTIONS"
+  allowed_headers:
+    - "Origin"
+    - "Content-Type"
+    - "Authorization"
+  allow_credentials: true
+  max_age: 12h
