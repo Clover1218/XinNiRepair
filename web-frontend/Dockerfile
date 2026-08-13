@@ -3,13 +3,16 @@ FROM node:22-alpine AS build
 
 WORKDIR /app
 
-# 复制依赖并安装
-COPY package*.json ./
-RUN npm install --registry=https://registry.npmmirror.com
+# 启用 corepack 并使用 pnpm（项目锁文件是 pnpm-lock.yaml）
+RUN corepack enable && corepack prepare pnpm@latest --activate
+
+# 复制依赖并安装（pnpm 会读取 lockfile 保证与开发环境一致的依赖树）
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile --registry=https://registry.npmmirror.com
 
 # 复制源码并打包
 COPY . .
-RUN npm run build
+RUN pnpm build
 
 # 第二阶段：使用 Nginx 运行
 FROM nginx:stable-alpine

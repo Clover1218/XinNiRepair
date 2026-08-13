@@ -11,7 +11,6 @@ RUN go mod download
 
 # 复制所有源码并编译
 COPY . .
-# 注意：如果你的 main.go 不在根目录，请修改这里的路径，例如 cd ./cmd/server && go build ...
 RUN go build -o /app/main ./cmd/server
 
 # 第二阶段：运行（极小镜像）
@@ -25,6 +24,12 @@ WORKDIR /root/
 
 # 从编译阶段复制可执行文件
 COPY --from=builder /app/main .
+
+# 复制配置文件（程序默认读取 ./config/config.yaml）
+COPY --from=builder /app/config ./config
+
+# 复制数据库迁移脚本
+COPY --from=builder /app/migrations ./migrations
 
 # 暴露内部端口（Go 程序监听的端口，比如 8080）
 EXPOSE 8080

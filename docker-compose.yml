@@ -31,16 +31,25 @@ services:
     build: ./backend
     container_name: repair-backend
     environment:
+      # 数据库：容器名 postgres 作 host（Docker 内网 DNS）
       - DB_HOST=postgres
       - DB_PORT=5432
       - DB_USER=${DB_USER}
       - DB_PASSWORD=${DB_PASSWORD}
       - DB_NAME=${DB_NAME}
-      - EASYIMAGE_URL=http://easyimage:80
+      # 图床：容器名 easyimage，注意变量名必须为 EASYIMAGE_ENDPOINT（与 config.go applyEnvOverrides 一致）
+      # EasyImage 容器内监听 80，实际上传接口路径为 /api/index.php，ImageBedConfig 中 endpoint 字段会再拼路径
+      - EASYIMAGE_ENDPOINT=http://easyimage:80/api/index.php
       - EASYIMAGE_TOKEN=${EASYIMAGE_TOKEN}
+      # 微信配置（从 .env 注入，空则使用 YAML 默认值）
+      - WECHAT_APP_ID=${WECHAT_APP_ID}
+      - WECHAT_APP_SECRET=${WECHAT_APP_SECRET}
     depends_on:
       - postgres
       - easyimage
+    # 暴露后端 API 端口：uni-app 小程序、主机直接调用 API 都需要通过主机 IP:BACKEND_EXPOSE_PORT 访问
+    ports:
+      - "${BACKEND_EXPOSE_HOST}:${BACKEND_EXPOSE_PORT}:8080"
     restart: unless-stopped
 
   # 4. Vue 前端（Nginx）
