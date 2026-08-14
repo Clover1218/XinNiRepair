@@ -59,7 +59,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer logger.Sync()
-
+	logger.Error("applyEnvOverrides called", zap.String("db_host", os.Getenv("DB_HOST")))
 	logger.Info("Configuration loaded",
 		zap.String("mode", cfg.Server.Mode),
 		zap.String("addr", cfg.Server.Addr()),
@@ -109,6 +109,10 @@ func main() {
 	})
 
 	authSvc := service.NewAuthService(authRepo, tokenSvc, wechatSvc, logger)
+	// 初始化店主账号 (幂等, 首次启动自动创建, 密码可通过 ADMIN_PASSWORD 配置)
+	if err := authSvc.SeedAdminUser(ctx); err != nil {
+		logger.Warn("seed admin user failed (non-fatal)", zap.Error(err))
+	}
 	authH := handler.NewAuthHandler(authSvc, imgBed)
 
 	entRepo := repository.NewEnterpriseRepository(db.DB)

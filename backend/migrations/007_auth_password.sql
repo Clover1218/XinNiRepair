@@ -22,8 +22,4 @@ WHERE phone IS NOT NULL AND phone <> ''
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_phone_uniq
     ON users (phone) WHERE phone IS NOT NULL AND phone <> '';
 
--- 4. 初始店主账号示例 (bcrypt 生成, 密码: 123456):
---    INSERT INTO users (id, openid, nickname, password, role)
---    VALUES (gen_random_uuid(), 'admin-bootstrap', 'admin',
---            '$2a$10$xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx', 1);
---    生成方式: python3 -c "import bcrypt; print(bcrypt.hashpw(b'123456', bcrypt.gensalt()).decode())"
+-- 4. 初始店主账号: 由 Go 后端启动时自动 seed (见 repository.SeedAdminUser), 无需 SQL 维护
