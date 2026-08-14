@@ -4,6 +4,7 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 
 	apperrors "xin-ni-repair/internal/errors"
 	"xin-ni-repair/internal/service"
@@ -12,12 +13,13 @@ import (
 
 // EnterpriseHandler 企业管理接口处理器
 type EnterpriseHandler struct {
-	svc *service.EnterpriseService
+	svc    *service.EnterpriseService
+	logger *zap.Logger
 }
 
 // NewEnterpriseHandler 创建 EnterpriseHandler
-func NewEnterpriseHandler(svc *service.EnterpriseService) *EnterpriseHandler {
-	return &EnterpriseHandler{svc: svc}
+func NewEnterpriseHandler(svc *service.EnterpriseService, logger *zap.Logger) *EnterpriseHandler {
+	return &EnterpriseHandler{svc: svc, logger: logger}
 }
 
 // Create 创建企业 (POST /enterprises, 仅平台管理员)
@@ -26,12 +28,14 @@ func (h *EnterpriseHandler) Create(c *gin.Context) {
 		Name string `json:"name" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Warn("Create Enterprise: invalid request body", zap.Error(err), zap.String("user_id", c.GetString("user_id")))
 		response.Fail(c, apperrors.ErrInvalidParam.WithMessage("缺少企业名称"))
 		return
 	}
 
 	detail, err := h.svc.Create(c.Request.Context(), req.Name)
 	if err != nil {
+		h.logger.Error("Create Enterprise: service error", zap.Error(err), zap.String("user_id", c.GetString("user_id")), zap.String("name", req.Name))
 		response.FailError(c, err)
 		return
 	}
@@ -47,6 +51,7 @@ func (h *EnterpriseHandler) Get(c *gin.Context) {
 		c.Param("enterprise_id"),
 	)
 	if err != nil {
+		h.logger.Error("Get Enterprise: service error", zap.Error(err), zap.String("enterprise_id", c.Param("enterprise_id")), zap.String("user_id", c.GetString("user_id")))
 		response.FailError(c, err)
 		return
 	}
@@ -60,12 +65,14 @@ func (h *EnterpriseHandler) Update(c *gin.Context) {
 		AutoApprove *bool   `json:"auto_approve"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Warn("Update Enterprise: invalid request body", zap.Error(err), zap.String("enterprise_id", c.Param("enterprise_id")))
 		response.Fail(c, apperrors.ErrInvalidParam.WithMessage("请求体格式错误"))
 		return
 	}
 
 	detail, err := h.svc.Update(c.Request.Context(), c.Param("enterprise_id"), req.Name, req.AutoApprove)
 	if err != nil {
+		h.logger.Error("Update Enterprise: service error", zap.Error(err), zap.String("enterprise_id", c.Param("enterprise_id")))
 		response.FailError(c, err)
 		return
 	}
@@ -78,12 +85,14 @@ func (h *EnterpriseHandler) Join(c *gin.Context) {
 		InviteCode string `json:"invite_code" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Warn("Join Enterprise: invalid request body", zap.Error(err))
 		response.Fail(c, apperrors.ErrInvalidParam.WithMessage("缺少邀请码"))
 		return
 	}
 
 	result, err := h.svc.Join(c.Request.Context(), c.GetString("user_id"), req.InviteCode)
 	if err != nil {
+		h.logger.Error("Join Enterprise: service error", zap.Error(err), zap.String("user_id", c.GetString("user_id")), zap.String("invite_code", req.InviteCode))
 		response.FailError(c, err)
 		return
 	}
@@ -94,12 +103,14 @@ func (h *EnterpriseHandler) Join(c *gin.Context) {
 func (h *EnterpriseHandler) JoinByGet(c *gin.Context) {
 	code := c.Query("code")
 	if code == "" {
+		h.logger.Warn("JoinByGet Enterprise: missing code")
 		response.Fail(c, apperrors.ErrInvalidParam.WithMessage("缺少邀请码"))
 		return
 	}
 
 	result, err := h.svc.Join(c.Request.Context(), c.GetString("user_id"), code)
 	if err != nil {
+		h.logger.Error("JoinByGet Enterprise: service error", zap.Error(err), zap.String("user_id", c.GetString("user_id")), zap.String("invite_code", code))
 		response.FailError(c, err)
 		return
 	}
@@ -110,6 +121,7 @@ func (h *EnterpriseHandler) JoinByGet(c *gin.Context) {
 func (h *EnterpriseHandler) ListMembers(c *gin.Context) {
 	page, pageSize, err := parsePageParams(c)
 	if err != nil {
+		h.logger.Warn("ListMembers Enterprise: invalid page params", zap.Error(err))
 		response.FailError(c, err)
 		return
 	}
@@ -124,6 +136,7 @@ func (h *EnterpriseHandler) ListMembers(c *gin.Context) {
 		c.Query("keyword"),
 	)
 	if err != nil {
+		h.logger.Error("ListMembers Enterprise: service error", zap.Error(err), zap.String("enterprise_id", c.Param("enterprise_id")))
 		response.FailError(c, err)
 		return
 	}
@@ -138,6 +151,7 @@ func (h *EnterpriseHandler) Approve(c *gin.Context) {
 	}
 	result, err := h.svc.Approve(c.Request.Context(), c.Param("enterprise_id"), userIDs)
 	if err != nil {
+		h.logger.Error("Approve Member: service error", zap.Error(err), zap.String("enterprise_id", c.Param("enterprise_id")), zap.Strings("user_ids", userIDs))
 		response.FailError(c, err)
 		return
 	}
@@ -152,6 +166,7 @@ func (h *EnterpriseHandler) Reject(c *gin.Context) {
 	}
 	result, err := h.svc.Reject(c.Request.Context(), c.Param("enterprise_id"), userIDs)
 	if err != nil {
+		h.logger.Error("Reject Member: service error", zap.Error(err), zap.String("enterprise_id", c.Param("enterprise_id")), zap.Strings("user_ids", userIDs))
 		response.FailError(c, err)
 		return
 	}
@@ -161,6 +176,7 @@ func (h *EnterpriseHandler) Reject(c *gin.Context) {
 // Remove 移除成员 (DELETE /enterprises/:enterprise_id/members/:user_id, 仅平台管理员)
 func (h *EnterpriseHandler) Remove(c *gin.Context) {
 	if err := h.svc.Remove(c.Request.Context(), c.Param("enterprise_id"), c.Param("user_id")); err != nil {
+		h.logger.Error("Remove Member: service error", zap.Error(err), zap.String("enterprise_id", c.Param("enterprise_id")), zap.String("user_id", c.Param("user_id")))
 		response.FailError(c, err)
 		return
 	}
@@ -173,12 +189,14 @@ func (h *EnterpriseHandler) RefreshCode(c *gin.Context) {
 		Validity string `json:"validity" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Warn("RefreshCode Enterprise: invalid request body", zap.Error(err))
 		response.Fail(c, apperrors.ErrInvalidParam.WithMessage("缺少 validity"))
 		return
 	}
 
 	result, err := h.svc.RefreshInviteCode(c.Request.Context(), c.Param("enterprise_id"), req.Validity)
 	if err != nil {
+		h.logger.Error("RefreshCode Enterprise: service error", zap.Error(err), zap.String("enterprise_id", c.Param("enterprise_id")))
 		response.FailError(c, err)
 		return
 	}

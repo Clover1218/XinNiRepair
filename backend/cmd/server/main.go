@@ -113,22 +113,22 @@ func main() {
 	if err := authSvc.SeedAdminUser(ctx); err != nil {
 		logger.Warn("seed admin user failed (non-fatal)", zap.Error(err))
 	}
-	authH := handler.NewAuthHandler(authSvc, imgBed)
+	authH := handler.NewAuthHandler(authSvc, imgBed, logger)
 
 	entRepo := repository.NewEnterpriseRepository(db.DB)
 	memRepo := repository.NewMembershipRepository(db.DB)
 	entSvc := service.NewEnterpriseService(entRepo, memRepo, logger)
-	entH := handler.NewEnterpriseHandler(entSvc)
+	entH := handler.NewEnterpriseHandler(entSvc, logger)
 
 	orderRepo := repository.NewOrderRepository(db.DB)
 	imgRepo := repository.NewOrderImageRepository(db.DB)
 	tlRepo := repository.NewOrderTimelineRepository(db.DB)
 	orderSvc := service.NewOrderService(orderRepo, imgRepo, tlRepo, memRepo, imgBed, logger)
-	orderH := handler.NewOrderHandler(orderSvc)
+	orderH := handler.NewOrderHandler(orderSvc, logger)
 
 	adminOrderSvc := service.NewAdminOrderService(orderRepo, imgRepo, tlRepo, imgBed, logger)
 	exportSvc := service.NewOrderExportService(orderRepo, tlRepo, cfg.Shop.Name, logger)
-	adminH := handler.NewAdminHandler(adminOrderSvc, entSvc, exportSvc)
+	adminH := handler.NewAdminHandler(adminOrderSvc, entSvc, exportSvc, logger)
 
 	registerRoutes(engine, db, authH, entH, orderH, adminH, tokenSvc)
 

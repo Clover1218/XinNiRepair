@@ -12,4 +12,4 @@
  *      https://repair.your-domain.com/api/v1
  *  - 微信开发者工具里若勾选了"不校验合法域名"，可用 http + 局域网 IP 临时调试
  */
-export const BASE_URL = 'http://192.168.9.105/api/v1'
+export const BASE_URL = 'http://1.13.15.207:5004/api/v1'

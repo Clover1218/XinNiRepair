@@ -2,6 +2,7 @@ package handler
 
 import (
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 
 	apperrors "xin-ni-repair/internal/errors"
 	"xin-ni-repair/internal/service"
@@ -13,11 +14,12 @@ import (
 type AuthHandler struct {
 	svc    *service.AuthService
 	imgBed *imagebed.Client
+	logger *zap.Logger
 }
 
 // NewAuthHandler 创建 AuthHandler
-func NewAuthHandler(svc *service.AuthService, imgBed *imagebed.Client) *AuthHandler {
-	return &AuthHandler{svc: svc, imgBed: imgBed}
+func NewAuthHandler(svc *service.AuthService, imgBed *imagebed.Client, logger *zap.Logger) *AuthHandler {
+	return &AuthHandler{svc: svc, imgBed: imgBed, logger: logger}
 }
 
 // Login 微信回调登录 (POST /auth/login)
@@ -26,12 +28,14 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		Code string `json:"code" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Warn("Login: invalid request body", zap.Error(err), zap.String("request_id", c.GetString("request_id")))
 		response.Fail(c, apperrors.ErrInvalidParam.WithMessage("缺少微信登录 code"))
 		return
 	}
 
 	result, err := h.svc.Login(c.Request.Context(), req.Code)
 	if err != nil {
+		h.logger.Error("Login: service error", zap.Error(err), zap.String("request_id", c.GetString("request_id")))
 		response.FailError(c, err)
 		return
 	}
@@ -45,11 +49,17 @@ func (h *AuthHandler) AdminLogin(c *gin.Context) {
 		Password string `json:"password" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Warn("AdminLogin: invalid request body", zap.Error(err), zap.String("request_id", c.GetString("request_id")))
 		response.Fail(c, apperrors.ErrInvalidParam.WithMessage("缺少昵称或密码"))
 		return
 	}
 	result, err := h.svc.AdminLogin(c.Request.Context(), req.Nickname, req.Password)
 	if err != nil {
+		if err == apperrors.ErrInvalidCredentials || err == apperrors.ErrNotAdmin {
+			h.logger.Warn("AdminLogin: failed login attempt", zap.String("nickname", req.Nickname), zap.Error(err))
+		} else {
+			h.logger.Error("AdminLogin: service error", zap.Error(err), zap.String("nickname", req.Nickname))
+		}
 		response.FailError(c, err)
 		return
 	}
@@ -67,15 +77,18 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		Phone     string `json:"phone"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Warn("Register: invalid request body", zap.Error(err))
 		response.Fail(c, apperrors.ErrInvalidParam.WithMessage("缺少必填字段"))
 		return
 	}
 	if req.PhoneCode == "" && req.Phone == "" {
+		h.logger.Warn("Register: missing phone info")
 		response.Fail(c, apperrors.ErrInvalidParam.WithMessage("请微信授权获取手机号或手动输入手机号"))
 		return
 	}
 	result, err := h.svc.Register(c.Request.Context(), req.Code, req.Nickname, req.AvatarURL, req.PhoneCode, req.Phone)
 	if err != nil {
+		h.logger.Error("Register: service error", zap.Error(err), zap.String("nickname", req.Nickname))
 		response.FailError(c, err)
 		return
 	}
@@ -86,6 +99,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 func (h *AuthHandler) Me(c *gin.Context) {
 	profile, err := h.svc.Me(c.Request.Context(), c.GetString("user_id"))
 	if err != nil {
+		h.logger.Error("Me: service error", zap.Error(err), zap.String("user_id", c.GetString("user_id")))
 		response.FailError(c, err)
 		return
 	}
@@ -98,11 +112,13 @@ func (h *AuthHandler) BindPhone(c *gin.Context) {
 		Phone string `json:"phone" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Warn("BindPhone: invalid request body", zap.Error(err), zap.String("user_id", c.GetString("user_id")))
 		response.Fail(c, apperrors.ErrInvalidParam.WithMessage("缺少手机号"))
 		return
 	}
 
 	if err := h.svc.BindPhone(c.Request.Context(), c.GetString("user_id"), req.Phone); err != nil {
+		h.logger.Error("BindPhone: service error", zap.Error(err), zap.String("user_id", c.GetString("user_id")))
 		response.FailError(c, err)
 		return
 	}

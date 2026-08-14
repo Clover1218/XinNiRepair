@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 
 	apperrors "xin-ni-repair/internal/errors"
 	"xin-ni-repair/internal/model"
@@ -19,33 +20,38 @@ type AdminHandler struct {
 	orders *service.AdminOrderService
 	entSvc *service.EnterpriseService
 	export *service.OrderExportService
+	logger *zap.Logger
 }
 
 // NewAdminHandler 创建 AdminHandler
-func NewAdminHandler(orders *service.AdminOrderService, entSvc *service.EnterpriseService, export *service.OrderExportService) *AdminHandler {
-	return &AdminHandler{orders: orders, entSvc: entSvc, export: export}
+func NewAdminHandler(orders *service.AdminOrderService, entSvc *service.EnterpriseService, export *service.OrderExportService, logger *zap.Logger) *AdminHandler {
+	return &AdminHandler{orders: orders, entSvc: entSvc, export: export, logger: logger}
 }
 
 // ListOrders 工单列表 (GET /admin/orders, 5.1)
 func (h *AdminHandler) ListOrders(c *gin.Context) {
 	page, pageSize, err := parsePageParams(c)
 	if err != nil {
+		h.logger.Warn("ListOrders Admin: invalid page params", zap.Error(err))
 		response.FailError(c, err)
 		return
 	}
 
 	statuses, err := parseStatusList(c.Query("status"))
 	if err != nil {
+		h.logger.Warn("ListOrders Admin: invalid status list", zap.Error(err))
 		response.FailError(c, err)
 		return
 	}
 	dateFrom, err := parseTimeParam(c.Query("date_from"))
 	if err != nil {
+		h.logger.Warn("ListOrders Admin: invalid date_from", zap.Error(err))
 		response.FailError(c, err)
 		return
 	}
 	dateTo, err := parseTimeParam(c.Query("date_to"))
 	if err != nil {
+		h.logger.Warn("ListOrders Admin: invalid date_to", zap.Error(err))
 		response.FailError(c, err)
 		return
 	}
@@ -62,6 +68,7 @@ func (h *AdminHandler) ListOrders(c *gin.Context) {
 	}
 	result, err := h.orders.ListOrders(c.Request.Context(), filter, page, pageSize)
 	if err != nil {
+		h.logger.Error("ListOrders Admin: service error", zap.Error(err), zap.String("user_id", c.GetString("user_id")))
 		response.FailError(c, err)
 		return
 	}
@@ -72,6 +79,7 @@ func (h *AdminHandler) ListOrders(c *gin.Context) {
 func (h *AdminHandler) OrderDetail(c *gin.Context) {
 	detail, err := h.orders.Detail(c.Request.Context(), c.Param("order_id"))
 	if err != nil {
+		h.logger.Error("OrderDetail Admin: service error", zap.Error(err), zap.String("order_id", c.Param("order_id")))
 		response.FailError(c, err)
 		return
 	}
@@ -84,10 +92,12 @@ func (h *AdminHandler) Review(c *gin.Context) {
 		Remark string `json:"remark"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Warn("Review Admin: invalid request body", zap.Error(err), zap.String("order_id", c.Param("order_id")))
 		response.Fail(c, apperrors.ErrInvalidParam.WithMessage("请求体格式错误"))
 		return
 	}
 	if err := h.orders.Review(c.Request.Context(), c.GetString("user_id"), c.Param("order_id"), req.Remark, c.ClientIP()); err != nil {
+		h.logger.Error("Review Admin: service error", zap.Error(err), zap.String("order_id", c.Param("order_id")), zap.String("operator_id", c.GetString("user_id")))
 		response.FailError(c, err)
 		return
 	}
@@ -100,10 +110,12 @@ func (h *AdminHandler) Accept(c *gin.Context) {
 		Remark string `json:"remark"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Warn("Accept Admin: invalid request body", zap.Error(err), zap.String("order_id", c.Param("order_id")))
 		response.Fail(c, apperrors.ErrInvalidParam.WithMessage("请求体格式错误"))
 		return
 	}
 	if err := h.orders.Accept(c.Request.Context(), c.GetString("user_id"), c.Param("order_id"), req.Remark, c.ClientIP()); err != nil {
+		h.logger.Error("Accept Admin: service error", zap.Error(err), zap.String("order_id", c.Param("order_id")), zap.String("operator_id", c.GetString("user_id")))
 		response.FailError(c, err)
 		return
 	}
@@ -116,10 +128,12 @@ func (h *AdminHandler) Reject(c *gin.Context) {
 		Reason string `json:"reason" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Warn("Reject Admin: invalid request body", zap.Error(err), zap.String("order_id", c.Param("order_id")))
 		response.Fail(c, apperrors.ErrInvalidParam.WithMessage("缺少退回原因"))
 		return
 	}
 	if err := h.orders.Reject(c.Request.Context(), c.GetString("user_id"), c.Param("order_id"), req.Reason, c.ClientIP()); err != nil {
+		h.logger.Error("Reject Admin: service error", zap.Error(err), zap.String("order_id", c.Param("order_id")), zap.String("operator_id", c.GetString("user_id")))
 		response.FailError(c, err)
 		return
 	}
@@ -137,6 +151,7 @@ func (h *AdminHandler) Complete(c *gin.Context) {
 		Metadata      model.RepairMetadata `json:"metadata"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Warn("Complete Admin: invalid request body", zap.Error(err), zap.String("order_id", c.Param("order_id")))
 		response.Fail(c, apperrors.ErrInvalidParam.WithMessage("请求体格式错误"))
 		return
 	}
@@ -149,6 +164,7 @@ func (h *AdminHandler) Complete(c *gin.Context) {
 		Metadata:      req.Metadata,
 	}
 	if err := h.orders.Complete(c.Request.Context(), c.GetString("user_id"), c.Param("order_id"), c.ClientIP(), in); err != nil {
+		h.logger.Error("Complete Admin: service error", zap.Error(err), zap.String("order_id", c.Param("order_id")), zap.String("operator_id", c.GetString("user_id")))
 		response.FailError(c, err)
 		return
 	}
@@ -164,6 +180,7 @@ func (h *AdminHandler) UpdateFinance(c *gin.Context) {
 		Metadata      *model.RepairMetadata `json:"metadata"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Warn("UpdateFinance Admin: invalid request body", zap.Error(err), zap.String("order_id", c.Param("order_id")))
 		response.Fail(c, apperrors.ErrInvalidParam.WithMessage("请求体格式错误"))
 		return
 	}
@@ -174,6 +191,7 @@ func (h *AdminHandler) UpdateFinance(c *gin.Context) {
 		Metadata:      req.Metadata,
 	}
 	if err := h.orders.UpdateFinance(c.Request.Context(), c.GetString("user_id"), c.Param("order_id"), c.ClientIP(), in); err != nil {
+		h.logger.Error("UpdateFinance Admin: service error", zap.Error(err), zap.String("order_id", c.Param("order_id")), zap.String("operator_id", c.GetString("user_id")))
 		response.FailError(c, err)
 		return
 	}
@@ -184,12 +202,14 @@ func (h *AdminHandler) UpdateFinance(c *gin.Context) {
 func (h *AdminHandler) UploadReceipt(c *gin.Context) {
 	file, err := c.FormFile("file")
 	if err != nil {
+		h.logger.Warn("UploadReceipt Admin: missing file", zap.Error(err), zap.String("order_id", c.Param("order_id")))
 		response.Fail(c, apperrors.ErrInvalidParam.WithMessage("缺少 file 文件"))
 		return
 	}
 
 	f, err := file.Open()
 	if err != nil {
+		h.logger.Error("UploadReceipt Admin: failed to open file", zap.Error(err))
 		response.FailError(c, err)
 		return
 	}
@@ -205,6 +225,7 @@ func (h *AdminHandler) UploadReceipt(c *gin.Context) {
 		c.ClientIP(),
 	)
 	if err != nil {
+		h.logger.Error("UploadReceipt Admin: service error", zap.Error(err), zap.String("order_id", c.Param("order_id")), zap.String("operator_id", c.GetString("user_id")))
 		response.FailError(c, err)
 		return
 	}
@@ -215,6 +236,7 @@ func (h *AdminHandler) UploadReceipt(c *gin.Context) {
 func (h *AdminHandler) ListEnterprises(c *gin.Context) {
 	page, pageSize, err := parsePageParams(c)
 	if err != nil {
+		h.logger.Warn("ListEnterprises Admin: invalid page params", zap.Error(err))
 		response.FailError(c, err)
 		return
 	}
@@ -226,6 +248,7 @@ func (h *AdminHandler) ListEnterprises(c *gin.Context) {
 		c.Query("status"),
 	)
 	if err != nil {
+		h.logger.Error("ListEnterprises Admin: service error", zap.Error(err))
 		response.FailError(c, err)
 		return
 	}
@@ -236,6 +259,7 @@ func (h *AdminHandler) ListEnterprises(c *gin.Context) {
 func (h *AdminHandler) EnterpriseDetail(c *gin.Context) {
 	detail, err := h.entSvc.AdminEnterpriseDetailByID(c.Request.Context(), c.Param("enterprise_id"))
 	if err != nil {
+		h.logger.Error("EnterpriseDetail Admin: service error", zap.Error(err), zap.String("enterprise_id", c.Param("enterprise_id")))
 		response.FailError(c, err)
 		return
 	}
@@ -246,6 +270,7 @@ func (h *AdminHandler) EnterpriseDetail(c *gin.Context) {
 func (h *AdminHandler) ListMembers(c *gin.Context) {
 	page, pageSize, err := parsePageParams(c)
 	if err != nil {
+		h.logger.Warn("ListMembers Admin: invalid page params", zap.Error(err))
 		response.FailError(c, err)
 		return
 	}
@@ -259,6 +284,7 @@ func (h *AdminHandler) ListMembers(c *gin.Context) {
 		c.Query("keyword"),
 	)
 	if err != nil {
+		h.logger.Error("ListMembers Admin: service error", zap.Error(err), zap.String("enterprise_id", c.Param("enterprise_id")))
 		response.FailError(c, err)
 		return
 	}
@@ -269,6 +295,7 @@ func (h *AdminHandler) ListMembers(c *gin.Context) {
 func (h *AdminHandler) Repairers(c *gin.Context) {
 	users, err := h.orders.ListRepairers(c.Request.Context())
 	if err != nil {
+		h.logger.Error("Repairers Admin: service error", zap.Error(err))
 		response.FailError(c, err)
 		return
 	}
@@ -283,11 +310,13 @@ func (h *AdminHandler) Repairers(c *gin.Context) {
 func (h *AdminHandler) ExportOrders(c *gin.Context) {
 	dateFrom, err := parseDateParam(c.Query("date_from"))
 	if err != nil {
+		h.logger.Warn("ExportOrders Admin: invalid date_from", zap.Error(err))
 		response.FailError(c, err)
 		return
 	}
 	dateTo, err := parseDateParam(c.Query("date_to"))
 	if err != nil {
+		h.logger.Warn("ExportOrders Admin: invalid date_to", zap.Error(err))
 		response.FailError(c, err)
 		return
 	}
@@ -305,6 +334,7 @@ func (h *AdminHandler) ExportOrders(c *gin.Context) {
 	}
 	result, err := h.export.Export(c.Request.Context(), req)
 	if err != nil {
+		h.logger.Error("ExportOrders Admin: service error", zap.Error(err), zap.String("user_id", c.GetString("user_id")))
 		response.FailError(c, err)
 		return
 	}
