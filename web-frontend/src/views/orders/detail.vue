@@ -408,55 +408,106 @@ onMounted(fetchDetail)
 
         <div class="section">
           <h3 class="section-title">报修信息</h3>
-          <el-descriptions :column="2" border>
-            <el-descriptions-item label="工单号">{{ detail.order_no }}</el-descriptions-item>
-            <el-descriptions-item v-if="detail.enterprise_name" label="报修企业">
-              {{ detail.enterprise_name }}
-            </el-descriptions-item>
-            <el-descriptions-item label="项目名称">{{ detail.project_name }}</el-descriptions-item>
-            <el-descriptions-item label="维修类别">{{ detail.category_label }}</el-descriptions-item>
-            <el-descriptions-item label="维修类型">{{ detail.property_label }}</el-descriptions-item>
-            <el-descriptions-item label="报修位置">{{ detail.room }}</el-descriptions-item>
-            <el-descriptions-item label="联系电话">{{ detail.contact }}</el-descriptions-item>
-            <el-descriptions-item label="报修描述" :span="2">
-              {{ detail.description }}
-            </el-descriptions-item>
-          </el-descriptions>
+          <div class="info-grid">
+            <div class="info-row">
+              <div class="info-cell">
+                <span class="info-label">工单号</span>
+                <span class="info-value">{{ detail.order_no }}</span>
+              </div>
+              <div v-if="detail.enterprise_name" class="info-cell">
+                <span class="info-label">报修企业</span>
+                <span class="info-value">{{ detail.enterprise_name }}</span>
+              </div>
+              <div class="info-cell">
+                <span class="info-label">项目名称</span>
+                <span class="info-value">{{ detail.project_name }}</span>
+              </div>
+            </div>
+            <div class="info-row">
+              <div class="info-cell">
+                <span class="info-label">维修类别</span>
+                <span class="info-value">{{ detail.category_label }}</span>
+              </div>
+              <div class="info-cell">
+                <span class="info-label">维修类型</span>
+                <span class="info-value">{{ detail.property_label }}</span>
+              </div>
+            </div>
+            <div class="info-row">
+              <div class="info-cell">
+                <span class="info-label">报修位置</span>
+                <span class="info-value">{{ detail.room }}</span>
+              </div>
+              <div class="info-cell">
+                <span class="info-label">联系方式</span>
+                <span class="info-value">{{ detail.contact }}</span>
+              </div>
+            </div>
+            <div class="info-row">
+              <div class="info-cell info-cell--full">
+                <span class="info-label">报修描述</span>
+                <span class="info-value">{{ detail.description }}</span>
+              </div>
+            </div>
+          </div>
         </div>
 
         <!-- V1.1 新增：对账信息（completed 状态展示） -->
         <div v-if="showFinance" class="section">
           <h3 class="section-title">对账信息</h3>
-          <el-descriptions :column="3" border>
-            <el-descriptions-item label="数量">{{ detail.quantity ?? '-' }}</el-descriptions-item>
-            <el-descriptions-item label="单价">{{ formatMoney(detail.unit_price) }}</el-descriptions-item>
-            <el-descriptions-item label="金额">{{ formatMoney(detail.amount) }}</el-descriptions-item>
-            <el-descriptions-item label="维修操作内容" :span="3">
-              {{ detail.repair_content || '-' }}
-            </el-descriptions-item>
-          </el-descriptions>
+          <div class="info-grid">
+            <div class="info-row">
+              <div class="info-cell">
+                <span class="info-label">数量</span>
+                <span class="info-value">{{ detail.quantity ?? '-' }}</span>
+              </div>
+              <div class="info-cell">
+                <span class="info-label">单价</span>
+                <span class="info-value">{{ formatMoney(detail.unit_price) }}</span>
+              </div>
+              <div class="info-cell">
+                <span class="info-label">金额</span>
+                <span class="info-value">{{ formatMoney(detail.amount) }}</span>
+              </div>
+            </div>
+            <div class="info-row">
+              <div class="info-cell info-cell--full">
+                <span class="info-label">维修操作内容</span>
+                <span class="info-value">{{ detail.repair_content || '-' }}</span>
+              </div>
+            </div>
+          </div>
         </div>
 
         <!-- V1.1 新增：附加信息（completed 状态展示，metadata 独立区块） -->
         <div v-if="showMetadata" class="section">
           <h3 class="section-title">附加信息</h3>
-          <el-descriptions :column="3" border>
-            <el-descriptions-item label="维修结果">
-              {{ detail.metadata?.repair_result || '-' }}
-            </el-descriptions-item>
-            <el-descriptions-item label="维修方式">
-              {{ detail.metadata?.repair_method || '-' }}
-            </el-descriptions-item>
-            <el-descriptions-item label="保修期">
-              {{ detail.metadata?.warranty_period || '-' }}
-            </el-descriptions-item>
-            <el-descriptions-item label="维修时长">
-              {{ detail.metadata?.repair_duration != null ? `${detail.metadata.repair_duration} 分钟` : '-' }}
-            </el-descriptions-item>
-            <el-descriptions-item label="额外备注">
-              {{ detail.metadata?.extra_remark || '-' }}
-            </el-descriptions-item>
-          </el-descriptions>
+          <div class="info-grid">
+            <div class="info-row">
+              <div class="info-cell">
+                <span class="info-label">维修结果</span>
+                <span class="info-value">{{ detail.metadata?.repair_result || '-' }}</span>
+              </div>
+              <div class="info-cell">
+                <span class="info-label">维修方式</span>
+                <span class="info-value">{{ detail.metadata?.repair_method || '-' }}</span>
+              </div>
+              <div class="info-cell">
+                <span class="info-label">保修期</span>
+                <span class="info-value">{{ detail.metadata?.warranty_period || '-' }}</span>
+              </div>
+            </div>
+            <div class="info-row">
+              <div class="info-cell">
+                <span class="info-label">维修时长</span>
+                <span class="info-value">{{ detail.metadata?.repair_duration != null ? `${detail.metadata.repair_duration} 分钟` : '-' }}</span>
+              </div>
+              <div class="info-cell info-cell--full">
+                <span class="info-label">额外备注</span>
+                <span class="info-value">{{ detail.metadata?.extra_remark || '-' }}</span>
+              </div>
+            </div>
+          </div>
         </div>
 
         <div v-if="imageUrls.length" class="section">
@@ -713,6 +764,60 @@ onMounted(fetchDetail)
 </template>
 
 <style scoped>
+:deep(.el-descriptions__label) {
+  white-space: nowrap;
+}
+
+.info-grid {
+  border: 1px solid var(--el-border-color);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.info-row {
+  display: flex;
+  flex-wrap: wrap;
+  border-top: 1px solid var(--el-border-color);
+  align-items: stretch;
+}
+
+.info-row:first-child {
+  border-top: none;
+}
+
+.info-cell {
+  display: flex;
+  border-right: 1px solid var(--el-border-color);
+  align-items: stretch;
+}
+
+.info-cell:last-child {
+  border-right: none;
+}
+
+.info-cell--full {
+  flex: 1;
+}
+
+.info-label {
+  padding: 12px 16px;
+  font-weight: 700;
+  color: var(--el-text-color-regular);
+  background-color: var(--el-fill-color-light);
+  white-space: nowrap;
+  border-right: 1px solid var(--el-border-color);
+  display: flex;
+  align-items: center;
+}
+
+.info-value {
+  padding: 12px 16px;
+  color: var(--el-text-color-primary);
+  word-break: break-all;
+  display: flex;
+  align-items: center;
+}
+
 .detail-header {
   display: flex;
   align-items: center;

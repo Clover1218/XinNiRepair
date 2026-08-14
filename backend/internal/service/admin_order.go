@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
+	"gorm.io/datatypes"
 
 	apperrors "xin-ni-repair/internal/errors"
 	"xin-ni-repair/internal/model"
@@ -88,37 +89,38 @@ type AdminTimelineItem struct {
 
 // AdminOrderDetail 管理端工单详情 (5.2)
 type AdminOrderDetail struct {
-	ID               string              `json:"id"`
-	OrderNo          *string             `json:"order_no"`
-	EnterpriseID     string              `json:"enterprise_id"`
-	EnterpriseName   string              `json:"enterprise_name"`
-	ProjectName      string              `json:"project_name"`
-	Category         string              `json:"category"`
-	CategoryLabel    string              `json:"category_label"`
-	Property         string              `json:"property"`
-	PropertyLabel    string              `json:"property_label"`
-	Description      string              `json:"description"`
-	Urgency          string              `json:"urgency"`
-	UrgencyLabel     string              `json:"urgency_label"`
-	Room             string              `json:"room"`
-	Contact          string              `json:"contact"`
-	Status           string              `json:"status"`
-	StatusLabel      string              `json:"status_label"`
-	RejectReason     string              `json:"reject_reason"`
-	RepairContent    string              `json:"repair_content"`
-	Quantity         int                 `json:"quantity"`
-	UnitPrice        float64             `json:"unit_price"`
-	Amount           float64             `json:"amount"`
-	Images           []ImageItem         `json:"images"`
-	Receipts         []ImageItem         `json:"receipts"`
-	Timeline         []AdminTimelineItem `json:"timeline"`
-	AvailableActions []AdminAction       `json:"available_actions"`
-	CreatedAt        time.Time           `json:"created_at"`
-	SubmittedAt      *time.Time          `json:"submitted_at"`
-	ReviewedAt       *time.Time          `json:"reviewed_at,omitempty"`
-	AcceptedAt       *time.Time          `json:"accepted_at,omitempty"`
-	CompletedAt      *time.Time          `json:"completed_at,omitempty"`
-	UpdatedAt        time.Time           `json:"updated_at"`
+	ID               string                `json:"id"`
+	OrderNo          *string               `json:"order_no"`
+	EnterpriseID     string                `json:"enterprise_id"`
+	EnterpriseName   string                `json:"enterprise_name"`
+	ProjectName      string                `json:"project_name"`
+	Category         string                `json:"category"`
+	CategoryLabel    string                `json:"category_label"`
+	Property         string                `json:"property"`
+	PropertyLabel    string                `json:"property_label"`
+	Description      string                `json:"description"`
+	Urgency          string                `json:"urgency"`
+	UrgencyLabel     string                `json:"urgency_label"`
+	Room             string                `json:"room"`
+	Contact          string                `json:"contact"`
+	Status           string                `json:"status"`
+	StatusLabel      string                `json:"status_label"`
+	RejectReason     string                `json:"reject_reason"`
+	RepairContent    string                `json:"repair_content"`
+	Quantity         int                   `json:"quantity"`
+	UnitPrice        float64               `json:"unit_price"`
+	Amount           float64               `json:"amount"`
+	Metadata         *model.RepairMetadata `json:"metadata,omitempty"`
+	Images           []ImageItem           `json:"images"`
+	Receipts         []ImageItem           `json:"receipts"`
+	Timeline         []AdminTimelineItem   `json:"timeline"`
+	AvailableActions []AdminAction         `json:"available_actions"`
+	CreatedAt        time.Time             `json:"created_at"`
+	SubmittedAt      *time.Time            `json:"submitted_at"`
+	ReviewedAt       *time.Time            `json:"reviewed_at,omitempty"`
+	AcceptedAt       *time.Time            `json:"accepted_at,omitempty"`
+	CompletedAt      *time.Time            `json:"completed_at,omitempty"`
+	UpdatedAt        time.Time             `json:"updated_at"`
 }
 
 // ────────────────────────────────────────────
@@ -242,6 +244,8 @@ func (s *AdminOrderService) Detail(ctx context.Context, orderID string) (*AdminO
 		return nil, s.dbErr("list timelines failed", err)
 	}
 
+	meta := parseOrderMetadata(order.Metadata)
+
 	return &AdminOrderDetail{
 		ID:               order.ID,
 		OrderNo:          order.OrderNo,
@@ -264,6 +268,7 @@ func (s *AdminOrderService) Detail(ctx context.Context, orderID string) (*AdminO
 		Quantity:         order.Quantity,
 		UnitPrice:        order.UnitPrice,
 		Amount:           order.Amount,
+		Metadata:         meta,
 		Images:           buildImageItems(images),
 		Receipts:         buildImageItems(receipts),
 		Timeline:         buildAdminTimelineItems(timelines),
@@ -275,6 +280,21 @@ func (s *AdminOrderService) Detail(ctx context.Context, orderID string) (*AdminO
 		CompletedAt:      order.CompletedAt,
 		UpdatedAt:        order.UpdatedAt,
 	}, nil
+}
+
+// parseOrderMetadata 解析 repair_orders.metadata JSONB 为 RepairMetadata 指针, 全为空字段时返回 nil
+func parseOrderMetadata(raw datatypes.JSON) *model.RepairMetadata {
+	if len(raw) == 0 {
+		return nil
+	}
+	var meta model.RepairMetadata
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		return nil
+	}
+	if meta.RepairResult == "" && meta.RepairMethod == "" && meta.WarrantyPeriod == "" && meta.ExtraRemark == "" && meta.RepairDuration == 0 {
+		return nil
+	}
+	return &meta
 }
 
 // Review 查阅工单 (5.3): reported → reviewed
@@ -440,8 +460,12 @@ func (s *AdminOrderService) UpdateFinance(ctx context.Context, adminID, orderID,
 		return apperrors.ErrInvalidParam.WithMessage("至少需要传入一个字段")
 	}
 
-	// 记录修改前值, 用于时间轴差异日志
-	before := financeDiffText(order)
+	// 记录修改前快照, 用于时间轴增量差异日志
+	beforeQuantity := order.Quantity
+	beforeUnitPrice := order.UnitPrice
+	beforeRepairContent := order.RepairContent
+	beforeMeta := parseMetadata(order.Metadata)
+
 	if in.Quantity != nil {
 		if *in.Quantity < 0 {
 			return apperrors.ErrInvalidParam.WithMessage("quantity 需 ≥0")
@@ -467,8 +491,8 @@ func (s *AdminOrderService) UpdateFinance(ctx context.Context, adminID, orderID,
 		return s.dbErr("update order failed", err)
 	}
 
-	// 时间轴差异日志 (from_status=to_status=completed)
-	diff := before + " → " + financeDiffText(order)
+	// 时间轴差异日志 (from_status=to_status=completed, 仅记录增量变化字段)
+	diff := financeIncrementDiff(beforeQuantity, beforeUnitPrice, beforeRepairContent, beforeMeta, order)
 	return s.appendAdminTimeline(ctx, order, adminID, string(model.ActionUpdateFinance), order.Status, order.Status, diff, ip)
 }
 
@@ -482,15 +506,54 @@ func (s *AdminOrderService) setOrderMetadata(ctx context.Context, order *model.R
 	return nil
 }
 
-// financeDiffText 对账字段摘要文本 (用于 5.6.1 时间轴差异日志)
-func financeDiffText(order *model.RepairOrder) string {
+// parseMetadata 解析 metadata JSONB, 解析失败返回零值
+func parseMetadata(raw datatypes.JSON) model.RepairMetadata {
 	meta := model.RepairMetadata{}
-	if len(order.Metadata) > 0 {
-		_ = json.Unmarshal(order.Metadata, &meta)
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &meta)
 	}
-	return fmt.Sprintf("数量:%d 单价:%.2f 维修内容:%s 维修结果:%s 维修方式:%s 保修期:%s 额外备注:%s 维修时长:%d分钟",
-		order.Quantity, order.UnitPrice, order.RepairContent,
-		meta.RepairResult, meta.RepairMethod, meta.WarrantyPeriod, meta.ExtraRemark, meta.RepairDuration)
+	return meta
+}
+
+// appendChange 往 diff 片段追加 "label: old -> new"
+func appendChange(diff, label, old, new string) string {
+	if old == new {
+		return diff
+	}
+	fragment := fmt.Sprintf("%s: %s -> %s", label, old, new)
+	if diff == "" {
+		return fragment
+	}
+	return diff + "; " + fragment
+}
+
+// appendChangeInt 追加整型差异
+func appendChangeInt(diff, label string, old, new int) string {
+	return appendChange(diff, label, fmt.Sprintf("%d", old), fmt.Sprintf("%d", new))
+}
+
+// appendChangePrice 追加价格差异（保留两位小数）
+func appendChangePrice(diff, label string, old, new float64) string {
+	return appendChange(diff, label, fmt.Sprintf("%.2f", old), fmt.Sprintf("%.2f", new))
+}
+
+// financeIncrementDiff 生成修改对账信息的增量 diff 文案, 未变化字段跳过, 多个变化用 "; " 分隔
+// 示例: "数量: 1 -> 2; 单价: 2.00 -> 3.00; 维修结果: -> 完全修复"
+func financeIncrementDiff(
+	beforeQuantity int, beforeUnitPrice float64, beforeRepairContent string,
+	oldMeta model.RepairMetadata, newOrder *model.RepairOrder,
+) string {
+	newMeta := parseMetadata(newOrder.Metadata)
+	diff := ""
+	diff = appendChangeInt(diff, "数量", beforeQuantity, newOrder.Quantity)
+	diff = appendChangePrice(diff, "单价", beforeUnitPrice, newOrder.UnitPrice)
+	diff = appendChange(diff, "维修内容", beforeRepairContent, newOrder.RepairContent)
+	diff = appendChange(diff, "维修结果", oldMeta.RepairResult, newMeta.RepairResult)
+	diff = appendChange(diff, "维修方式", oldMeta.RepairMethod, newMeta.RepairMethod)
+	diff = appendChange(diff, "保修期", oldMeta.WarrantyPeriod, newMeta.WarrantyPeriod)
+	diff = appendChange(diff, "额外备注", oldMeta.ExtraRemark, newMeta.ExtraRemark)
+	diff = appendChangeInt(diff, "维修时长(分钟)", oldMeta.RepairDuration, newMeta.RepairDuration)
+	return diff
 }
 
 // UploadReceipt 上传收据图片 (5.7): 仅 processing, status=temporary, sort_order=-1
