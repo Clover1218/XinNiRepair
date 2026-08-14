@@ -37,6 +37,7 @@ services:
       - DB_USER=${DB_USER}
       - DB_PASSWORD=${DB_PASSWORD}
       - DB_NAME=${DB_NAME}
+      - DB_AUTO_MIGRATE=${DB_AUTO_MIGRATE}
       # 图床：容器名 easyimage，注意变量名必须为 EASYIMAGE_ENDPOINT（与 config.go applyEnvOverrides 一致）
       # EasyImage 容器内监听 80，实际上传接口路径为 /api/index.php，ImageBedConfig 中 endpoint 字段会再拼路径
       - EASYIMAGE_ENDPOINT=http://easyimage:80/api/index.php

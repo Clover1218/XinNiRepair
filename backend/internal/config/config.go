@@ -52,6 +52,7 @@ type DatabaseConfig struct {
 	Password        string        `yaml:"password"`
 	DBName          string        `yaml:"dbname"`
 	SSLMode         string        `yaml:"sslmode"`
+	AutoMigrate     bool          `yaml:"auto_migrate"` // 启动时 GORM AutoMigrate: 仅新建/加列加索引, 不会删列
 	MaxOpenConns    int           `yaml:"max_open_conns"`
 	MaxIdleConns    int           `yaml:"max_idle_conns"`
 	ConnMaxLifetime time.Duration `yaml:"conn_max_lifetime"`
@@ -194,6 +195,15 @@ func (c *Config) applyEnvOverrides() {
 	}
 	if v := os.Getenv("DB_NAME"); v != "" {
 		c.Database.DBName = v
+	}
+	// 启动 AutoMigrate 开关: 1/true/yes 打开, 其它关
+	if v := os.Getenv("DB_AUTO_MIGRATE"); v != "" {
+		switch strings.ToLower(v) {
+		case "1", "true", "yes", "on":
+			c.Database.AutoMigrate = true
+		case "0", "false", "no", "off":
+			c.Database.AutoMigrate = false
+		}
 	}
 
 	// ── 微信 ──

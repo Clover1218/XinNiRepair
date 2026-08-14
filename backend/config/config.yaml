@@ -18,6 +18,7 @@ database:
   password: "123456"            # 通过环境变量 DB_PASSWORD 注入
   dbname: "xin_ni_repair"
   sslmode: "disable"
+  auto_migrate: false          # 启动 GORM AutoMigrate 开关: 仅加表/加列/加索引, 不会删列; 可用环境变量 DB_AUTO_MIGRATE=true 临时打开
   max_open_conns: 25
   max_idle_conns: 5
   conn_max_lifetime: 5m
