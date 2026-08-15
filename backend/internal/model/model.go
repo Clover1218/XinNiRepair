@@ -215,7 +215,7 @@ type RepairOrder struct {
 	RepairContent string         `gorm:"type:varchar(500)"`
 	Quantity      int            `gorm:"type:integer;not null;default:1"`
 	UnitPrice     float64        `gorm:"type:decimal(10,2);not null;default:0"`
-	Amount        float64        `gorm:"type:decimal(10,2);->"` // 只读: 由数据库生成列 amount=quantity*unit_price 计算, 禁止写入
+	Amount        float64        `gorm:"type:decimal(10,2) GENERATED ALWAYS AS (quantity * unit_price) STORED;->"` // 只读生成列: 数据库自动计算 amount=quantity*unit_price, GORM 不写入
 	Metadata      datatypes.JSON `gorm:"type:jsonb;default:'{}'"`
 	RepairerID    *string        `gorm:"type:uuid;index:idx_orders_repairer"` // 维修员(业务员), accept 时写入
 	Repairer      User           `gorm:"foreignKey:RepairerID"`

@@ -279,13 +279,24 @@ export default defineComponent({
         uni.showToast({ title: '最多上传9张图片', icon: 'none' })
         return
       }
-      // 从微信聊天记录中选择图片（仅支持 jpg/png/webp，单张 ≤5MB）
+      uni.showActionSheet({
+        itemList: ['从聊天记录选择', '拍照或从相册选择'],
+        success: (res) => {
+          if (res.tapIndex === 0) {
+            this.chooseFromChat(remain)
+          } else if (res.tapIndex === 1) {
+            this.chooseFromCameraOrAlbum(remain)
+          }
+        }
+      })
+    },
+    /** 从微信聊天记录中选择图片 */
+    chooseFromChat(count: number) {
       wx.chooseMessageFile({
-        count: remain,
+        count,
         type: 'image',
         success: async (res) => {
           const files: { path: string; name: string; size: number }[] = res.tempFiles || []
-          // 过滤不符合要求的文件
           const validFiles = files.filter((file) => {
             const ext = (file.name || '').split('.').pop()?.toLowerCase()
             return ['jpg', 'jpeg', 'png', 'webp'].includes(ext) && file.size <= 5 * 1024 * 1024
@@ -297,27 +308,54 @@ export default defineComponent({
           if (files.length !== validFiles.length) {
             uni.showToast({ title: '已过滤不支持的图片', icon: 'none' })
           }
-          uni.showLoading({ title: '上传中...' })
-          let uploaded = 0
-          for (const file of validFiles) {
-            try {
-              const data = await uploadOrderImage(this.orderId, file.path)
-              // 缩略图优先显示本地路径，远端 URL 用于提交与放大预览
-              this.imageList.push({ url: data.url, localPath: file.path })
-              uploaded++
-            } catch (e) {
-              console.error('图片上传失败', e)
-            }
-          }
-          uni.hideLoading()
-          if (uploaded > 0) {
-            uni.showToast({ title: `已上传${uploaded}张`, icon: 'success' })
-          }
+          await this.uploadFiles(validFiles.map((f) => ({ path: f.path, size: f.size })))
         },
         fail: (err) => {
           console.error('选择图片失败', err)
         }
       })
+    },
+    /** 拍照或从相册选择图片 */
+    chooseFromCameraOrAlbum(count: number) {
+      uni.chooseImage({
+        count,
+        sizeType: ['compressed'],
+        sourceType: ['camera', 'album'],
+        success: async (res) => {
+          const files = (res.tempFiles || []).map((f) => ({
+            path: (f as any).path || '',
+            size: (f as any).size || 0
+          }))
+          if (files.length === 0) return
+          const validFiles = files.filter((f) => f.size <= 5 * 1024 * 1024)
+          if (validFiles.length === 0) {
+            uni.showToast({ title: '单张图片不能超过5MB', icon: 'none' })
+            return
+          }
+          await this.uploadFiles(validFiles)
+        },
+        fail: (err) => {
+          console.error('选择图片失败', err)
+        }
+      })
+    },
+    /** 批量上传图片到服务器 */
+    async uploadFiles(files: { path: string; size: number }[]) {
+      uni.showLoading({ title: '上传中...' })
+      let uploaded = 0
+      for (const file of files) {
+        try {
+          const data = await uploadOrderImage(this.orderId, file.path)
+          this.imageList.push({ url: data.url, localPath: file.path })
+          uploaded++
+        } catch (e) {
+          console.error('图片上传失败', e)
+        }
+      }
+      uni.hideLoading()
+      if (uploaded > 0) {
+        uni.showToast({ title: `已上传${uploaded}张`, icon: 'success' })
+      }
     },
     previewImage(index: number) {
       uni.previewImage({
@@ -601,18 +639,16 @@ export default defineComponent({
   left: 0;
   right: 0;
   display: flex;
+  gap: 20rpx;
   padding: 20rpx 24rpx;
   padding-bottom: calc(20rpx + env(safe-area-inset-bottom));
   background-color: #ffffff;
   box-shadow: 0 -4rpx 16rpx rgba(0, 0, 0, 0.04);
+  box-sizing: border-box;
 
   .footer-btn {
-    flex: 1;
-    margin-right: 20rpx;
-
-    &:last-child {
-      margin-right: 0;
-    }
+    flex: 1 1 0;
+    min-width: 0;
   }
 }
 </style>
