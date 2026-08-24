@@ -1,33 +1,10 @@
 package handler
 
 import (
-	"net/http"
-
 	"github.com/gin-gonic/gin"
+
+	"xin-ni-repair/pkg/response"
 )
-
-// ── HTML 模板: 公共 head + body 容器 ──
-const htmlHead = `<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<style>
-  body { font-family: -apple-system, "Helvetica Neue", sans-serif; line-height: 1.8; color: #333; max-width: 680px; margin: 0 auto; padding: 24px 16px 48px; }
-  h1 { font-size: 22px; text-align: center; margin-bottom: 8px; }
-  h2 { font-size: 17px; margin-top: 28px; border-bottom: 1px solid #eee; padding-bottom: 6px; }
-  p { font-size: 15px; margin: 12px 0; }
-  ul { padding-left: 20px; }
-  li { font-size: 15px; margin: 6px 0; }
-  .text-muted { color: #999; font-size: 13px; text-align: center; margin-top: 4px; }
-</style>
-</head>
-<body>
-`
-
-const htmlTail = `
-</body>
-</html>`
 
 // ── 用户协议 HTML 内容 ──
 const userAgreementHTML = `
@@ -139,16 +116,14 @@ const privacyPolicyHTML = `
 <p>联系邮箱：Q121666464@qq.com</p>
 `
 
-// UserAgreement 返回用户服务协议 HTML (GET /agreement/user)
-// 公开接口, 不需要 JWT 认证
+// UserAgreement 返回用户服务协议 (GET /agreement/user)
+// 公开接口, 不需要 JWT 认证; 返回标准 JSON, HTML 内容在 data.content 字段
 func UserAgreement(c *gin.Context) {
-	html := htmlHead + userAgreementHTML + htmlTail
-	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(html))
+	response.OK(c, gin.H{"content": userAgreementHTML})
 }
 
-// PrivacyPolicy 返回隐私政策 HTML (GET /agreement/privacy)
-// 公开接口, 不需要 JWT 认证
+// PrivacyPolicy 返回隐私政策 (GET /agreement/privacy)
+// 公开接口, 不需要 JWT 认证; 返回标准 JSON, HTML 内容在 data.content 字段
 func PrivacyPolicy(c *gin.Context) {
-	html := htmlHead + privacyPolicyHTML + htmlTail
-	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(html))
+	response.OK(c, gin.H{"content": privacyPolicyHTML})
 }

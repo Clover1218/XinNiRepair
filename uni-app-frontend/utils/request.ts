@@ -8,13 +8,6 @@ export interface ApiResponse<T = unknown> {
   data: T
   request_id?: string
 }
-if (IS_LOCAL == false){
-	wx.cloud.init({
-	    env: 'cloud1-d3gbxtfy227507c7d',
-	    traceUser: true,
-	})
-}
-
 
 interface RequestOptions {
   path: string          // 注意改名为 path（原来叫 url）
@@ -22,96 +15,42 @@ interface RequestOptions {
   data?: Record<string, unknown>
 }
 
-// export function request<T = unknown>(options: RequestOptions): Promise<T> {
-//   const token = uni.getStorageSync('token')
-//   return new Promise((resolve, reject) => {
-//     wx.cloud.callContainer({
-//       config: {
-//         env: 'cloud1-d3gbxtfy227507c7d'   // 建议从全局配置读取
-//       },
-//       path: "/api/v1" + options.path,               // 注意这里是 path，不是完整 url
-//       method: options.method || 'GET',
-//       header: {
-//         'Content-Type': 'application/json',
-// 		"X-WX-SERVICE": "tcbanyservice", // 固定为 tcbanyservice
-// 		"X-AnyService-Name": "xnb", // abc 中填入 AnyService 服务标识，从「腾讯云开发平台 - AnyService」获取服务标识
-//         Authorization: token ? `Bearer ${token}` : ''
-//       },
-//       data: options.data,
-//       success: (res) => {
-//         // res 结构不同于 uni.request，直接取 res.data
-//         const body = res.data as ApiResponse<T>
-//         if (res.statusCode === 401) {
-//           // 处理登录过期（同原逻辑）
-//           uni.removeStorageSync('token')
-//           uni.removeStorageSync('currentEnterpriseId')
-//           uni.showToast({ title: '登录已过期，请重新登录', icon: 'none' })
-//           setTimeout(() => uni.reLaunch({ url: '/pages/auth/login' }), 600)
-//           reject(body)
-//           return
-//         }
-//         if (body && body.code === 0) {
-//           resolve(body.data)
-//         } else {
-//           const msg = body?.message || '请求失败'
-//           uni.showToast({ title: msg, icon: 'none' })
-//           reject(body)
-//         }
-//       },
-//       fail: (err) => {
-//         uni.showToast({ title: '网络异常，请稍后重试', icon: 'none' })
-//         reject(err)
-//       }
-//     })
-//   })
-// }
-
-// // http 便捷方法不变，只是传入的 url 现在作为 path
-// export const http = {
-//   get: <T = unknown>(path: string, data?: Record<string, unknown>) =>
-//     request<T>({ path, method: 'GET', data }),
-//   post: <T = unknown>(path: string, data?: Record<string, unknown>) =>
-//     request<T>({ path, method: 'POST', data }),
-//   put: <T = unknown>(path: string, data?: Record<string, unknown>) =>
-//     request<T>({ path, method: 'PUT', data }),
-//   delete: <T = unknown>(path: string, data?: Record<string, unknown>) =>
-//     request<T>({ path, method: 'DELETE', data })
-// }
-
-
-// /**
-//  * 统一请求封装：
-//  * - 自动携带 Authorization: Bearer <token>
-//  * - 401 时清除本地登录态并跳转登录页
-//  * - code !== 0 时统一 Toast 错误信息
-//  */
+wx.cloud.init({
+	    env: 'cloud1-d3gbxtfy227507c7d',
+	    traceUser: true,
+	})
 export function request<T = unknown>(options: RequestOptions): Promise<T> {
   const token = uni.getStorageSync('token')
   return new Promise((resolve, reject) => {
-    uni.request({
-      url: BASE_URL + options.url,
+    wx.cloud.callContainer({
+      config: {
+        env: 'cloud1-d3gbxtfy227507c7d'   // 建议从全局配置读取
+      },
+      path: "/api/v1" + options.path,               // 注意这里是 path，不是完整 url
       method: options.method || 'GET',
-      data: options.data,
       header: {
         'Content-Type': 'application/json',
+		"X-WX-SERVICE": "tcbanyservice", // 固定为 tcbanyservice
+		"X-AnyService-Name": "xnb", // abc 中填入 AnyService 服务标识，从「腾讯云开发平台 - AnyService」获取服务标识
         Authorization: token ? `Bearer ${token}` : ''
       },
+      data: options.data,
       success: (res) => {
+        // res 结构不同于 uni.request，直接取 res.data
         const body = res.data as ApiResponse<T>
         if (res.statusCode === 401) {
+          // 处理登录过期（同原逻辑）
           uni.removeStorageSync('token')
           uni.removeStorageSync('currentEnterpriseId')
           uni.showToast({ title: '登录已过期，请重新登录', icon: 'none' })
-          setTimeout(() => {
-            uni.reLaunch({ url: '/pages/auth/login' })
-          }, 600)
+          setTimeout(() => uni.reLaunch({ url: '/pages/auth/login' }), 600)
           reject(body)
           return
         }
         if (body && body.code === 0) {
           resolve(body.data)
         } else {
-          const msg = (body && body.message) || '请求失败'
+          const msg = body?.message || '请求失败'
           uni.showToast({ title: msg, icon: 'none' })
           reject(body)
         }
@@ -124,17 +63,75 @@ export function request<T = unknown>(options: RequestOptions): Promise<T> {
   })
 }
 
-/** REST 便捷方法 */
+// http 便捷方法不变，只是传入的 url 现在作为 path
 export const http = {
-  get: <T = unknown>(url: string, data?: Record<string, unknown>) =>
-    request<T>({ url, method: 'GET', data }),
-  post: <T = unknown>(url: string, data?: Record<string, unknown>) =>
-    request<T>({ url, method: 'POST', data }),
-  put: <T = unknown>(url: string, data?: Record<string, unknown>) =>
-    request<T>({ url, method: 'PUT', data }),
-  delete: <T = unknown>(url: string, data?: Record<string, unknown>) =>
-    request<T>({ url, method: 'DELETE', data })
+  get: <T = unknown>(path: string, data?: Record<string, unknown>) =>
+    request<T>({ path, method: 'GET', data }),
+  post: <T = unknown>(path: string, data?: Record<string, unknown>) =>
+    request<T>({ path, method: 'POST', data }),
+  put: <T = unknown>(path: string, data?: Record<string, unknown>) =>
+    request<T>({ path, method: 'PUT', data }),
+  delete: <T = unknown>(path: string, data?: Record<string, unknown>) =>
+    request<T>({ path, method: 'DELETE', data })
 }
+
+
+// /**
+//  * 统一请求封装：
+//  * - 自动携带 Authorization: Bearer <token>
+//  * - 401 时清除本地登录态并跳转登录页
+//  * - code !== 0 时统一 Toast 错误信息
+//  */
+// export function request<T = unknown>(options: RequestOptions): Promise<T> {
+//   const token = uni.getStorageSync('token')
+//   return new Promise((resolve, reject) => {
+//     uni.request({
+//       url: BASE_URL + options.url,
+//       method: options.method || 'GET',
+//       data: options.data,
+//       header: {
+//         'Content-Type': 'application/json',
+//         Authorization: token ? `Bearer ${token}` : ''
+//       },
+//       success: (res) => {
+//         const body = res.data as ApiResponse<T>
+//         if (res.statusCode === 401) {
+//           uni.removeStorageSync('token')
+//           uni.removeStorageSync('currentEnterpriseId')
+//           uni.showToast({ title: '登录已过期，请重新登录', icon: 'none' })
+//           setTimeout(() => {
+//             uni.reLaunch({ url: '/pages/auth/login' })
+//           }, 600)
+//           reject(body)
+//           return
+//         }
+//         if (body && body.code === 0) {
+//           resolve(body.data)
+//         } else {
+//           const msg = (body && body.message) || '请求失败'
+//           uni.showToast({ title: msg, icon: 'none' })
+//           reject(body)
+//         }
+//       },
+//       fail: (err) => {
+//         uni.showToast({ title: '网络异常，请稍后重试', icon: 'none' })
+//         reject(err)
+//       }
+//     })
+//   })
+// }
+
+// /** REST 便捷方法 */
+// export const http = {
+//   get: <T = unknown>(url: string, data?: Record<string, unknown>) =>
+//     request<T>({ url, method: 'GET', data }),
+//   post: <T = unknown>(url: string, data?: Record<string, unknown>) =>
+//     request<T>({ url, method: 'POST', data }),
+//   put: <T = unknown>(url: string, data?: Record<string, unknown>) =>
+//     request<T>({ url, method: 'PUT', data }),
+//   delete: <T = unknown>(url: string, data?: Record<string, unknown>) =>
+//     request<T>({ url, method: 'DELETE', data })
+// }
 
 /**
  * 工单图片上传（POST /orders/{order_id}/images，multipart/form-data）

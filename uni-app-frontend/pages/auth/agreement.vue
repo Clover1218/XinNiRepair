@@ -12,7 +12,7 @@
 
 <script lang="ts">
 import { defineComponent } from 'vue'
-import { BASE_URL } from '@/utils/config'
+import { http } from '@/utils/request'
 
 export default defineComponent({
   data() {
@@ -28,30 +28,14 @@ export default defineComponent({
   methods: {
     async loadAgreement(type: string) {
       this.loading = true
-      uni.request({
-        url: `${BASE_URL}/agreement/${type}`,
-        method: 'GET',
-        success: (res) => {
-          if (res.statusCode === 200 && typeof res.data === 'string') {
-            // 提取 body 内容, 去掉外层 html/head/body 标签
-            let html = res.data as string
-            const bodyMatch = html.match(/<body[^>]*>([\s\S]*)<\/body>/i)
-            if (bodyMatch) {
-              html = bodyMatch[1].trim()
-            }
-            // 注入页面级样式
-            this.htmlContent = `<div style="padding:16px 12px;font-size:15px;line-height:1.8;color:#333;">${html}</div>`
-          } else {
-            uni.showToast({ title: '加载失败', icon: 'none' })
-          }
-        },
-        fail: () => {
-          uni.showToast({ title: '网络异常', icon: 'none' })
-        },
-        complete: () => {
-          this.loading = false
-        }
-      })
+      try {
+        const data = await http.get<{ content: string }>(`/agreement/${type}`)
+        this.htmlContent = `<div style="padding:16px 12px;font-size:15px;line-height:1.8;color:#333;">${data.content}</div>`
+      } catch {
+        // 错误 Toast 已由 request 封装统一处理
+      } finally {
+        this.loading = false
+      }
     }
   }
 })
