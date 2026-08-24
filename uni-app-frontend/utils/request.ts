@@ -1,6 +1,21 @@
 import { BASE_URL,IS_LOCAL } from './config'
 
+function readFileAsBase64(filePath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    uni.getFileSystemManager().readFile({
+      filePath,
+      encoding: 'base64',
+      success: (res) => resolve(res.data as string),
+      fail: reject
+    })
+  })
+}
 
+/** 从文件路径中提取文件名 */
+function basename(filePath: string): string {
+  const parts = filePath.split('/')
+  return parts[parts.length - 1] || 'upload.jpg'
+}
 /** 后端统一响应结构 */
 export interface ApiResponse<T = unknown> {
   code: number
@@ -137,107 +152,160 @@ export const http = {
  * 工单图片上传（POST /orders/{order_id}/images，multipart/form-data）
  * 仅工单状态为 draft 时可上传，单张 ≤5MB，jpg/png/webp
  */
-export function uploadOrderImage(orderId: string, filePath: string): Promise<{
+// export function uploadOrderImage(orderId: string, filePath: string): Promise<{
+//   id: string
+//   url: string
+//   sort_order: number
+//   file_size: number
+// }> {
+//   const token = uni.getStorageSync('token')
+//   return new Promise((resolve, reject) => {
+//     uni.uploadFile({
+//       url: `${BASE_URL}/orders/${orderId}/images`,
+//       filePath,
+//       name: 'file',
+//       header: {
+//         Authorization: token ? `Bearer ${token}` : ''
+//       },
+//       success: (res) => {
+//         try {
+//           const body = JSON.parse(res.data) as ApiResponse
+//           if (body.code === 0) {
+//             resolve(body.data as never)
+//           } else {
+//             uni.showToast({ title: body.message || '上传失败', icon: 'none' })
+//             reject(body)
+//           }
+//         } catch (e) {
+//           reject(e)
+//         }
+//       },
+//       fail: (err) => {
+//         uni.showToast({ title: '上传失败，请重试', icon: 'none' })
+//         reject(err)
+//       }
+//     })
+//   })
+// }
+
+// /**
+//  * 头像上传（POST /upload/avatar，multipart/form-data）
+//  * 注册前公开接口，无需 token；单张 ≤2MB，jpg/png/webp
+//  */
+// export function uploadAvatar(filePath: string): Promise<{ url: string }> {
+//   return new Promise((resolve, reject) => {
+//     uni.uploadFile({
+//       url: `${BASE_URL}/upload/avatar`,
+//       filePath,
+//       name: 'file',
+//       success: (res) => {
+//         try {
+//           const body = JSON.parse(res.data) as ApiResponse
+//           if (body.code === 0) {
+//             resolve(body.data as never)
+//           } else {
+//             uni.showToast({ title: body.message || '上传失败', icon: 'none' })
+//             reject(body)
+//           }
+//         } catch (e) {
+//           reject(e)
+//         }
+//       },
+//       fail: (err) => {
+//         uni.showToast({ title: '上传失败，请重试', icon: 'none' })
+//         reject(err)
+//       }
+//     })
+//   })
+// }
+// /**
+//  * 收据图片上传（POST /admin/orders/{order_id}/receipts，multipart/form-data）
+//  * 仅管理员可上传，工单状态为 processing，单张 ≤5MB，jpg/png/webp，同工单 ≤3 张
+//  */
+// export function uploadReceipt(
+//   orderId: string,
+//   filePath: string
+// ): Promise<{ id: string; url: string; file_size: number }> {
+//   const token = uni.getStorageSync('token')
+//   return new Promise((resolve, reject) => {
+//     uni.uploadFile({
+//       url: `${BASE_URL}/admin/orders/${orderId}/receipts`,
+//       filePath,
+//       name: 'file',
+//       header: {
+//         Authorization: token ? `Bearer ${token}` : ''
+//       },
+//       success: (res) => {
+//         try {
+//           const body = JSON.parse(res.data) as ApiResponse
+//           if (body.code === 0) {
+//             resolve(body.data as never)
+//           } else {
+//             uni.showToast({ title: body.message || '上传失败', icon: 'none' })
+//             reject(body)
+//           }
+//         } catch (e) {
+//           reject(e)
+//         }
+//       },
+//       fail: (err) => {
+//         uni.showToast({ title: '上传失败，请重试', icon: 'none' })
+//         reject(err)
+//       }
+//     })
+//   })
+// }
+
+
+
+
+
+
+/**
+ * 工单图片上传（POST /orders/{order_id}/images，multipart/form-data）
+ * 仅工单状态为 draft 时可上传，单张 ≤5MB，jpg/png/webp
+ */
+export async function uploadOrderImage(orderId: string, filePath: string): Promise<{
   id: string
   url: string
   sort_order: number
   file_size: number
 }> {
-  const token = uni.getStorageSync('token')
-  return new Promise((resolve, reject) => {
-    uni.uploadFile({
-      url: `${BASE_URL}/orders/${orderId}/images`,
-      filePath,
-      name: 'file',
-      header: {
-        Authorization: token ? `Bearer ${token}` : ''
-      },
-      success: (res) => {
-        try {
-          const body = JSON.parse(res.data) as ApiResponse
-          if (body.code === 0) {
-            resolve(body.data as never)
-          } else {
-            uni.showToast({ title: body.message || '上传失败', icon: 'none' })
-            reject(body)
-          }
-        } catch (e) {
-          reject(e)
-        }
-      },
-      fail: (err) => {
-        uni.showToast({ title: '上传失败，请重试', icon: 'none' })
-        reject(err)
-      }
-    })
+  const base64 = await readFileAsBase64(filePath)
+  return http.post(`/orders/${orderId}/images`, {
+    file: base64,
+    filename: basename(filePath)
   })
 }
 
 /**
- * 头像上传（POST /upload/avatar，multipart/form-data）
+ * 头像上传（POST /upload/avatar）
+ * 通过 wx.cloud.callContainer 以 JSON base64 方式上传
  * 注册前公开接口，无需 token；单张 ≤2MB，jpg/png/webp
  */
-export function uploadAvatar(filePath: string): Promise<{ url: string }> {
-  return new Promise((resolve, reject) => {
-    uni.uploadFile({
-      url: `${BASE_URL}/upload/avatar`,
-      filePath,
-      name: 'file',
-      success: (res) => {
-        try {
-          const body = JSON.parse(res.data) as ApiResponse
-          if (body.code === 0) {
-            resolve(body.data as never)
-          } else {
-            uni.showToast({ title: body.message || '上传失败', icon: 'none' })
-            reject(body)
-          }
-        } catch (e) {
-          reject(e)
-        }
-      },
-      fail: (err) => {
-        uni.showToast({ title: '上传失败，请重试', icon: 'none' })
-        reject(err)
-      }
-    })
+export async function uploadAvatar(filePath: string): Promise<{ url: string }> {
+  const base64 = await readFileAsBase64(filePath)
+  return http.post('/upload/avatar', {
+    file: base64,
+    filename: basename(filePath)
   })
 }
 
 /**
- * 收据图片上传（POST /admin/orders/{order_id}/receipts，multipart/form-data）
+ * 收据图片上传（POST /admin/orders/{order_id}/receipts）
+ * 通过 wx.cloud.callContainer 以 JSON base64 方式上传
  * 仅管理员可上传，工单状态为 processing，单张 ≤5MB，jpg/png/webp，同工单 ≤3 张
  */
-export function uploadReceipt(
+export async function uploadReceipt(
   orderId: string,
   filePath: string
 ): Promise<{ id: string; url: string; file_size: number }> {
-  const token = uni.getStorageSync('token')
-  return new Promise((resolve, reject) => {
-    uni.uploadFile({
-      url: `${BASE_URL}/admin/orders/${orderId}/receipts`,
-      filePath,
-      name: 'file',
-      header: {
-        Authorization: token ? `Bearer ${token}` : ''
-      },
-      success: (res) => {
-        try {
-          const body = JSON.parse(res.data) as ApiResponse
-          if (body.code === 0) {
-            resolve(body.data as never)
-          } else {
-            uni.showToast({ title: body.message || '上传失败', icon: 'none' })
-            reject(body)
-          }
-        } catch (e) {
-          reject(e)
-        }
-      },
-      fail: (err) => {
-        uni.showToast({ title: '上传失败，请重试', icon: 'none' })
-        reject(err)
-      }
-    })
+  const base64 = await readFileAsBase64(filePath)
+  return http.post(`/admin/orders/${orderId}/receipts`, {
+    file: base64,
+    filename: basename(filePath)
   })
 }
+
+
+

@@ -199,29 +199,25 @@ func (h *AdminHandler) UpdateFinance(c *gin.Context) {
 }
 
 // UploadReceipt 上传收据图片 (POST /admin/orders/:order_id/receipts, 5.7)
+// 智能识别两种 Content-Type:
+//   - multipart/form-data: 字段名 file (二进制文件流)
+//   - application/json: { "file": "<base64>", "filename": "xxx.jpg" }
 func (h *AdminHandler) UploadReceipt(c *gin.Context) {
-	file, err := c.FormFile("file")
+	uf, err := ParseUploadFile(c)
 	if err != nil {
-		h.logger.Warn("UploadReceipt Admin: missing file", zap.Error(err), zap.String("order_id", c.Param("order_id")))
-		response.Fail(c, apperrors.ErrInvalidParam.WithMessage("缺少 file 文件"))
+		h.logger.Warn("UploadReceipt Admin: parse file failed", zap.Error(err), zap.String("order_id", c.Param("order_id")))
+		response.Fail(c, apperrors.ErrInvalidParam.WithMessage("缺少 file 文件或 base64 数据"))
 		return
 	}
-
-	f, err := file.Open()
-	if err != nil {
-		h.logger.Error("UploadReceipt Admin: failed to open file", zap.Error(err))
-		response.FailError(c, err)
-		return
-	}
-	defer f.Close()
+	defer uf.Close()
 
 	result, err := h.orders.UploadReceipt(
 		c.Request.Context(),
 		c.GetString("user_id"),
 		c.Param("order_id"),
-		file.Filename,
-		file.Size,
-		f,
+		uf.Filename,
+		uf.Size,
+		uf.Reader,
 		c.ClientIP(),
 	)
 	if err != nil {

@@ -18,7 +18,7 @@
           v-model="nickname"
           class="form-input"
           type="nickname"
-          placeholder="请输入微信昵称"
+          placeholder="请输入昵称"
           placeholder-class="form-placeholder"
         />
       </view>
@@ -31,7 +31,7 @@
             :class="{ active: phoneMode === 'wechat' }"
             @click="phoneMode = 'wechat'"
           >
-            微信授权
+            手机号快捷登录
           </view>
           <view
             class="phone-tab"
@@ -44,7 +44,7 @@
 
         <!-- Tab1: 微信授权 -->
         <button v-if="phoneMode === 'wechat'" class="phone-btn" open-type="getPhoneNumber" @getphonenumber="onGetPhone">
-          <text v-if="!phoneCode">微信授权获取手机号</text>
+          <text v-if="!phoneCode">快捷获取手机号</text>
           <text v-else class="phone-done-text">已授权获取手机号</text>
         </button>
 

@@ -16,7 +16,7 @@
         loading-color="#ffffff"
         @click="handleLogin"
       >
-        微信一键登录
+        一键登录
       </wd-button>
       <view class="login-agreement">
         <wd-checkbox v-model="agreed" size="18px" custom-style="margin-right: 8rpx;" />

@@ -1,8 +1,6 @@
 package handler
 
 import (
-	"strconv"
-
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
@@ -136,31 +134,26 @@ func (h *OrderHandler) Cancel(c *gin.Context) {
 }
 
 // UploadImage 图片上传 (POST /orders/:order_id/images)
+// 智能识别两种 Content-Type:
+//   - multipart/form-data: 字段名 file (二进制文件流), sort_order 表单字段
+//   - application/json: { "file": "<base64>", "filename": "xxx.jpg", "sort_order": 0 }
 func (h *OrderHandler) UploadImage(c *gin.Context) {
-	file, err := c.FormFile("file")
+	uf, err := ParseUploadFile(c)
 	if err != nil {
-		h.logger.Warn("UploadImage Order: missing file", zap.Error(err), zap.String("order_id", c.Param("order_id")))
-		response.Fail(c, apperrors.ErrInvalidParam.WithMessage("缺少 file 文件"))
+		h.logger.Warn("UploadImage Order: parse file failed", zap.Error(err), zap.String("order_id", c.Param("order_id")))
+		response.Fail(c, apperrors.ErrInvalidParam.WithMessage("缺少 file 文件或 base64 数据"))
 		return
 	}
-	sortOrder, _ := strconv.Atoi(c.PostForm("sort_order"))
-
-	f, err := file.Open()
-	if err != nil {
-		h.logger.Error("UploadImage Order: failed to open file", zap.Error(err))
-		response.FailError(c, err)
-		return
-	}
-	defer f.Close()
+	defer uf.Close()
 
 	result, err := h.svc.UploadImage(
 		c.Request.Context(),
 		c.GetString("user_id"),
 		c.Param("order_id"),
-		file.Filename,
-		file.Size,
-		f,
-		sortOrder,
+		uf.Filename,
+		uf.Size,
+		uf.Reader,
+		uf.SortOrder,
 	)
 	if err != nil {
 		h.logger.Error("UploadImage Order: service error", zap.Error(err), zap.String("order_id", c.Param("order_id")), zap.String("user_id", c.GetString("user_id")))
