@@ -20,42 +20,52 @@
 
     <!-- 工单列表 -->
     <view class="order-list">
-      <view v-for="item in orderList" :key="item.id" class="order-card">
-        <view class="card-header">
-          <view class="card-title">{{ item.project_name || '未命名工单' }}</view>
-          <wd-tag :type="statusTagType(item.status)" round>{{ item.status_label }}</wd-tag>
-        </view>
-
-        <view class="card-meta">
-          <wd-tag :type="urgencyTagType(item.urgency)" plain round>{{
-            item.urgency_label
-          }}</wd-tag>
-          <text class="card-time">{{ formatDateTime(item.created_at) }}</text>
-        </view>
-
-        <view v-if="item.order_no" class="card-no">单号：{{ item.order_no }}</view>
-
-        <view class="card-actions">
-          <wd-button v-if="item.status === 'draft'" size="small" plain round @click="editOrder(item.id)">
-            编辑
-          </wd-button>
-          <wd-button size="small" type="primary" plain round @click="viewOrder(item.id)">
-            详情
-          </wd-button>
-        </view>
-      </view>
-
-      <!-- 空状态 -->
-      <view v-if="!loading && orderList.length === 0" class="empty">
+      <!-- 未登录: 空状态 + 登录引导 -->
+      <view v-if="!isLoggedIn" class="empty">
         <view class="empty-icon">📋</view>
-        <view class="empty-text">暂无工单</view>
-        <view class="empty-tip">点击右上角「新建」发起报修</view>
+        <view class="empty-text">请登录后查看工单</view>
+        <view class="empty-tip">登录后可发起报修、查看进度</view>
+        <wd-button type="primary" round size="small" @click="goLogin">去登录</wd-button>
       </view>
 
-      <!-- 加载更多 -->
-      <view v-if="orderList.length > 0" class="load-more">
-        <text>{{ loading ? '加载中...' : finished ? '没有更多了' : '上拉加载更多' }}</text>
-      </view>
+      <template v-else>
+        <view v-for="item in orderList" :key="item.id" class="order-card">
+          <view class="card-header">
+            <view class="card-title">{{ item.project_name || '未命名工单' }}</view>
+            <wd-tag :type="statusTagType(item.status)" round>{{ item.status_label }}</wd-tag>
+          </view>
+
+          <view class="card-meta">
+            <wd-tag :type="urgencyTagType(item.urgency)" plain round>{{
+              item.urgency_label
+            }}</wd-tag>
+            <text class="card-time">{{ formatDateTime(item.created_at) }}</text>
+          </view>
+
+          <view v-if="item.order_no" class="card-no">单号：{{ item.order_no }}</view>
+
+          <view class="card-actions">
+            <wd-button v-if="item.status === 'draft'" size="small" plain round @click="editOrder(item.id)">
+              编辑
+            </wd-button>
+            <wd-button size="small" type="primary" plain round @click="viewOrder(item.id)">
+              详情
+            </wd-button>
+          </view>
+        </view>
+
+        <!-- 空状态 -->
+        <view v-if="!loading && orderList.length === 0" class="empty">
+          <view class="empty-icon">📋</view>
+          <view class="empty-text">暂无工单</view>
+          <view class="empty-tip">点击右上角「新建」发起报修</view>
+        </view>
+
+        <!-- 加载更多 -->
+        <view v-if="orderList.length > 0" class="load-more">
+          <text>{{ loading ? '加载中...' : finished ? '没有更多了' : '上拉加载更多' }}</text>
+        </view>
+      </template>
     </view>
   </view>
 </template>
@@ -95,16 +105,16 @@ export default defineComponent({
       pageSize: 10,
       totalPages: 1,
       loading: false,
-      finished: false
+      finished: false,
+      isLoggedIn: false
     }
   },
   onShow() {
-    // 未登录跳转登录页
-    if (!uni.getStorageSync('token')) {
-      uni.reLaunch({ url: '/pages/auth/login' })
-      return
+    // 按微信官方要求: 不强制登录, 未登录时展示空状态+登录引导
+    this.isLoggedIn = !!uni.getStorageSync('token')
+    if (this.isLoggedIn) {
+      this.loadOrders(true)
     }
-    this.loadOrders(true)
   },
   onPullDownRefresh() {
     this.loadOrders(true).finally(() => {
@@ -117,6 +127,25 @@ export default defineComponent({
     }
   },
   methods: {
+    /** 检查登录状态, 未登录时弹窗引导登录 */
+    checkLogin(): boolean {
+      if (uni.getStorageSync('token')) return true
+      uni.showModal({
+        title: '提示',
+        content: '该操作需要登录，是否前往登录？',
+        confirmText: '去登录',
+        success: (res) => {
+          if (res.confirm) {
+            uni.navigateTo({ url: '/pages/auth/login' })
+          }
+        }
+      })
+      return false
+    },
+    /** 直接跳转登录页 */
+    goLogin() {
+      uni.navigateTo({ url: '/pages/auth/login' })
+    },
     async loadOrders(reset = false) {
       if (this.loading) return
       this.loading = true
@@ -149,6 +178,7 @@ export default defineComponent({
     },
     /** 新建：创建空草稿后跳转编辑页 */
     createOrder() {
+      if (!this.checkLogin()) return
       uni.showLoading({ title: '创建中...' })
       http
         .post<{ order_id: string }>('/orders', {})
@@ -159,9 +189,11 @@ export default defineComponent({
         .catch(() => uni.hideLoading())
     },
     editOrder(orderId: string) {
+      if (!this.checkLogin()) return
       uni.navigateTo({ url: `/pages/order/edit?id=${orderId}` })
     },
     viewOrder(orderId: string) {
+      if (!this.checkLogin()) return
       uni.navigateTo({ url: `/pages/order/detail?id=${orderId}` })
     }
   }

@@ -1,5 +1,24 @@
 <template>
   <view class="page">
+    <!-- 未登录: 展示未登录卡片 + 登录按钮 -->
+    <view v-if="!isLoggedIn" class="not-logged-in">
+      <wd-avatar
+        class="user-avatar"
+        text="登"
+        shape="round"
+        size="large"
+        bg-color="#cccccc"
+        color="#ffffff"
+      ></wd-avatar>
+      <view class="not-logged-info">
+        <view class="not-logged-text">未登录</view>
+        <view class="not-logged-tip">登录后查看个人信息与企业</view>
+      </view>
+      <wd-button type="primary" round size="small" @click="goLogin">去登录</wd-button>
+    </view>
+
+    <!-- 已登录: 正常展示 -->
+    <template v-else>
     <!-- 用户信息卡片 -->
     <view class="user-card">
       <wd-avatar
@@ -60,6 +79,7 @@
     <view class="logout-wrap">
       <wd-button block plain round @click="onLogout">退出登录</wd-button>
     </view>
+    </template>
   </view>
 </template>
 
@@ -82,7 +102,8 @@ export default defineComponent({
   },
   data() {
     return {
-      isAdmin: false
+      isAdmin: false,
+      isLoggedIn: false
     }
   },
   computed: {
@@ -103,14 +124,17 @@ export default defineComponent({
     }
   },
   onShow() {
-    if (!uni.getStorageSync('token')) {
-      uni.reLaunch({ url: '/pages/auth/login' })
-      return
-    }
+    // 按微信官方要求: 不强制登录, 未登录时展示未登录卡片
+    this.isLoggedIn = !!uni.getStorageSync('token')
+    if (!this.isLoggedIn) return
     this.loadData()
     this.isAdmin = isPlatformAdmin()
   },
   methods: {
+    /** 跳转登录页 */
+    goLogin() {
+      uni.navigateTo({ url: '/pages/auth/login' })
+    },
     async loadData() {
       try {
         await this.userStore.fetchUserInfo()
@@ -157,6 +181,35 @@ export default defineComponent({
   min-height: 100vh;
   padding: 20rpx 24rpx;
   box-sizing: border-box;
+}
+
+.not-logged-in {
+  display: flex;
+  align-items: center;
+  background: linear-gradient(135deg, #4d80f0 0%, #6ea1ff 100%);
+  border-radius: 20rpx;
+  padding: 40rpx 32rpx;
+  color: #ffffff;
+
+  .user-avatar {
+    flex-shrink: 0;
+  }
+
+  .not-logged-info {
+    flex: 1;
+    margin-left: 28rpx;
+
+    .not-logged-text {
+      font-size: 36rpx;
+      font-weight: 600;
+    }
+
+    .not-logged-tip {
+      margin-top: 12rpx;
+      font-size: 26rpx;
+      opacity: 0.85;
+    }
+  }
 }
 
 .user-card {

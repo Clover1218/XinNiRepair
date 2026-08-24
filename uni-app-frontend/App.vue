@@ -2,11 +2,7 @@
 	export default {
 		onLaunch: function() {
 			console.log('App Launch')
-			// 启动时校验登录态，未登录跳转登录页
-			const token = uni.getStorageSync('token')
-			if (!token) {
-				uni.reLaunch({ url: '/pages/auth/login' })
-			}
+			// 按微信官方要求: 不强制登录, 展示服务内容, 等用户操作时再引导登录
 		},
 		onShow: function() {
 			console.log('App Show')

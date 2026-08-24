@@ -2,8 +2,8 @@
   <view class="login-page">
     <view class="login-header">
       <image class="login-logo" src="/static/logo.png" mode="aspectFit"></image>
-      <view class="login-title">新泥报修</view>
-      <view class="login-subtitle">电脑维修店报修系统</view>
+      <view class="login-title">新泥百电脑</view>
+      <view class="login-subtitle">报修系统</view>
     </view>
 
     <view class="login-body">
@@ -19,7 +19,11 @@
         微信一键登录
       </wd-button>
       <view class="login-agreement">
-        登录即代表同意<text class="agreement-link">《用户协议》</text>
+        <wd-checkbox v-model="agreed" size="18px" custom-style="margin-right: 8rpx;" />
+        <text>已阅读并同意</text>
+        <text class="agreement-link" @click="openAgreement('user')">《用户协议》</text>
+        <text>和</text>
+        <text class="agreement-link" @click="openAgreement('privacy')">《隐私政策》</text>
       </view>
     </view>
   </view>
@@ -37,7 +41,8 @@ export default defineComponent({
   },
   data() {
     return {
-      loading: false
+      loading: false,
+      agreed: false
     }
   },
   onLoad() {
@@ -48,9 +53,22 @@ export default defineComponent({
     }
   },
   methods: {
+    /** 打开协议文档页 */
+    openAgreement(type: string) {
+      const title = type === 'user' ? '用户协议' : '隐私政策'
+      uni.navigateTo({ url: `/pages/auth/agreement?type=${type}` })
+      // 动态设置导航栏标题
+      setTimeout(() => {
+        uni.setNavigationBarTitle({ title })
+      }, 100)
+    },
     /** 微信一键登录：wx.login 拿 code -> POST /auth/login 换取 JWT */
     async handleLogin() {
       if (this.loading) return
+      if (!this.agreed) {
+        uni.showToast({ title: '请先阅读并同意用户协议和隐私政策', icon: 'none' })
+        return
+      }
       this.loading = true
       try {
         const code = await new Promise<string>((resolve, reject) => {
@@ -127,7 +145,9 @@ export default defineComponent({
 
 .login-agreement {
   margin-top: 32rpx;
-  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   font-size: 24rpx;
   color: #999999;
 }

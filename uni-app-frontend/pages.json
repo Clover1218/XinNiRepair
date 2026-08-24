@@ -26,6 +26,12 @@
       }
     },
     {
+      "path": "pages/auth/agreement",
+      "style": {
+        "navigationBarTitleText": "协议"
+      }
+    },
+    {
       "path": "pages/order/edit",
       "style": {
         "navigationBarTitleText": "编辑报修"

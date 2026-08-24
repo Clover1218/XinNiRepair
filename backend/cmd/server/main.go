@@ -183,6 +183,10 @@ func registerRoutes(r *gin.Engine, db *repository.DB, authH *handler.AuthHandler
 	// ── API v1 ──
 	v1 := r.Group("/api/v1")
 	{
+		// 公开接口: 协议文档 (返回纯 HTML, 不需要 JWT)
+		v1.GET("/agreement/user", handler.UserAgreement)
+		v1.GET("/agreement/privacy", handler.PrivacyPolicy)
+
 		// 认证接口
 		v1.POST("/auth/login", authH.Login)
 		v1.POST("/auth/admin-login", authH.AdminLogin) // 管理后台密码登录 (2.4)
