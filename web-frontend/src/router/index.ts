@@ -41,6 +41,12 @@ const routes = [
         name: 'OrderDetail',
         component: () => import('@/views/orders/detail.vue'),
         meta: { title: '工单处理', permission: 'platform_admin' }
+      },
+      {
+        path: 'users',
+        name: 'UserList',
+        component: () => import('@/views/users/list.vue'),
+        meta: { title: '用户管理', permission: 'super_admin' }
       }
     ]
   },
@@ -78,6 +84,9 @@ router.beforeEach(to => {
     const required = to.meta.permission as string
     if (required === 'platform_admin' && !userStore.isPlatformAdmin) {
       return '/login'
+    }
+    if (required === 'super_admin' && !userStore.isSuperAdmin) {
+      return '/orders'
     }
   }
 

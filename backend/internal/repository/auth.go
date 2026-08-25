@@ -80,3 +80,42 @@ func (r *AuthRepository) FindMembershipsWithEnterprise(ctx context.Context, user
 	}
 	return memberships, nil
 }
+
+// ListUsers 分页查询用户列表, 支持按昵称/手机号模糊搜索和角色筛选
+func (r *AuthRepository) ListUsers(ctx context.Context, keyword string, role *int, offset, limit int) ([]model.User, int64, error) {
+	query := r.db.WithContext(ctx).Model(&model.User{})
+	if keyword != "" {
+		like := "%" + keyword + "%"
+		query = query.Where("nickname ILIKE ? OR phone ILIKE ?", like, like)
+	}
+	if role != nil {
+		query = query.Where("role = ?", *role)
+	}
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	var users []model.User
+	if err := query.Order("created_at DESC").Offset(offset).Limit(limit).Find(&users).Error; err != nil {
+		return nil, 0, err
+	}
+	return users, total, nil
+}
+
+// FindApprovedMembershipsByUserIDs 批量查询用户已加入企业的成员关系
+func (r *AuthRepository) FindApprovedMembershipsByUserIDs(ctx context.Context, userIDs []string) (map[string]model.Membership, error) {
+	var memberships []model.Membership
+	err := r.db.WithContext(ctx).
+		Where("user_id IN ?", userIDs).
+		Where("status = ?", "approved").
+		Preload("Enterprise").
+		Find(&memberships).Error
+	if err != nil {
+		return nil, err
+	}
+	m := make(map[string]model.Membership, len(memberships))
+	for _, mem := range memberships {
+		m[mem.UserID] = mem
+	}
+	return m, nil
+}

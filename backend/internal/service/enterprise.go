@@ -150,7 +150,7 @@ func (s *EnterpriseService) Get(ctx context.Context, userID string, role int, en
 		return nil, apperrors.ErrEnterpriseNotFound
 	}
 
-	isPlatformAdmin := role == model.PlatformRolePlatformAdmin
+	isPlatformAdmin := role >= model.PlatformRolePlatformAdmin
 	m, err := s.mems.FindByEnterpriseAndUser(ctx, enterpriseID, userID)
 	if err != nil {
 		return nil, s.dbErr("find membership failed", err)

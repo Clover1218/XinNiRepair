@@ -128,7 +128,8 @@ func main() {
 
 	adminOrderSvc := service.NewAdminOrderService(orderRepo, imgRepo, tlRepo, imgBed, logger)
 	exportSvc := service.NewOrderExportService(orderRepo, tlRepo, cfg.Shop.Name, logger)
-	adminH := handler.NewAdminHandler(adminOrderSvc, entSvc, exportSvc, logger)
+	userAdminSvc := service.NewUserAdminService(authRepo, logger)
+	adminH := handler.NewAdminHandler(adminOrderSvc, entSvc, exportSvc, userAdminSvc, logger)
 
 	registerRoutes(engine, db, authH, entH, orderH, adminH, tokenSvc)
 
@@ -248,6 +249,16 @@ func registerRoutes(r *gin.Engine, db *repository.DB, authH *handler.AuthHandler
 			admin.GET("/enterprises", adminH.ListEnterprises)
 			admin.GET("/enterprises/:enterprise_id", adminH.EnterpriseDetail)
 			admin.GET("/enterprises/:enterprise_id/members", adminH.ListMembers)
+
+			// 用户管理 (第六章, 仅超级管理员)
+			users := admin.Group("/users")
+			users.Use(middleware.RequireSuperAdmin())
+			{
+				users.GET("", adminH.ListUsers)                              // 用户列表 (6.1)
+				users.GET("/:user_id", adminH.UserDetail)                    // 用户详情 (6.2)
+				users.PUT("/:user_id", adminH.UpdateUser)                    // 更新用户属性 (6.3)
+				users.POST("/:user_id/reset-password", adminH.ResetPassword) // 重置密码 (6.4)
+			}
 		}
 	}
 

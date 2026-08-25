@@ -50,14 +50,18 @@ export const useUserStore = defineStore('user', {
     }
   },
   getters: {
-    /** JWT payload 中的 role：1=平台管理员，0=普通用户 */
+    /** JWT payload 中的 role：0=普通用户，1=平台管理员，2=超级管理员 */
     jwtRole(): string | number | null {
       if (!this.token) return null
       return decodeJwt(this.token)?.role ?? null
     },
-    /** 是否为平台管理员（唯一可访问后台的角色） */
+    /** 是否为平台管理员（含超级管理员，可访问后台） */
     isPlatformAdmin(): boolean {
-      return this.jwtRole === 1
+      return Number(this.jwtRole) >= 1
+    },
+    /** 是否为超级管理员（可管理用户） */
+    isSuperAdmin(): boolean {
+      return Number(this.jwtRole) >= 2
     }
   }
 })

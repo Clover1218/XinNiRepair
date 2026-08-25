@@ -33,12 +33,25 @@ func JWTAuth(tokenSvc *service.TokenService) gin.HandlerFunc {
 	}
 }
 
-// RequirePlatformAdmin 校验平台管理员 (JWT 中 role=1)
+// RequirePlatformAdmin 校验平台管理员 (JWT 中 role>=1, 含超级管理员)
 func RequirePlatformAdmin() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		role, ok := c.Get("role")
-		if !ok || role.(int) != 1 {
+		if !ok || role.(int) < 1 {
 			response.Fail(c, apperrors.ErrNotAdmin)
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
+// RequireSuperAdmin 校验超级管理员 (JWT 中 role>=2)
+func RequireSuperAdmin() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		role, ok := c.Get("role")
+		if !ok || role.(int) < 2 {
+			response.Fail(c, apperrors.ErrForbidden.WithMessage("仅超级管理员可执行此操作"))
 			c.Abort()
 			return
 		}

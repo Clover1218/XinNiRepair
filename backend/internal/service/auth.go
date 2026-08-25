@@ -96,7 +96,7 @@ func (s *AuthService) AdminLogin(ctx context.Context, nickname, password string)
 	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(password)); err != nil {
 		return nil, apperrors.ErrInvalidCredentials
 	}
-	if user.Role != model.PlatformRolePlatformAdmin {
+	if user.Role < model.PlatformRolePlatformAdmin {
 		return nil, apperrors.ErrNotAdmin
 	}
 

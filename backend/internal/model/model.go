@@ -16,6 +16,7 @@ import (
 const (
 	PlatformRoleUser          = 0 // 普通用户
 	PlatformRolePlatformAdmin = 1 // 平台管理员（店主）
+	PlatformRoleSuperAdmin    = 2 // 超级管理员
 )
 
 // EnterpriseStatus 企业状态

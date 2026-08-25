@@ -14,10 +14,14 @@ const displayName = computed(() => userStore.userInfo?.nickname || '管理员')
 
 const menus = computed<Array<{ path: string; title: string; icon: string }>>(() => {
   if (!userStore.isPlatformAdmin) return []
-  return [
+  const items = [
     { path: '/orders', title: '工单管理', icon: 'Tickets' },
     { path: '/enterprises', title: '企业管理', icon: 'OfficeBuilding' }
   ]
+  if (userStore.isSuperAdmin) {
+    items.push({ path: '/users', title: '用户管理', icon: 'User' })
+  }
+  return items
 })
 
 const handleLogout = async () => {

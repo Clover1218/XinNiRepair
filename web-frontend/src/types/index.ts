@@ -199,3 +199,42 @@ export interface MemberItem {
   order_count: number
   joined_at: string
 }
+
+/** 用户列表项（6.1） */
+export interface UserListItem {
+  id: string
+  openid: string
+  nickname: string
+  avatar_url: string
+  phone: string
+  role: number
+  created_at: string
+  updated_at: string
+  enterprise_name: string | null
+  member_role: number | null
+  member_status: string | null
+}
+
+/** 用户详情（6.2） */
+export interface UserMembership {
+  id: string
+  enterprise_id: string
+  enterprise_name: string
+  role: number
+  status: string
+  joined_at: string | null
+  created_at: string
+}
+
+export interface UserDetail {
+  id: string
+  openid: string
+  unionid: string
+  nickname: string
+  avatar_url: string
+  phone: string
+  role: number
+  created_at: string
+  updated_at: string
+  memberships: UserMembership[]
+}

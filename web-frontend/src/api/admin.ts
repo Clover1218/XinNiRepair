@@ -7,7 +7,9 @@ import type {
   OrderDetail,
   OrderListItem,
   OrderMetadata,
-  PageResult
+  PageResult,
+  UserDetail,
+  UserListItem
 } from '@/types'
 
 export interface OrderListParams {
@@ -156,5 +158,31 @@ export const adminAPI = {
 
   // 3.8 移除成员
   removeMember: (enterpriseId: string, userId: string) =>
-    client.delete(`/enterprises/${enterpriseId}/members/${userId}`)
+    client.delete(`/enterprises/${enterpriseId}/members/${userId}`),
+
+  // ── 第六章：用户管理（仅超级管理员） ──
+
+  // 6.1 用户列表
+  getUsers: (params: {
+    page?: number
+    page_size?: number
+    keyword?: string
+    role?: number
+  }) => client.get<PageResult<UserListItem>>('/admin/users', { params }),
+
+  // 6.2 用户详情
+  getUserDetail: (userId: string) =>
+    client.get<UserDetail>(`/admin/users/${userId}`),
+
+  // 6.3 更新用户属性
+  updateUser: (
+    userId: string,
+    data: { nickname?: string; role?: number; phone?: string }
+  ) => client.put(`/admin/users/${userId}`, data),
+
+  // 6.4 重置用户密码
+  resetPassword: (userId: string, newPassword: string) =>
+    client.post(`/admin/users/${userId}/reset-password`, {
+      new_password: newPassword
+    })
 }

@@ -14,7 +14,7 @@ import (
 // TokenClaims JWT 自定义声明
 type TokenClaims struct {
 	UserID string `json:"uid"`
-	Role   int    `json:"role"` // 平台角色: 0-普通用户 1-平台管理员
+	Role   int    `json:"role"` // 平台角色: 0-普通用户 1-平台管理员 2-超级管理员
 	jwt.RegisteredClaims
 }
 

@@ -753,9 +753,12 @@ func strPtr(s string) *string {
 	return &s
 }
 
-// operatorRoleName 操作人角色名 (1=管理员, 其余为报修人)
+// operatorRoleName 操作人角色名 (>=2=超级管理员, >=1=管理员, 其余为报修人)
 func operatorRoleName(role int) string {
-	if role == 1 {
+	if role >= model.PlatformRoleSuperAdmin {
+		return "超级管理员"
+	}
+	if role >= model.PlatformRolePlatformAdmin {
 		return "管理员"
 	}
 	return "报修人"

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"mime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,17 +16,18 @@ import (
 	"xin-ni-repair/pkg/response"
 )
 
-// AdminHandler 管理后台接口处理器 (第五章, 仅平台管理员)
+// AdminHandler 管理后台接口处理器 (第五章+第六章)
 type AdminHandler struct {
-	orders *service.AdminOrderService
-	entSvc *service.EnterpriseService
-	export *service.OrderExportService
-	logger *zap.Logger
+	orders    *service.AdminOrderService
+	entSvc    *service.EnterpriseService
+	export    *service.OrderExportService
+	userAdmin *service.UserAdminService
+	logger    *zap.Logger
 }
 
 // NewAdminHandler 创建 AdminHandler
-func NewAdminHandler(orders *service.AdminOrderService, entSvc *service.EnterpriseService, export *service.OrderExportService, logger *zap.Logger) *AdminHandler {
-	return &AdminHandler{orders: orders, entSvc: entSvc, export: export, logger: logger}
+func NewAdminHandler(orders *service.AdminOrderService, entSvc *service.EnterpriseService, export *service.OrderExportService, userAdmin *service.UserAdminService, logger *zap.Logger) *AdminHandler {
+	return &AdminHandler{orders: orders, entSvc: entSvc, export: export, userAdmin: userAdmin, logger: logger}
 }
 
 // ListOrders 工单列表 (GET /admin/orders, 5.1)
@@ -414,4 +416,93 @@ func parseDateParam(v string) (time.Time, error) {
 		return time.Time{}, apperrors.ErrInvalidParam.WithMessage("日期格式错误, 需为 YYYY-MM-DD")
 	}
 	return t, nil
+}
+
+// ── 第六章: 用户管理 (仅超级管理员) ──
+
+// ListUsers 用户列表 (GET /admin/users, 6.1)
+func (h *AdminHandler) ListUsers(c *gin.Context) {
+	page, pageSize, err := parsePageParams(c)
+	if err != nil {
+		response.FailError(c, err)
+		return
+	}
+	keyword := c.Query("keyword")
+
+	var role *int
+	if roleStr := c.Query("role"); roleStr != "" {
+		r, err := strconv.Atoi(roleStr)
+		if err != nil || r < 0 || r > 2 {
+			response.Fail(c, apperrors.ErrInvalidParam.WithMessage("role 取值: 0/1/2"))
+			return
+		}
+		role = &r
+	}
+
+	result, err := h.userAdmin.ListUsers(c.Request.Context(), keyword, role, page, pageSize)
+	if err != nil {
+		h.logger.Error("ListUsers: service error", zap.Error(err))
+		response.FailError(c, err)
+		return
+	}
+	response.OK(c, result)
+}
+
+// UserDetail 用户详情 (GET /admin/users/:user_id, 6.2)
+func (h *AdminHandler) UserDetail(c *gin.Context) {
+	result, err := h.userAdmin.GetUser(c.Request.Context(), c.Param("user_id"))
+	if err != nil {
+		h.logger.Error("UserDetail: service error", zap.Error(err), zap.String("user_id", c.Param("user_id")))
+		response.FailError(c, err)
+		return
+	}
+	response.OK(c, result)
+}
+
+// UpdateUser 更新用户属性 (PUT /admin/users/:user_id, 6.3)
+func (h *AdminHandler) UpdateUser(c *gin.Context) {
+	var body struct {
+		Nickname *string `json:"nickname"`
+		Role     *int    `json:"role"`
+		Phone    *string `json:"phone"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		response.Fail(c, apperrors.ErrInvalidParam.WithMessage("请求体格式错误"))
+		return
+	}
+
+	input := service.UpdateUserInput{
+		Nickname: body.Nickname,
+		Role:     body.Role,
+		Phone:    body.Phone,
+	}
+	result, err := h.userAdmin.UpdateUser(c.Request.Context(), c.Param("user_id"), c.GetString("user_id"), input)
+	if err != nil {
+		h.logger.Error("UpdateUser: service error", zap.Error(err), zap.String("user_id", c.Param("user_id")), zap.String("operator_id", c.GetString("user_id")))
+		response.FailError(c, err)
+		return
+	}
+	response.OK(c, result)
+}
+
+// ResetPassword 重置用户密码 (POST /admin/users/:user_id/reset-password, 6.4)
+func (h *AdminHandler) ResetPassword(c *gin.Context) {
+	var body struct {
+		NewPassword string `json:"new_password"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		response.Fail(c, apperrors.ErrInvalidParam.WithMessage("请求体格式错误"))
+		return
+	}
+
+	err := h.userAdmin.ResetPassword(c.Request.Context(), c.Param("user_id"), body.NewPassword)
+	if err != nil {
+		h.logger.Error("ResetPassword: service error", zap.Error(err), zap.String("user_id", c.Param("user_id")), zap.String("operator_id", c.GetString("user_id")))
+		response.FailError(c, err)
+		return
+	}
+	response.OK(c, gin.H{
+		"id":         c.Param("user_id"),
+		"updated_at": time.Now().Format(time.RFC3339),
+	})
 }

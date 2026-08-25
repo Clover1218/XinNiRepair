@@ -193,11 +193,11 @@ func (r *OrderRepository) ListForExportByRepairer(ctx context.Context, repairerI
 	return orders, nil
 }
 
-// ListRepairers 查询全部维修员(平台管理员, users.role=1), 按昵称排序 (5.15)
+// ListRepairers 查询全部维修员(平台管理员及超级管理员, role>=1), 按昵称排序 (5.15)
 func (r *OrderRepository) ListRepairers(ctx context.Context) ([]model.User, error) {
 	var users []model.User
 	err := r.db.WithContext(ctx).
-		Where("role = ?", model.PlatformRolePlatformAdmin).
+		Where("role >= ?", model.PlatformRolePlatformAdmin).
 		Order("nickname ASC").
 		Find(&users).Error
 	if err != nil {
