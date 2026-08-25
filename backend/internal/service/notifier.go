@@ -47,7 +47,7 @@ func NewOrderNotifier(wechat *WechatService, users *repository.AuthRepository, l
 // NotifyOrderProcessing 工单处理中通知 (processing)
 //
 // 使用模板: 工单处理提醒 (tplOrderProcessing)
-// 字段: thing1=项目名称 character_string2=工单编号 phrase17=工单状态 time3=开始时间
+// 字段: thing1=项目名称 character_string2=工单编号 phrase17=工单状态 time13=开始时间
 func (n *OrderNotifier) NotifyOrderProcessing(ctx context.Context, order *model.RepairOrder) {
 	if order == nil {
 		return
@@ -60,7 +60,7 @@ func (n *OrderNotifier) NotifyOrderProcessing(ctx context.Context, order *model.
 		"thing1":            {Value: truncateUTF8(order.ProjectName, 20)},
 		"character_string2": {Value: orderNo(order)},
 		"phrase17":          {Value: "处理中"},
-		"time3":             {Value: time.Now().Format("2006-01-02 15:04:05")},
+		"time13":            {Value: time.Now().Format("2006-01-02 15:04:05")},
 	}
 	n.send(ctx, openid, tplOrderProcessing, data, order.ID)
 }
