@@ -115,6 +115,9 @@ func main() {
 	}
 	authH := handler.NewAuthHandler(authSvc, imgBed, logger)
 
+	// 订阅消息推送 (依赖微信 access_token 与用户 openid)
+	notifier := service.NewOrderNotifier(wechatSvc, authRepo, logger)
+
 	entRepo := repository.NewEnterpriseRepository(db.DB)
 	memRepo := repository.NewMembershipRepository(db.DB)
 	entSvc := service.NewEnterpriseService(entRepo, memRepo, logger)
@@ -123,10 +126,10 @@ func main() {
 	orderRepo := repository.NewOrderRepository(db.DB)
 	imgRepo := repository.NewOrderImageRepository(db.DB)
 	tlRepo := repository.NewOrderTimelineRepository(db.DB)
-	orderSvc := service.NewOrderService(orderRepo, imgRepo, tlRepo, memRepo, imgBed, logger)
+	orderSvc := service.NewOrderService(orderRepo, imgRepo, tlRepo, memRepo, imgBed, notifier, logger)
 	orderH := handler.NewOrderHandler(orderSvc, logger)
 
-	adminOrderSvc := service.NewAdminOrderService(orderRepo, imgRepo, tlRepo, imgBed, logger)
+	adminOrderSvc := service.NewAdminOrderService(orderRepo, imgRepo, tlRepo, imgBed, notifier, logger)
 	exportSvc := service.NewOrderExportService(orderRepo, tlRepo, cfg.Shop.Name, logger)
 	userAdminSvc := service.NewUserAdminService(authRepo, logger)
 	adminH := handler.NewAdminHandler(adminOrderSvc, entSvc, exportSvc, userAdminSvc, logger)

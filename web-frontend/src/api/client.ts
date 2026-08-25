@@ -29,14 +29,28 @@ client.interceptors.response.use(
     }
     return data
   },
-  error => {
+  async error => {
     if (error.response?.status === 401) {
       // Token 过期或未登录
       localStorage.removeItem('token')
       localStorage.removeItem('userInfo')
       window.location.href = '/login'
     } else {
-      ElMessage.error(error.response?.data?.message || error.message || '网络错误')
+      // blob 响应的错误体是 Blob，需读取为 JSON 才能拿到后端 message
+      const data = error.response?.data
+      let message = error.message || '网络错误'
+      if (data instanceof Blob && data.size > 0) {
+        try {
+          const text = await data.text()
+          const parsed = JSON.parse(text)
+          if (parsed?.message) message = parsed.message
+        } catch {
+          /* 解析失败则保留默认 message */
+        }
+      } else if (data?.message) {
+        message = data.message
+      }
+      ElMessage.error(message)
     }
     return Promise.reject(error)
   }

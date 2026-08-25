@@ -22,7 +22,10 @@ const code2SessionURL = "https://api.weixin.qq.com/sns/jscode2session"
 const accessTokenURL = "https://api.weixin.qq.com/cgi-bin/token"
 
 // getPhoneNumberURL 手机号解密接口地址
-const getPhoneNumberURL = "https://api.weixin.qq.com/wxa/business/getuserphonenumber"
+const getPhoneNumberURL = "https://api.weixin.qq.com/cgi-bin/wxa/business/getuserphonenumber"
+
+// subscribeMessageURL 发送订阅消息接口地址
+const subscribeMessageURL = "https://api.weixin.qq.com/cgi-bin/message/subscribe/send"
 
 // WechatSession code2session 返回的会话信息
 type WechatSession struct {
@@ -33,9 +36,10 @@ type WechatSession struct {
 
 // WechatService 封装微信接口调用
 type WechatService struct {
-	appID      string
-	appSecret  string
-	httpClient *http.Client
+	appID            string
+	appSecret        string
+	miniprogramState string
+	httpClient       *http.Client
 
 	mu            sync.Mutex // 保护 access_token 缓存
 	accessToken   string
@@ -44,10 +48,15 @@ type WechatService struct {
 
 // NewWechatService 创建 WechatService
 func NewWechatService(cfg config.WechatConfig) *WechatService {
+	state := cfg.MiniprogramState
+	if state != "developer" && state != "trial" && state != "formal" {
+		state = "formal" // 默认正式版
+	}
 	return &WechatService{
-		appID:      cfg.AppID,
-		appSecret:  cfg.AppSecret,
-		httpClient: &http.Client{Timeout: 5 * time.Second},
+		appID:            cfg.AppID,
+		appSecret:        cfg.AppSecret,
+		miniprogramState: state,
+		httpClient:       &http.Client{Timeout: 5 * time.Second},
 	}
 }
 
@@ -185,4 +194,62 @@ func (s *WechatService) Code2Session(ctx context.Context, code string) (*WechatS
 		Unionid:    result.Unionid,
 		SessionKey: result.SessionKey,
 	}, nil
+}
+
+// SubscribeMessageData 订阅消息单条数据: {"value": "..."}
+type SubscribeMessageData struct {
+	Value string `json:"value"`
+}
+
+// SendSubscribeMessage 发送小程序订阅消息
+//
+// data 为模板字段的键值映射, 如 {"thing1": {"value": "项目A"}, ...}
+// page 为点击消息跳转的小程序页面路径(可空), 如 "pages/order/detail?id=xxx"
+// 调用失败返回错误, 由调用方决定是否记录日志(通知失败不应阻塞业务)
+func (s *WechatService) SendSubscribeMessage(ctx context.Context, openid, templateID string, data map[string]SubscribeMessageData, page string) error {
+	token, err := s.GetAccessToken(ctx)
+	if err != nil {
+		return err
+	}
+
+	payload := map[string]interface{}{
+		"touser":            openid,
+		"template_id":       templateID,
+		"data":              data,
+		"miniprogram_state": s.miniprogramState,
+		"lang":              "zh_CN",
+	}
+	if page != "" {
+		payload["page"] = page
+	}
+	body, _ := json.Marshal(payload)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, subscribeMessageURL+"?access_token="+url.QueryEscape(token), bytes.NewReader(body))
+	if err != nil {
+		return apperrors.ErrWechatAPI.WithError(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return apperrors.ErrWechatAPI.WithError(err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if err != nil {
+		return apperrors.ErrWechatAPI.WithError(err)
+	}
+
+	var result struct {
+		Errcode int    `json:"errcode"`
+		Errmsg  string `json:"errmsg"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return apperrors.ErrWechatAPI.WithError(err)
+	}
+	if result.Errcode != 0 {
+		return apperrors.ErrWechatAPI.WithMessage(fmt.Sprintf("订阅消息发送失败(%d): %s", result.Errcode, result.Errmsg))
+	}
+	return nil
 }

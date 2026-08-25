@@ -46,6 +46,7 @@ wechat:
   app_secret: ""          # 通过环境变量 WECHAT_APP_SECRET 注入
   token: ""
   encoding_aes_key: ""
+  miniprogram_state: "developer"  # 订阅消息跳转小程序版本: developer(开发)/trial(体验)/formal(正式)
 
 oss:
   endpoint: ""            # 图片存储 (本地文件系统或 OSS)

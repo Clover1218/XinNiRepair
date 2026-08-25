@@ -94,10 +94,11 @@ type JWTConfig struct {
 
 // WechatConfig 微信公众号配置
 type WechatConfig struct {
-	AppID          string `yaml:"app_id"`
-	AppSecret      string `yaml:"app_secret"`
-	Token          string `yaml:"token"`
-	EncodingAESKey string `yaml:"encoding_aes_key"`
+	AppID           string `yaml:"app_id"`
+	AppSecret       string `yaml:"app_secret"`
+	Token           string `yaml:"token"`
+	EncodingAESKey  string `yaml:"encoding_aes_key"`
+	MiniprogramState string `yaml:"miniprogram_state"` // 订阅消息跳转小程序版本: developer/trial/formal
 }
 
 // OSSConfig 对象存储配置

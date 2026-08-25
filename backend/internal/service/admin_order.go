@@ -133,6 +133,7 @@ type AdminOrderService struct {
 	images    *repository.OrderImageRepository
 	timelines *repository.OrderTimelineRepository
 	imagebed  *imagebed.Client
+	notifier  *OrderNotifier
 	logger    *zap.Logger
 }
 
@@ -142,6 +143,7 @@ func NewAdminOrderService(
 	images *repository.OrderImageRepository,
 	timelines *repository.OrderTimelineRepository,
 	imagebed *imagebed.Client,
+	notifier *OrderNotifier,
 	logger *zap.Logger,
 ) *AdminOrderService {
 	return &AdminOrderService{
@@ -149,6 +151,7 @@ func NewAdminOrderService(
 		images:    images,
 		timelines: timelines,
 		imagebed:  imagebed,
+		notifier:  notifier,
 		logger:    logger,
 	}
 }
@@ -317,6 +320,9 @@ func (s *AdminOrderService) Review(ctx context.Context, adminID, orderID, remark
 	if err := s.orders.Update(ctx, order); err != nil {
 		return s.dbErr("update order failed", err)
 	}
+	if s.notifier != nil {
+		s.notifier.NotifyOrderStatusChange(ctx, order, "已阅")
+	}
 	return s.appendAdminTimeline(ctx, order, adminID, string(model.ActionReview), from, string(model.OrderReviewed), remark, ip)
 }
 
@@ -339,6 +345,9 @@ func (s *AdminOrderService) Accept(ctx context.Context, adminID, orderID, remark
 	order.AcceptedAt = &now
 	if err := s.orders.Update(ctx, order); err != nil {
 		return s.dbErr("update order failed", err)
+	}
+	if s.notifier != nil {
+		s.notifier.NotifyOrderStatusChange(ctx, order, "处理中")
 	}
 	return s.appendAdminTimeline(ctx, order, adminID, string(model.ActionAccept), from, string(model.OrderProcessing), remark, ip)
 }
@@ -369,6 +378,9 @@ func (s *AdminOrderService) Reject(ctx context.Context, adminID, orderID, reason
 	order.AcceptedAt = nil
 	if err := s.orders.Update(ctx, order); err != nil {
 		return s.dbErr("update order failed", err)
+	}
+	if s.notifier != nil {
+		s.notifier.NotifyOrderReject(ctx, order, reason)
 	}
 	return s.appendAdminTimeline(ctx, order, adminID, string(model.ActionReject), from, string(model.OrderDraft), reason, ip)
 }
@@ -440,9 +452,13 @@ func (s *AdminOrderService) Complete(ctx context.Context, adminID, orderID, ip s
 		return err
 	}
 
-	// TODO: 触发公众号模板消息通知报修人"维修已完成" (通知能力待接入)
 	s.logger.Info("order completed",
 		zap.String("order_id", order.ID), zap.String("operator_id", adminID))
+
+	// 订阅消息: 工单完结通知 (通知报修人)
+	if s.notifier != nil {
+		s.notifier.NotifyOrderComplete(ctx, order, adminID)
+	}
 
 	return s.appendAdminTimeline(ctx, order, adminID, string(model.ActionComplete), from, string(model.OrderCompleted), remark, ip)
 }

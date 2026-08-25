@@ -241,6 +241,7 @@ type OrderService struct {
 	timelines *repository.OrderTimelineRepository
 	mems      *repository.MembershipRepository
 	imagebed  *imagebed.Client
+	notifier  *OrderNotifier
 	logger    *zap.Logger
 }
 
@@ -251,6 +252,7 @@ func NewOrderService(
 	timelines *repository.OrderTimelineRepository,
 	mems *repository.MembershipRepository,
 	imagebed *imagebed.Client,
+	notifier *OrderNotifier,
 	logger *zap.Logger,
 ) *OrderService {
 	return &OrderService{
@@ -259,6 +261,7 @@ func NewOrderService(
 		timelines: timelines,
 		mems:      mems,
 		imagebed:  imagebed,
+		notifier:  notifier,
 		logger:    logger,
 	}
 }
@@ -467,6 +470,11 @@ func (s *OrderService) Submit(ctx context.Context, userID, orderID string) (*Sub
 		return nil, err
 	}
 	s.logger.Info("order submitted", zap.String("order_id", order.ID), zap.String("order_no", orderNo))
+
+	// 订阅消息: 工单状态变更 → 已上报 (通知报修人)
+	if s.notifier != nil {
+		s.notifier.NotifyOrderStatusChange(ctx, order, "已上报")
+	}
 
 	return &SubmitResult{
 		ID:          order.ID,

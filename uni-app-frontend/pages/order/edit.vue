@@ -431,7 +431,29 @@ export default defineComponent({
       if (this.imageList.length > 9) return '图片最多9张'
       return ''
     },
-    /** 提交：先全量保存草稿，再调用 submit 接口 */
+    /** 一次性请求三条订阅消息授权（工单状态变更/退回/完结）
+     *  必须在用户点击动作的同步调用栈内触发 wx.requestSubscribeMessage，
+     *  因此放在 submitOrder 最前面调用；授权拒绝不阻塞提交。
+     */
+    requestSubscribeAuth(): Promise<void> {
+      return new Promise((resolve) => {
+        // wx 在小程序环境可用，shims-vue.d.ts 已声明为 any；H5/非微信环境跳过
+        if (typeof wx === 'undefined' || typeof wx.requestSubscribeMessage !== 'function') {
+          resolve()
+          return
+        }
+        wx.requestSubscribeMessage({
+          tmplIds: [
+            'GzsQVCeBG4ObOgoYuYkeZ5n2jWrcpeGmtzbl2sk4oH8', // 工单状态变更(reported/reviewed/processing)
+            '3Gw9MOYxZN9sC8ka02RyrZK1y6guc3wE1H2wcWjNy0w', // 工单退回
+            'zj71qQ57GcxS6zzkqc2a4PI9ufJftolzmB-f0ed4f5I'  // 工单完结
+          ],
+          success: () => resolve(),
+          fail: () => resolve()
+        })
+      })
+    },
+    /** 提交：先请求订阅消息授权，再全量保存草稿，最后调用 submit 接口 */
     async submitOrder() {
       const err = this.validateForm()
       if (err) {
@@ -441,6 +463,8 @@ export default defineComponent({
       if (this.submitting) return
       this.submitting = true
       try {
+        // 先完成订阅消息授权，确保后端提交后能即时推送"已上报"通知
+        await this.requestSubscribeAuth()
         await http.put(`/orders/${this.orderId}`, this.buildPayload(true))
         await http.post(`/orders/${this.orderId}/submit`, {})
         uni.showToast({ title: '提交成功', icon: 'success' })

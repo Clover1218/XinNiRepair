@@ -15,7 +15,9 @@ function decodeJwt(token: string): JwtPayload | null {
   try {
     const parts = token.split('.')
     if (parts.length < 2) return null
-    const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/')
+    // base64url → base64，补齐缺失的 padding，否则 atob 在部分长度下抛 InvalidCharacterError
+    let base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/')
+    while (base64.length % 4) base64 += '='
     const json = decodeURIComponent(
       atob(base64)
         .split('')
