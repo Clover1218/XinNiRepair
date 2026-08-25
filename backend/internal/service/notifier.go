@@ -21,10 +21,15 @@ import (
 )
 
 // 订阅消息模板 ID (见 docs/小程序订阅消息模板信息.md)
+//
+// 每个状态一个独立模板, 与 uni-app 端一次性授权的三个模板一一对应:
+//   - 处理中 (processing): 工单处理提醒
+//   - 退回 (reject): 工单状态提醒
+//   - 完结 (completed): 报修工单完结通知
 const (
-	tplOrderStatusChange = "GzsQVCeBG4ObOgoYuYkeZ5n2jWrcpeGmtzbl2sk4oH8" // 工单处理提醒(状态变更)
-	tplOrderReject       = "3Gw9MOYxZN9sC8ka02RyrZK1y6guc3wE1H2wcWjNy0w" // 工单状态提醒(退回)
-	tplOrderComplete     = "zj71qQ57GcxS6zzkqc2a4PI9ufJftolzmB-f0ed4f5I" // 报修工单完结通知
+	tplOrderProcessing = "GzsQVCeBG4ObOgoYuYkeZ4VZh711fmH9D3T9taI4TJE" // 工单处理提醒(处理中)
+	tplOrderReject     = "3Gw9MOYxZN9sC8ka02RyrZK1y6guc3wE1H2wcWjNy0w" // 工单状态提醒(退回)
+	tplOrderComplete   = "zj71qQ57GcxS6zzkqc2a4PI9ufJftolzmB-f0ed4f5I" // 报修工单完结通知
 )
 
 // OrderNotifier 订阅消息推送服务
@@ -39,11 +44,11 @@ func NewOrderNotifier(wechat *WechatService, users *repository.AuthRepository, l
 	return &OrderNotifier{wechat: wechat, users: users, logger: logger}
 }
 
-// NotifyOrderStatusChange 工单状态变更通知 (reported/reviewed/processing)
+// NotifyOrderProcessing 工单处理中通知 (processing)
 //
-// 使用模板: 工单处理提醒 (tplOrderStatusChange)
-// 字段: thing1=项目名称 character_string2=工单编号 phrase17=工单状态 time3=处理时间
-func (n *OrderNotifier) NotifyOrderStatusChange(ctx context.Context, order *model.RepairOrder, statusLabel string) {
+// 使用模板: 工单处理提醒 (tplOrderProcessing)
+// 字段: thing1=项目名称 character_string2=工单编号 phrase17=工单状态 time3=开始时间
+func (n *OrderNotifier) NotifyOrderProcessing(ctx context.Context, order *model.RepairOrder) {
 	if order == nil {
 		return
 	}
@@ -52,12 +57,12 @@ func (n *OrderNotifier) NotifyOrderStatusChange(ctx context.Context, order *mode
 		return
 	}
 	data := map[string]SubscribeMessageData{
-		"thing1":           {Value: truncateUTF8(order.ProjectName, 20)},
+		"thing1":            {Value: truncateUTF8(order.ProjectName, 20)},
 		"character_string2": {Value: orderNo(order)},
-		"phrase17":         {Value: truncateUTF8(statusLabel, 5)},
-		"time3":            {Value: time.Now().Format("2006-01-02 15:04:05")},
+		"phrase17":          {Value: "处理中"},
+		"time3":             {Value: time.Now().Format("2006-01-02 15:04:05")},
 	}
-	n.send(ctx, openid, tplOrderStatusChange, data, order.ID)
+	n.send(ctx, openid, tplOrderProcessing, data, order.ID)
 }
 
 // NotifyOrderReject 工单退回通知
@@ -73,11 +78,11 @@ func (n *OrderNotifier) NotifyOrderReject(ctx context.Context, order *model.Repa
 		return
 	}
 	data := map[string]SubscribeMessageData{
-		"thing34":           {Value: truncateUTF8(order.ProjectName, 20)},
+		"thing34":            {Value: truncateUTF8(order.ProjectName, 20)},
 		"character_string10": {Value: orderNo(order)},
-		"phrase7":           {Value: "已退回"},
-		"thing17":           {Value: truncateUTF8(reason, 20)},
-		"time16":            {Value: time.Now().Format("2006-01-02 15:04:05")},
+		"phrase7":            {Value: "已退回"},
+		"thing17":            {Value: truncateUTF8(reason, 20)},
+		"time16":             {Value: time.Now().Format("2006-01-02 15:04:05")},
 	}
 	n.send(ctx, openid, tplOrderReject, data, order.ID)
 }

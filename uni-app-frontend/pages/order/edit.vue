@@ -431,7 +431,7 @@ export default defineComponent({
       if (this.imageList.length > 9) return '图片最多9张'
       return ''
     },
-    /** 一次性请求三条订阅消息授权（工单状态变更/退回/完结）
+    /** 一次性请求三条订阅消息授权（处理中/退回/完结）
      *  必须在用户点击动作的同步调用栈内触发 wx.requestSubscribeMessage，
      *  因此放在 submitOrder 最前面调用；授权拒绝不阻塞提交。
      */
@@ -444,9 +444,9 @@ export default defineComponent({
         }
         wx.requestSubscribeMessage({
           tmplIds: [
-            'GzsQVCeBG4ObOgoYuYkeZ5n2jWrcpeGmtzbl2sk4oH8', // 工单状态变更(reported/reviewed/processing)
-            '3Gw9MOYxZN9sC8ka02RyrZK1y6guc3wE1H2wcWjNy0w', // 工单退回
-            'zj71qQ57GcxS6zzkqc2a4PI9ufJftolzmB-f0ed4f5I'  // 工单完结
+            'GzsQVCeBG4ObOgoYuYkeZ4VZh711fmH9D3T9taI4TJE', // 工单处理提醒(处理中)
+            '3Gw9MOYxZN9sC8ka02RyrZK1y6guc3wE1H2wcWjNy0w', // 工单状态提醒(退回)
+            'zj71qQ57GcxS6zzkqc2a4PI9ufJftolzmB-f0ed4f5I'  // 报修工单完结通知
           ],
           success: () => resolve(),
           fail: () => resolve()

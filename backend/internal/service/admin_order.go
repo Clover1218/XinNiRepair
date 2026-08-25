@@ -320,9 +320,6 @@ func (s *AdminOrderService) Review(ctx context.Context, adminID, orderID, remark
 	if err := s.orders.Update(ctx, order); err != nil {
 		return s.dbErr("update order failed", err)
 	}
-	if s.notifier != nil {
-		s.notifier.NotifyOrderStatusChange(ctx, order, "已阅")
-	}
 	return s.appendAdminTimeline(ctx, order, adminID, string(model.ActionReview), from, string(model.OrderReviewed), remark, ip)
 }
 
@@ -346,8 +343,9 @@ func (s *AdminOrderService) Accept(ctx context.Context, adminID, orderID, remark
 	if err := s.orders.Update(ctx, order); err != nil {
 		return s.dbErr("update order failed", err)
 	}
+	// 订阅消息: 工单处理中 (通知报修人)
 	if s.notifier != nil {
-		s.notifier.NotifyOrderStatusChange(ctx, order, "处理中")
+		s.notifier.NotifyOrderProcessing(ctx, order)
 	}
 	return s.appendAdminTimeline(ctx, order, adminID, string(model.ActionAccept), from, string(model.OrderProcessing), remark, ip)
 }

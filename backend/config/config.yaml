@@ -42,8 +42,8 @@ jwt:
   refresh_token_ttl: 168h # 7天
 
 wechat:
-  app_id: ""              # 微信公众号 AppID
-  app_secret: ""          # 通过环境变量 WECHAT_APP_SECRET 注入
+  app_id: wx3e1efa4e44681649              # 微信公众号 AppID
+  app_secret: "a2673769ff40fde71e33ff303564733d"          # 通过环境变量 WECHAT_APP_SECRET 注入
   token: ""
   encoding_aes_key: ""
   miniprogram_state: "developer"  # 订阅消息跳转小程序版本: developer(开发)/trial(体验)/formal(正式)
