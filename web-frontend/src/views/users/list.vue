@@ -3,7 +3,7 @@ import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { adminAPI } from '@/api/admin'
 import type { UserListItem } from '@/types'
-import type { FormInstance } from 'element-plus'
+// import type { FormInstance } from 'element-plus'
 
 // ── 列表 ──
 const loading = ref(false)
