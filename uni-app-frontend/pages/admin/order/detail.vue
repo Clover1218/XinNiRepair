@@ -142,7 +142,7 @@
           <view class="complete-block-title">维修备注（必填，≤200字）</view>
           <wd-textarea
             v-model="completeRemark"
-            placeholder="请输入维修过程及结果，如：已更换电源模块，恢复正常使用"
+            placeholder="请输入维修过程及结果"
             :maxlength="200"
             show-word-limit
             auto-height
@@ -203,8 +203,8 @@
           <!-- 第四栏：维修附加信息 -->
           <view class="complete-block-title">维修附加信息（可选）</view>
           <view class="form-row">
-            <picker mode="selector" :range="repairResultOptions" @change="onMetaResultChange">
-              <view class="form-cell form-cell-half">
+            <picker class="form-cell-picker" mode="selector" :range="repairResultOptions" @change="onMetaResultChange">
+              <view class="form-cell">
                 <text class="cell-label">维修结果</text>
                 <view class="cell-value" :class="{ 'is-placeholder': !metaRepairResult }">
                   {{ metaRepairResult || '请选择' }}
@@ -212,8 +212,8 @@
                 </view>
               </view>
             </picker>
-            <picker mode="selector" :range="repairMethodOptions" @change="onMetaMethodChange">
-              <view class="form-cell form-cell-half">
+            <picker class="form-cell-picker" mode="selector" :range="repairMethodOptions" @change="onMetaMethodChange">
+              <view class="form-cell">
                 <text class="cell-label">维修方式</text>
                 <view class="cell-value" :class="{ 'is-placeholder': !metaRepairMethod }">
                   {{ metaRepairMethod || '请选择' }}
@@ -850,13 +850,22 @@ export default defineComponent({
   display: flex;
   margin-bottom: 4rpx;
 
-  .form-cell-half {
+  .form-cell-half,
+  .form-cell-picker {
     flex: 1;
     min-width: 0;
     margin-right: 16rpx;
 
     &:last-child {
       margin-right: 0;
+    }
+  }
+
+  // picker 为自定义组件，内部 form-cell 需撑满才与 form-cell-half 排版一致
+  .form-cell-picker {
+    .form-cell {
+      width: 100%;
+      box-sizing: border-box;
     }
   }
 }

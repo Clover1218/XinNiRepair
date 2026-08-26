@@ -51,18 +51,18 @@
       <text>我的企业</text>
       <text class="ent-add" @click="goJoin">+ 添加</text>
     </view>
-
+        <!-- :class="{ current: ent.enterprise_id === currentEnterpriseId }" -->
     <view class="ent-list">
       <view
         v-for="ent in enterprises"
         :key="ent.enterprise_id"
         class="ent-card"
-        :class="{ current: ent.enterprise_id === currentEnterpriseId }"
+
         @click="onSwitchEnterprise(ent)"
       >
         <view class="ent-name-wrap">
           <text class="ent-name">{{ ent.enterprise_name }}</text>
-          <text v-if="ent.enterprise_id === currentEnterpriseId" class="ent-check">✓</text>
+<!--          <text v-if="ent.enterprise_id === currentEnterpriseId" class="ent-check">✓</text> -->
         </view>
         <view class="ent-meta">
           <text class="ent-role">{{ roleLabel(ent.role) }}</text>

@@ -673,6 +673,12 @@ export default defineComponent({
   .footer-btn {
     flex: 1 1 0;
     min-width: 0;
+
+    // wd-button 默认 medium 尺寸内置 min-width: 120px，三按钮真机会溢出重合，需覆盖
+    :deep(.wd-button) {
+      width: 100%;
+      min-width: 0;
+    }
   }
 }
 </style>

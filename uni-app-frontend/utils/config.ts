@@ -12,8 +12,8 @@
  *      https://repair.your-domain.com/api/v1
  *  - 微信开发者工具里若勾选了"不校验合法域名"，可用 http + 局域网 IP 临时调试
  */
-// 1.13.15.207:5004
+// 1.13.15.207:5004 'http://127.0.0.1:8080/api/v1'
 // 127.0.0.1:8080
 // 'https://services.cloverstia.site/api/v1'
-export const BASE_URL = 'http://127.0.0.1:8080/api/v1'
+export const BASE_URL = 'https://services.cloverstia.site/api/v1'
 export const IS_LOCAL = true
