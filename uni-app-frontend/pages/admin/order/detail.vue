@@ -134,30 +134,128 @@
     </wd-popup>
 
     <!-- 完工弹窗 -->
-    <wd-popup v-model="showCompletePopup" position="center" round custom-style="width: 86%;">
-      <view class="popup-body">
+    <wd-popup v-model="showCompletePopup" position="center" round custom-style="width: 90%;">
+      <view class="popup-body complete-body">
         <view class="popup-title">完工</view>
-        <wd-textarea
-          v-model="completeRemark"
-          placeholder="请输入维修备注（≤200字符）"
-          :maxlength="200"
-          show-word-limit
-          auto-height
-          custom-style="min-height: 140rpx; padding: 20rpx; background: #f5f6f8; border-radius: 12rpx;"
-        />
-        <view class="receipt-section">
-          <view class="receipt-title">收据图片（最多3张）</view>
-          <view class="receipt-grid">
-            <view v-for="(r, index) in receiptList" :key="index" class="receipt-item">
-              <image class="receipt-img" :src="r.localPath || r.url" mode="aspectFill" />
-              <view class="receipt-del" @click.stop="removeReceipt(index)">×</view>
+        <scroll-view scroll-y class="complete-scroll">
+          <!-- 第一栏：维修备注 -->
+          <view class="complete-block-title">维修备注（必填，≤200字）</view>
+          <wd-textarea
+            v-model="completeRemark"
+            placeholder="请输入维修过程及结果，如：已更换电源模块，恢复正常使用"
+            :maxlength="200"
+            show-word-limit
+            auto-height
+            custom-style="min-height: 140rpx; padding: 20rpx; background: #f5f6f8; border-radius: 12rpx;"
+          />
+
+          <!-- 第二栏：对账信息 -->
+          <view class="complete-block-title">对账信息（必填）</view>
+          <view class="form-row">
+            <view class="form-cell form-cell-half">
+              <text class="cell-label">数量（≥0）</text>
+              <input
+                class="cell-input"
+                v-model="completeQuantity"
+                type="number"
+                placeholder="如：1"
+                placeholder-class="input-placeholder"
+              />
             </view>
-            <view v-if="receiptList.length < 3" class="receipt-add" @click="chooseReceipt">
-              <text class="receipt-add-icon">+</text>
-              <text class="receipt-add-text">上传图片</text>
+            <view class="form-cell form-cell-half">
+              <text class="cell-label">单价（元，≥0）</text>
+              <input
+                class="cell-input"
+                v-model="completeUnitPrice"
+                type="digit"
+                placeholder="如：150"
+                placeholder-class="input-placeholder"
+              />
             </view>
           </view>
-        </view>
+          <view class="form-cell form-cell-column">
+            <text class="cell-label">维修操作内容（必填，≤200字）</text>
+            <textarea
+              class="cell-textarea"
+              v-model="completeRepairContent"
+              placeholder="如：更换台式机电源模块，长城600W"
+              placeholder-class="input-placeholder"
+              maxlength="200"
+              auto-height
+            />
+          </view>
+
+          <!-- 第三栏：收据图片 -->
+          <view class="receipt-section">
+            <view class="receipt-title">收据图片（最多3张）</view>
+            <view class="receipt-grid">
+              <view v-for="(r, index) in receiptList" :key="index" class="receipt-item">
+                <image class="receipt-img" :src="r.localPath || r.url" mode="aspectFill" />
+                <view class="receipt-del" @click.stop="removeReceipt(index)">×</view>
+              </view>
+              <view v-if="receiptList.length < 3" class="receipt-add" @click="chooseReceipt">
+                <text class="receipt-add-icon">+</text>
+                <text class="receipt-add-text">上传图片</text>
+              </view>
+            </view>
+          </view>
+
+          <!-- 第四栏：维修附加信息 -->
+          <view class="complete-block-title">维修附加信息（可选）</view>
+          <view class="form-row">
+            <picker mode="selector" :range="repairResultOptions" @change="onMetaResultChange">
+              <view class="form-cell form-cell-half">
+                <text class="cell-label">维修结果</text>
+                <view class="cell-value" :class="{ 'is-placeholder': !metaRepairResult }">
+                  {{ metaRepairResult || '请选择' }}
+                  <text class="cell-arrow">›</text>
+                </view>
+              </view>
+            </picker>
+            <picker mode="selector" :range="repairMethodOptions" @change="onMetaMethodChange">
+              <view class="form-cell form-cell-half">
+                <text class="cell-label">维修方式</text>
+                <view class="cell-value" :class="{ 'is-placeholder': !metaRepairMethod }">
+                  {{ metaRepairMethod || '请选择' }}
+                  <text class="cell-arrow">›</text>
+                </view>
+              </view>
+            </picker>
+          </view>
+          <view class="form-row">
+            <view class="form-cell form-cell-half">
+              <text class="cell-label">保修期</text>
+              <input
+                class="cell-input"
+                v-model="metaWarrantyPeriod"
+                placeholder="如：3个月"
+                placeholder-class="input-placeholder"
+              />
+            </view>
+            <view class="form-cell form-cell-half">
+              <text class="cell-label">维修时长（分钟）</text>
+              <input
+                class="cell-input"
+                v-model="metaRepairDuration"
+                type="number"
+                placeholder="如：60"
+                placeholder-class="input-placeholder"
+              />
+            </view>
+          </view>
+          <view class="form-cell form-cell-column">
+            <text class="cell-label">额外备注</text>
+            <textarea
+              class="cell-textarea"
+              v-model="metaExtraRemark"
+              placeholder="选填"
+              placeholder-class="input-placeholder"
+              maxlength="200"
+              auto-height
+            />
+          </view>
+        </scroll-view>
+
         <view class="popup-actions">
           <wd-button plain round size="small" @click="showCompletePopup = false">取消</wd-button>
           <wd-button type="primary" round size="small" :loading="submitting" @click="confirmComplete">
@@ -197,7 +295,19 @@ export default defineComponent({
       showCompletePopup: false,
       completeRemark: '',
       receiptList: [] as ReceiptItem[],
-      submitting: false
+      submitting: false,
+      // 完工：对账信息（必填）
+      completeQuantity: '',
+      completeUnitPrice: '',
+      completeRepairContent: '',
+      // 完工：维修附加信息（可选）
+      metaRepairResult: '',
+      metaRepairMethod: '',
+      metaWarrantyPeriod: '',
+      metaRepairDuration: '',
+      metaExtraRemark: '',
+      repairResultOptions: ['完全修复', '部分修复', '无法修复'],
+      repairMethodOptions: ['上门维修', '返店维修', '远程协助']
     }
   },
   computed: {
@@ -265,6 +375,14 @@ export default defineComponent({
         this.showCompletePopup = true
         this.completeRemark = ''
         this.receiptList = []
+        this.completeQuantity = ''
+        this.completeUnitPrice = ''
+        this.completeRepairContent = ''
+        this.metaRepairResult = ''
+        this.metaRepairMethod = ''
+        this.metaWarrantyPeriod = ''
+        this.metaRepairDuration = ''
+        this.metaExtraRemark = ''
         return
       }
       // review / accept：有 require_confirm 先弹确认
@@ -375,10 +493,45 @@ export default defineComponent({
     removeReceipt(index: number) {
       this.receiptList.splice(index, 1)
     },
+    /** 维修附加信息 picker 回调 */
+    onMetaResultChange(e: any) {
+      this.metaRepairResult = this.repairResultOptions[Number(e.detail.value)]
+    },
+    onMetaMethodChange(e: any) {
+      this.metaRepairMethod = this.repairMethodOptions[Number(e.detail.value)]
+    },
+    /** 组装维修附加信息，空值不提交（与 web 端 buildMetadata 保持一致） */
+    buildMetadata(): Record<string, unknown> {
+      const meta: Record<string, unknown> = {}
+      if (this.metaRepairResult) meta.repair_result = this.metaRepairResult
+      if (this.metaRepairMethod) meta.repair_method = this.metaRepairMethod
+      const warranty = this.metaWarrantyPeriod.trim()
+      if (warranty) meta.warranty_period = warranty
+      if (this.metaRepairDuration !== '') {
+        const duration = Number(this.metaRepairDuration)
+        if (!Number.isNaN(duration) && duration >= 0) meta.repair_duration = duration
+      }
+      const extra = this.metaExtraRemark.trim()
+      if (extra) meta.extra_remark = extra
+      return meta
+    },
     async confirmComplete() {
       const remark = this.completeRemark.trim()
       if (!remark) {
         uni.showToast({ title: '请填写维修备注', icon: 'none' })
+        return
+      }
+      if (this.completeQuantity === '' || Number.isNaN(Number(this.completeQuantity)) || Number(this.completeQuantity) < 0) {
+        uni.showToast({ title: '请填写正确的数量（≥0）', icon: 'none' })
+        return
+      }
+      if (this.completeUnitPrice === '' || Number.isNaN(Number(this.completeUnitPrice)) || Number(this.completeUnitPrice) < 0) {
+        uni.showToast({ title: '请填写正确的单价（≥0）', icon: 'none' })
+        return
+      }
+      const repairContent = this.completeRepairContent.trim()
+      if (!repairContent) {
+        uni.showToast({ title: '请填写维修操作内容', icon: 'none' })
         return
       }
       if (this.receiptList.length === 0) {
@@ -390,7 +543,11 @@ export default defineComponent({
       try {
         await http.post(`/admin/orders/${this.orderId}/complete`, {
           remark,
-          receipts: this.receiptList.map((r) => r.url)
+          receipts: this.receiptList.map((r) => r.url),
+          quantity: Number(this.completeQuantity),
+          unit_price: Number(this.completeUnitPrice),
+          repair_content: repairContent,
+          metadata: this.buildMetadata()
         })
         uni.showToast({ title: '完工成功', icon: 'success' })
         this.showCompletePopup = false
@@ -668,5 +825,90 @@ export default defineComponent({
       }
     }
   }
+}
+
+/* 完工弹窗：对账信息 + 维修附加信息 */
+.complete-body {
+  padding-bottom: 24rpx;
+}
+
+.complete-scroll {
+  max-height: 58vh;
+}
+
+.complete-block-title {
+  font-size: 26rpx;
+  font-weight: 600;
+  color: #333333;
+  margin: 24rpx 0 12rpx;
+  padding-left: 14rpx;
+  border-left: 6rpx solid #4d80f0;
+  line-height: 1.4;
+}
+
+.form-row {
+  display: flex;
+  margin-bottom: 4rpx;
+
+  .form-cell-half {
+    flex: 1;
+    min-width: 0;
+    margin-right: 16rpx;
+
+    &:last-child {
+      margin-right: 0;
+    }
+  }
+}
+
+.form-cell {
+  background: #f5f6f8;
+  border-radius: 12rpx;
+  padding: 20rpx 24rpx;
+  margin-bottom: 16rpx;
+
+  .cell-label {
+    display: block;
+    font-size: 24rpx;
+    color: #999999;
+    margin-bottom: 12rpx;
+  }
+
+  .cell-input {
+    width: 100%;
+    font-size: 28rpx;
+    color: #333333;
+  }
+
+  .cell-value {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 28rpx;
+    color: #333333;
+
+    &.is-placeholder {
+      color: #bbbbbb;
+    }
+
+    .cell-arrow {
+      color: #bbbbbb;
+      font-size: 28rpx;
+    }
+  }
+}
+
+.form-cell-column {
+  .cell-textarea {
+    width: 100%;
+    min-height: 100rpx;
+    font-size: 28rpx;
+    color: #333333;
+    line-height: 1.5;
+  }
+}
+
+.input-placeholder {
+  color: #bbbbbb;
 }
 </style>

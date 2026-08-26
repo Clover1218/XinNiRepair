@@ -14,5 +14,6 @@
  */
 // 1.13.15.207:5004
 // 127.0.0.1:8080
-export const BASE_URL = 'https://services.cloverstia.site/api/v1'
+// 'https://services.cloverstia.site/api/v1'
+export const BASE_URL = 'http://127.0.0.1:8080/api/v1'
 export const IS_LOCAL = true

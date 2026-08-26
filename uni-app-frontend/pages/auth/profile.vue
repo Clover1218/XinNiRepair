@@ -151,8 +151,15 @@ export default defineComponent({
         setTimeout(() => {
           uni.switchTab({ url: '/pages/order/list' })
         }, 500)
-      } catch (err) {
+      } catch (err: any) {
         console.error('注册失败', err)
+        // 微信手机号接口不可用 (404/空响应/权限不足): 清除 code + 自动切手动输入
+        const msg = err?.message || err?.msg || ''
+        if (msg.includes('手机号') || msg.includes('微信接口')) {
+          this.phoneCode = ''
+          this.phoneMode = 'manual'
+          uni.showToast({ title: '微信手机号接口不可用，请手动输入', icon: 'none', duration: 2500 })
+        }
       } finally {
         this.submitting = false
       }

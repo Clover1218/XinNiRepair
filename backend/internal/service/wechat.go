@@ -22,7 +22,7 @@ const code2SessionURL = "https://api.weixin.qq.com/sns/jscode2session"
 const accessTokenURL = "https://api.weixin.qq.com/cgi-bin/token"
 
 // getPhoneNumberURL 手机号解密接口地址
-const getPhoneNumberURL = "https://api.weixin.qq.com/cgi-bin/wxa/business/getuserphonenumber"
+const getPhoneNumberURL = "https://api.weixin.qq.com/wxa/business/getuserphonenumber"
 
 // subscribeMessageURL 发送订阅消息接口地址
 const subscribeMessageURL = "https://api.weixin.qq.com/cgi-bin/message/subscribe/send"
@@ -107,6 +107,11 @@ func (s *WechatService) GetAccessToken(ctx context.Context) (string, error) {
 }
 
 // GetPhoneNumber 用 getPhoneNumber 返回的 code 解密手机号 (微信新版规范)
+//
+// 错误细分:
+//   - HTTP 非 2xx (常见 404): 小程序未获得 phoneNumber 接口权限/未通过审核
+//   - 响应体为空: 同上, 微信返回空 body
+//   - errcode != 0: code 失效或被消费
 func (s *WechatService) GetPhoneNumber(ctx context.Context, code string) (string, error) {
 	token, err := s.GetAccessToken(ctx)
 	if err != nil {
@@ -129,6 +134,21 @@ func (s *WechatService) GetPhoneNumber(ctx context.Context, code string) (string
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if err != nil {
 		return "", apperrors.ErrWechatAPI.WithError(err)
+	}
+
+	// HTTP 状态码非 2xx (典型 404): 接口不可达/权限不足
+	// 上层 Register handler 已记录完整错误日志，此处直接返回明确文案
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// 404 通常是小程序未获得手机号接口权限
+		if resp.StatusCode == 404 {
+			return "", apperrors.ErrWechatAPI.WithMessage("小程序未获得手机号接口权限，请改用手动输入")
+		}
+		return "", apperrors.ErrWechatAPI.WithMessage(fmt.Sprintf("微信接口调用失败(HTTP %d)", resp.StatusCode))
+	}
+
+	// 空响应体无法解析
+	if len(body) == 0 {
+		return "", apperrors.ErrWechatAPI.WithMessage("微信接口返回空响应，请改用手动输入手机号")
 	}
 
 	var result struct {
