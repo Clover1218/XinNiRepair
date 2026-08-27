@@ -40,7 +40,7 @@ const handleLogout = async () => {
     <el-aside width="220px" class="aside">
       <div class="logo">
         <el-icon :size="24" color="#409eff"><Tools /></el-icon>
-        <span class="logo-title">新泥维修后台</span>
+        <span class="logo-title">报修系统</span>
       </div>
       <el-menu :default-active="activeMenu" router class="menu">
         <el-menu-item v-for="item in menus" :key="item.path" :index="item.path">
