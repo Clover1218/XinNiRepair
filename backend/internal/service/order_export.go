@@ -227,31 +227,7 @@ func (s *OrderExportService) buildExcel(req ExportRequest, orders []model.Repair
 		f.SetCellValue(sheet, cellName(i+2)+fmt.Sprint(headerRow), exportFieldColumns[field])
 	}
 
-	// ── 数据行 ──
-	row := headerRow + 1
-	for idx, o := range orders {
-		amount := amountOf(o)
-		content := o.RepairContent
-		if strings.TrimSpace(content) == "" {
-			content = o.ProjectName
-		}
-		metadata := s.parseMetadata(o.Metadata)
-
-		f.SetCellValue(sheet, "A"+fmt.Sprint(row), idx+1)
-		col := 2
-		for _, field := range fields {
-			f.SetCellValue(sheet, cellName(col)+fmt.Sprint(row), s.fieldValue(field, o, amount, content, metadata, repairerNames[o.ID]))
-			col++
-		}
-		totalAmount += amount
-		totalCount++
-		row++
-	}
-
-	// ── 合计行 ──
-	sumRow := row
-	f.SetCellValue(sheet, "A"+fmt.Sprint(sumRow), "合计")
-	// 合计金额落在 amount 字段所在列
+	// 金额列位置（小计/合计落在此列）
 	amountCol := -1
 	for i, field := range fields {
 		if field == "amount" {
@@ -259,16 +235,68 @@ func (s *OrderExportService) buildExcel(req ExportRequest, orders []model.Repair
 			break
 		}
 	}
+
+	// ── 样式: 表头加粗 ──
+	style, err := f.NewStyle(&excelize.Style{Font: &excelize.Font{Bold: true}})
+	if err == nil && style > 0 {
+		lastCol := cellName(len(fields) + 1)
+		_ = f.SetCellStyle(sheet, "A"+fmt.Sprint(headerRow), lastCol+fmt.Sprint(headerRow), style)
+	}
+
+	// ── 数据行: 业务员模式按企业分组（组标题 + 组内数据 + 组小计） ──
+	row := headerRow + 1
+	groups := s.groupByEnterprise(req, orders)
+	for _, g := range groups {
+		if req.Mode == ExportModeRepairer {
+			// 分组标题行
+			f.SetCellValue(sheet, "A"+fmt.Sprint(row), "【"+g.Name+"】")
+			if style > 0 {
+				_ = f.SetCellStyle(sheet, "A"+fmt.Sprint(row), cellName(len(fields)+1)+fmt.Sprint(row), style)
+			}
+			row++
+		}
+		groupAmount := 0.0
+		groupCount := 0
+		for idx, o := range g.Orders {
+			amount := amountOf(o)
+			content := o.RepairContent
+			if strings.TrimSpace(content) == "" {
+				content = o.ProjectName
+			}
+			metadata := s.parseMetadata(o.Metadata)
+
+			f.SetCellValue(sheet, "A"+fmt.Sprint(row), idx+1)
+			col := 2
+			for _, field := range fields {
+				f.SetCellValue(sheet, cellName(col)+fmt.Sprint(row), s.fieldValue(field, o, amount, content, metadata, repairerNames[o.ID]))
+				col++
+			}
+			groupAmount += amount
+			groupCount++
+			row++
+		}
+		// 组小计（业务员模式，每组一个小计行）
+		if req.Mode == ExportModeRepairer {
+			f.SetCellValue(sheet, "A"+fmt.Sprint(row), "小计")
+			if amountCol > 0 {
+				f.SetCellValue(sheet, cellName(amountCol)+fmt.Sprint(row), fmt.Sprintf("%.2f", groupAmount))
+			}
+			f.SetCellValue(sheet, cellName(len(fields)+1)+fmt.Sprint(row), fmt.Sprintf("共 %d 单", groupCount))
+			row++
+		}
+		totalAmount += groupAmount
+		totalCount += groupCount
+	}
+
+	// ── 合计行 ──
+	sumRow := row
+	f.SetCellValue(sheet, "A"+fmt.Sprint(sumRow), "合计")
 	if amountCol > 0 {
 		f.SetCellValue(sheet, cellName(amountCol)+fmt.Sprint(sumRow), fmt.Sprintf("%.2f", totalAmount))
 	}
 	f.SetCellValue(sheet, cellName(len(fields)+1)+fmt.Sprint(sumRow), fmt.Sprintf("共 %d 单", totalCount))
-
-	// ── 样式: 表头加粗 ──
-	style, err := f.NewStyle(&excelize.Style{Font: &excelize.Font{Bold: true}})
-	if err == nil {
+	if style > 0 {
 		lastCol := cellName(len(fields) + 1)
-		_ = f.SetCellStyle(sheet, "A"+fmt.Sprint(headerRow), lastCol+fmt.Sprint(headerRow), style)
 		_ = f.SetCellStyle(sheet, "A"+fmt.Sprint(sumRow), lastCol+fmt.Sprint(sumRow), style)
 	}
 
@@ -291,6 +319,48 @@ func (s *OrderExportService) buildExcel(req ExportRequest, orders []model.Repair
 		ContentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 		Content:     buf,
 	}, nil
+}
+
+// exportGroup 按企业分组后的一个区块
+type exportGroup struct {
+	Name   string
+	Orders []model.RepairOrder
+}
+
+// groupByEnterprise 按企业分组。
+// 企业对账单(enterprise)模式固定单组；业务员汇总(repairer)模式按 EnterpriseID 分组，
+// 组序按工单在结果中的首次出现顺序，保证同一企业的工单连续展示。
+func (s *OrderExportService) groupByEnterprise(req ExportRequest, orders []model.RepairOrder) []exportGroup {
+	if req.Mode == ExportModeEnterprise {
+		name := ""
+		for _, o := range orders {
+			if o.Enterprise.Name != "" {
+				name = o.Enterprise.Name
+				break
+			}
+		}
+		return []exportGroup{{Name: name, Orders: orders}}
+	}
+
+	groups := make([]exportGroup, 0)
+	index := make(map[string]int)
+	for _, o := range orders {
+		id := ""
+		if o.EnterpriseID != nil {
+			id = *o.EnterpriseID
+		}
+		name := o.Enterprise.Name
+		if name == "" {
+			name = "未分组"
+		}
+		if gi, ok := index[id]; ok {
+			groups[gi].Orders = append(groups[gi].Orders, o)
+		} else {
+			index[id] = len(groups)
+			groups = append(groups, exportGroup{Name: name, Orders: []model.RepairOrder{o}})
+		}
+	}
+	return groups
 }
 
 // fieldValue 按字段标识取值

@@ -4,8 +4,11 @@ package repository
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
+	"github.com/google/uuid"
+	"golang.org/x/crypto/bcrypt"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -81,4 +84,24 @@ func (db *DB) Health(ctx context.Context) error {
 		return err
 	}
 	return sqlDB.PingContext(ctx)
+}
+
+func InitAdminUser(db *gorm.DB) {
+	var count int64
+	db.Model(&model.User{}).Where("role = ?", "2").Count(&count)
+	if count > 0 {
+		return // 已有超级管理员，跳过
+	}
+
+	// 创建默认管理员
+	hashedPwd, _ := bcrypt.GenerateFromPassword([]byte("admin123"), bcrypt.DefaultCost)
+	admin := model.User{
+		ID:       uuid.New().String(),
+		Nickname: "管理员",
+		Password: string(hashedPwd),
+		Openid:   "super_admin",
+		Role:     2,
+	}
+	db.Create(&admin)
+	log.Println("✅ 默认超级管理员已创建: admin ")
 }

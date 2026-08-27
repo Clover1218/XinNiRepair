@@ -119,6 +119,38 @@ const handleRemove = async (row: MemberItem) => {
   reload()
 }
 
+// ---- 编辑企业设置 ----
+const editDialogVisible = ref(false)
+const editName = ref('')
+const editAutoApprove = ref(false)
+const saving = ref(false)
+
+const openEditDialog = () => {
+  editName.value = detail.value?.name || ''
+  editAutoApprove.value = detail.value?.auto_approve ?? false
+  editDialogVisible.value = true
+}
+
+const handleSave = async () => {
+  const name = editName.value.trim()
+  if (name.length < 2 || name.length > 50) {
+    ElMessage.warning('企业名称需为 2-50 字符')
+    return
+  }
+  saving.value = true
+  try {
+    await adminAPI.updateEnterprise(enterpriseId, {
+      name,
+      auto_approve: editAutoApprove.value
+    })
+    ElMessage.success('企业设置已更新')
+    editDialogVisible.value = false
+    await fetchDetail()
+  } finally {
+    saving.value = false
+  }
+}
+
 // ---- 刷新邀请码 ----
 const refreshDialogVisible = ref(false)
 const validityOptions = [
@@ -227,9 +259,21 @@ onMounted(reload)
             <span class="info-label">创建时间</span>
             <span class="info-value">{{ formatDateTime(detail.created_at) }}</span>
           </div>
+          <div class="info-item">
+            <span class="info-label">免审核</span>
+            <span class="info-value">
+              <el-tag :type="detail.auto_approve ? 'success' : 'info'" size="small">
+                {{ detail.auto_approve ? '已开启' : '未开启' }}
+              </el-tag>
+            </span>
+          </div>
         </div>
 
         <div class="invite-actions">
+          <el-button @click="openEditDialog">
+            <el-icon><Edit /></el-icon>
+            编辑
+          </el-button>
           <el-button @click="openRefreshDialog">
             <el-icon><Refresh /></el-icon>
             刷新邀请码
@@ -306,6 +350,31 @@ onMounted(reload)
         />
       </div>
     </el-card>
+
+    <!-- 编辑企业设置弹窗 -->
+    <el-dialog v-model="editDialogVisible" title="编辑企业设置" width="420px">
+      <el-form label-position="top">
+        <el-form-item label="企业名称（2-50 字符）">
+          <el-input
+            v-model="editName"
+            :maxlength="50"
+            placeholder="请输入企业名称"
+          />
+        </el-form-item>
+        <el-form-item label="免审核">
+          <div class="auto-approve-row">
+            <el-switch v-model="editAutoApprove" />
+            <span class="auto-approve-tip">开启后，新成员扫码加入无需管理员审核</span>
+          </div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="editDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="saving" @click="handleSave">
+          保存
+        </el-button>
+      </template>
+    </el-dialog>
 
     <!-- 刷新邀请码弹窗 -->
     <el-dialog v-model="refreshDialogVisible" title="刷新邀请码" width="420px">
@@ -406,6 +475,17 @@ onMounted(reload)
   margin-top: 16px;
   display: flex;
   gap: 12px;
+}
+
+.auto-approve-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.auto-approve-tip {
+  font-size: 13px;
+  color: #909399;
 }
 
 .nickname-cell {

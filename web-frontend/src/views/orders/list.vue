@@ -222,11 +222,19 @@ const handleExport = async () => {
       fields: exportFields.value
     })
     const blob = res.data as Blob
-    // 解析 Content-Disposition 中的 filename
+    // 解析 Content-Disposition 中的 filename（后端用 mime.FormatMediaType，
+    // 中文文件名走 RFC 5987 形式 filename*=utf-8''...，需优先匹配）
     const disposition = res.headers['content-disposition'] as string | undefined
     let filename = '工单导出.xlsx'
-    const match = disposition?.match(/filename="?([^";]+)"?/)
-    if (match) filename = decodeURIComponent(match[1])
+    if (disposition) {
+      const starMatch = disposition.match(/filename\*=utf-8''([^;]+)/i)
+      if (starMatch) {
+        filename = decodeURIComponent(starMatch[1].trim())
+      } else {
+        const plainMatch = disposition.match(/filename="?([^";]+)"?/i)
+        if (plainMatch) filename = plainMatch[1].trim()
+      }
+    }
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url

@@ -43,8 +43,8 @@ const handleLogin = async () => {
     <div class="login-card">
       <div class="login-header">
         <el-icon :size="36" color="#409eff"><Tools /></el-icon>
-        <h1 class="login-title">新泥维修后台</h1>
-        <p class="login-subtitle">电脑维修报修系统 · 管理后台</p>
+        <h1 class="login-title">新泥百电脑</h1>
+        <p class="login-subtitle">报修系统 · 管理后台</p>
       </div>
 
       <el-form @submit.prevent>

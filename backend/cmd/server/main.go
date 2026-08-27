@@ -74,6 +74,9 @@ func main() {
 	if err != nil {
 		logger.Fatal("Database connection failed", zap.Error(err))
 	}
+
+	repository.InitAdminUser(db.DB)
+
 	defer db.Close()
 	logger.Info("Database connected",
 		zap.String("host", cfg.Database.Host),
@@ -110,9 +113,6 @@ func main() {
 
 	authSvc := service.NewAuthService(authRepo, tokenSvc, wechatSvc, logger)
 	// 初始化店主账号 (幂等, 首次启动自动创建, 密码可通过 ADMIN_PASSWORD 配置)
-	if err := authSvc.SeedAdminUser(ctx); err != nil {
-		logger.Warn("seed admin user failed (non-fatal)", zap.Error(err))
-	}
 	authH := handler.NewAuthHandler(authSvc, imgBed, logger)
 
 	// 订阅消息推送 (依赖微信 access_token 与用户 openid)

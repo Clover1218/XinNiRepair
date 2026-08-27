@@ -185,14 +185,21 @@ func (s *UserAdminService) UpdateUser(ctx context.Context, userID, operatorID st
 		return nil, apperrors.ErrUserNotFound
 	}
 
-	// 不可修改自身 role
-	if input.Role != nil && userID == operatorID {
-		return nil, apperrors.ErrInvalidParam.WithMessage("不能修改自身角色")
-	}
-
-	// 不可设为超级管理员
-	if input.Role != nil && *input.Role == model.PlatformRoleSuperAdmin {
-		return nil, apperrors.ErrInvalidParam.WithMessage("不允许设置超级管理员角色")
+	// role 处理：传入值与当前相同视为未修改（幂等），
+	// 避免超级管理员修改自身昵称/手机号时因回传自身 role(2) 被误判为"设置超管"而失败
+	if input.Role != nil && *input.Role != user.Role {
+		// 不可修改自身 role
+		if userID == operatorID {
+			return nil, apperrors.ErrInvalidParam.WithMessage("不能修改自身角色")
+		}
+		// 不可设为超级管理员
+		if *input.Role == model.PlatformRoleSuperAdmin {
+			return nil, apperrors.ErrInvalidParam.WithMessage("不允许设置超级管理员角色")
+		}
+		// role 仅允许 0 或 1
+		if *input.Role != model.PlatformRoleUser && *input.Role != model.PlatformRolePlatformAdmin {
+			return nil, apperrors.ErrInvalidParam.WithMessage("角色仅允许 0 或 1")
+		}
 	}
 
 	if input.Nickname != nil {

@@ -137,6 +137,12 @@ export const adminAPI = {
   // 3.1 创建企业
   createEnterprise: (name: string) => client.post('/enterprises', { name }),
 
+  // 3.3 更新企业设置（名称 / 免审核开关，均为可选）
+  updateEnterprise: (
+    enterpriseId: string,
+    data: { name?: string; auto_approve?: boolean }
+  ) => client.put<EnterpriseDetail>(`/enterprises/${enterpriseId}`, data),
+
   // 3.9 刷新邀请码
   refreshInviteCode: (enterpriseId: string, validity: string) =>
     client.post<{ invite_code: string; expires_at: string | null }>(

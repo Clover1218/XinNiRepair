@@ -313,6 +313,7 @@ type AdminEnterpriseDetail struct {
 	Name                string     `json:"name"`
 	InviteCode          string     `json:"invite_code"`
 	InviteCodeExpiresAt *time.Time `json:"invite_code_expires_at"`
+	AutoApprove         bool       `json:"auto_approve"`
 	MemberCount         int64      `json:"member_count"`
 	OrderCount          int64      `json:"order_count"`
 	Status              string     `json:"status"`
@@ -395,6 +396,7 @@ func (s *EnterpriseService) AdminEnterpriseDetailByID(ctx context.Context, enter
 		Name:                ent.Name,
 		InviteCode:          ent.InviteCode,
 		InviteCodeExpiresAt: ent.InviteCodeExpiresAt,
+		AutoApprove:         ent.AutoApprove,
 		MemberCount:         st.MemberCount,
 		OrderCount:          st.OrderCount,
 		Status:              enterpriseStatusName(ent.Status),

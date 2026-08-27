@@ -179,6 +179,8 @@ export interface EnterpriseDetail {
   name: string
   invite_code: string
   invite_code_expires_at: string | null
+  /** 免审核开关：开启后新成员加入无需审核 */
+  auto_approve: boolean
   member_count: number
   order_count: number
   status: 'active' | 'inactive'

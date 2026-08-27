@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"os"
 	"regexp"
 	"strings"
 
@@ -181,58 +180,6 @@ func (s *AuthService) issueToken(ctx context.Context, user *model.User) (*LoginR
 // isUniqueViolation 判断是否为唯一约束冲突 (PostgreSQL 错误码 23505)
 func isUniqueViolation(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "23505")
-}
-
-// SeedAdminUser 启动时初始化店主账号 (幂等)。
-// - openid 占位 "admin-bootstrap", 非微信来源标记
-// - nickname 固定 "admin", 对应 /auth/admin-login 入口
-// - 密码默认 "123456", 可通过环境变量 ADMIN_PASSWORD 覆盖
-// 已存在则跳过 (不改密码), 仅在不存在时创建。
-func (s *AuthService) SeedAdminUser(ctx context.Context) error {
-	const (
-		adminOpenid   = "admin-bootstrap"
-		adminNickname = "admin"
-		defaultPwd    = "123456"
-	)
-
-	// 已存在则跳过
-	existing, err := s.users.FindUserByOpenid(ctx, adminOpenid)
-	if err != nil {
-		s.logger.Error("seed: check admin existence failed", zap.Error(err))
-		return err
-	}
-	if existing != nil {
-		return nil
-	}
-
-	// 密码: 优先环境变量, 默认 123456
-	password := os.Getenv("ADMIN_PASSWORD")
-	if password == "" {
-		password = defaultPwd
-	}
-
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	if err != nil {
-		s.logger.Error("seed: bcrypt hash failed", zap.Error(err))
-		return err
-	}
-
-	user := &model.User{
-		ID:       uuid.New().String(),
-		Openid:   adminOpenid,
-		Nickname: adminNickname,
-		Password: string(hash),
-		Role:     model.PlatformRolePlatformAdmin,
-	}
-	if err := s.users.CreateUser(ctx, user); err != nil {
-		s.logger.Error("seed: create admin failed", zap.Error(err))
-		return err
-	}
-	s.logger.Info("admin user seeded",
-		zap.String("nickname", adminNickname),
-		zap.String("login", "POST /api/v1/auth/admin-login"),
-	)
-	return nil
 }
 
 // Me 获取当前用户信息

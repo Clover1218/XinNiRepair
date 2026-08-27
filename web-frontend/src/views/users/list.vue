@@ -73,6 +73,8 @@ const editForm = reactive({
   role: 0,
   phone: ''
 })
+/** 打开弹窗时的原始角色，用于判断 role 是否被修改（未修改则不提交，避免超管回传自身 role=2 触发校验） */
+const originalRole = ref(0)
 const editLoading = ref(false)
 
 function openEdit(row: UserListItem) {
@@ -80,17 +82,22 @@ function openEdit(row: UserListItem) {
   editForm.nickname = row.nickname
   editForm.role = row.role
   editForm.phone = row.phone
+  originalRole.value = row.role
   editVisible.value = true
 }
 
 async function submitEdit() {
   editLoading.value = true
   try {
-    await adminAPI.updateUser(editForm.id, {
+    const data: { nickname: string; role?: number; phone: string } = {
       nickname: editForm.nickname,
-      role: editForm.role,
       phone: editForm.phone
-    })
+    }
+    // 角色未变更时不提交，避免超级管理员修改自身昵称/手机号时被误判为"设置超管"
+    if (editForm.role !== originalRole.value) {
+      data.role = editForm.role
+    }
+    await adminAPI.updateUser(editForm.id, data)
     ElMessage.success('修改成功')
     editVisible.value = false
     loadList()
@@ -226,11 +233,17 @@ onMounted(loadList)
           <el-input v-model="editForm.phone" placeholder="11位手机号" />
         </el-form-item>
         <el-form-item label="角色">
-          <el-select v-model="editForm.role" style="width: 100%">
+          <el-select
+            v-model="editForm.role"
+            style="width: 100%"
+            :disabled="originalRole === 2"
+          >
+            <el-option v-if="originalRole === 2" label="超级管理员" :value="2" />
             <el-option label="普通用户" :value="0" />
             <el-option label="平台管理员" :value="1" />
             <!-- 超级管理员不可通过界面设置 -->
           </el-select>
+          <div v-if="originalRole === 2" class="role-tip">超级管理员角色不可修改</div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -262,5 +275,11 @@ onMounted(loadList)
   margin-top: 16px;
   display: flex;
   justify-content: flex-end;
+}
+
+.role-tip {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #909399;
 }
 </style>
