@@ -261,7 +261,11 @@ func (s *OrderExportService) buildExcel(req ExportRequest, orders []model.Repair
 			amount := amountOf(o)
 			content := o.RepairContent
 			if strings.TrimSpace(content) == "" {
-				content = o.ProjectName
+				// 无维修内容时回退项目大类/属性名称快照, 再回退描述 (V1.4 移除 project_name)
+				content = strings.TrimSpace(o.CategoryName + " " + o.PropertyName)
+				if content == "" {
+					content = o.Description
+				}
 			}
 			metadata := s.parseMetadata(o.Metadata)
 

@@ -61,6 +61,9 @@ func New(ctx context.Context, cfg config.DatabaseConfig) (*DB, error) {
 			&model.RepairOrder{},
 			&model.OrderImage{},
 			&model.OrderTimeline{},
+			&model.ProjectCategory{},
+			&model.ProjectProperty{},
+			&model.ProjectProblem{},
 		); err != nil {
 			sqlDB.Close()
 			return nil, fmt.Errorf("gorm auto migrate failed: %w", err)

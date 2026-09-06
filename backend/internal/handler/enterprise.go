@@ -14,12 +14,24 @@ import (
 // EnterpriseHandler 企业管理接口处理器
 type EnterpriseHandler struct {
 	svc    *service.EnterpriseService
+	access *service.AccessService
 	logger *zap.Logger
 }
 
 // NewEnterpriseHandler 创建 EnterpriseHandler
-func NewEnterpriseHandler(svc *service.EnterpriseService, logger *zap.Logger) *EnterpriseHandler {
-	return &EnterpriseHandler{svc: svc, logger: logger}
+func NewEnterpriseHandler(svc *service.EnterpriseService, access *service.AccessService, logger *zap.Logger) *EnterpriseHandler {
+	return &EnterpriseHandler{svc: svc, access: access, logger: logger}
+}
+
+// requireManage 校验操作者有权限管理该企业: 店方角色(role>=1) 或该企业单位审核员; 不满足则已写响应返回 false
+func (h *EnterpriseHandler) requireManage(c *gin.Context, enterpriseID string) bool {
+	if err := h.access.CanManageEnterprise(c.Request.Context(), enterpriseID, c.GetString("user_id"), c.GetInt("role")); err != nil {
+		h.logger.Warn("Enterprise access denied", zap.Error(err),
+			zap.String("enterprise_id", enterpriseID), zap.String("user_id", c.GetString("user_id")))
+		response.FailError(c, err)
+		return false
+	}
+	return true
 }
 
 // Create 创建企业 (POST /enterprises, 仅平台管理员)
@@ -58,8 +70,11 @@ func (h *EnterpriseHandler) Get(c *gin.Context) {
 	response.OK(c, detail)
 }
 
-// Update 更新企业设置 (PUT /enterprises/:enterprise_id, 仅平台管理员)
+// Update 更新企业设置 (PUT /enterprises/:enterprise_id; 单位审核员或店方角色)
 func (h *EnterpriseHandler) Update(c *gin.Context) {
+	if !h.requireManage(c, c.Param("enterprise_id")) {
+		return
+	}
 	var req struct {
 		Name        *string `json:"name"`
 		AutoApprove *bool   `json:"auto_approve"`
@@ -117,8 +132,11 @@ func (h *EnterpriseHandler) JoinByGet(c *gin.Context) {
 	response.OK(c, result)
 }
 
-// ListMembers 成员列表 (GET /enterprises/:enterprise_id/members, 仅平台管理员)
+// ListMembers 成员列表 (GET /enterprises/:enterprise_id/members; 单位审核员或店方角色)
 func (h *EnterpriseHandler) ListMembers(c *gin.Context) {
+	if !h.requireManage(c, c.Param("enterprise_id")) {
+		return
+	}
 	page, pageSize, err := parsePageParams(c)
 	if err != nil {
 		h.logger.Warn("ListMembers Enterprise: invalid page params", zap.Error(err))
@@ -143,8 +161,11 @@ func (h *EnterpriseHandler) ListMembers(c *gin.Context) {
 	response.OK(c, result)
 }
 
-// Approve 批量审核通过 (PUT /enterprises/:enterprise_id/members/approve, 仅平台管理员)
+// Approve 批量审核通过 (PUT /enterprises/:enterprise_id/members/approve; 单位审核员或店方角色)
 func (h *EnterpriseHandler) Approve(c *gin.Context) {
+	if !h.requireManage(c, c.Param("enterprise_id")) {
+		return
+	}
 	userIDs, ok := h.bindUserIDs(c)
 	if !ok {
 		return
@@ -158,8 +179,11 @@ func (h *EnterpriseHandler) Approve(c *gin.Context) {
 	response.OK(c, result)
 }
 
-// Reject 批量拒绝申请 (PUT /enterprises/:enterprise_id/members/reject, 仅平台管理员)
+// Reject 批量拒绝申请 (PUT /enterprises/:enterprise_id/members/reject; 单位审核员或店方角色)
 func (h *EnterpriseHandler) Reject(c *gin.Context) {
+	if !h.requireManage(c, c.Param("enterprise_id")) {
+		return
+	}
 	userIDs, ok := h.bindUserIDs(c)
 	if !ok {
 		return
@@ -173,8 +197,11 @@ func (h *EnterpriseHandler) Reject(c *gin.Context) {
 	response.OK(c, result)
 }
 
-// Remove 移除成员 (DELETE /enterprises/:enterprise_id/members/:user_id, 仅平台管理员)
+// Remove 移除成员 (DELETE /enterprises/:enterprise_id/members/:user_id; 单位审核员或店方角色)
 func (h *EnterpriseHandler) Remove(c *gin.Context) {
+	if !h.requireManage(c, c.Param("enterprise_id")) {
+		return
+	}
 	if err := h.svc.Remove(c.Request.Context(), c.Param("enterprise_id"), c.Param("user_id")); err != nil {
 		h.logger.Error("Remove Member: service error", zap.Error(err), zap.String("enterprise_id", c.Param("enterprise_id")), zap.String("user_id", c.Param("user_id")))
 		response.FailError(c, err)
@@ -183,8 +210,11 @@ func (h *EnterpriseHandler) Remove(c *gin.Context) {
 	response.OK(c, gin.H{"removed": true})
 }
 
-// RefreshCode 刷新邀请码 (POST /enterprises/:enterprise_id/refresh/code, 仅平台管理员)
+// RefreshCode 刷新邀请码 (POST /enterprises/:enterprise_id/refresh/code; 单位审核员或店方角色)
 func (h *EnterpriseHandler) RefreshCode(c *gin.Context) {
+	if !h.requireManage(c, c.Param("enterprise_id")) {
+		return
+	}
 	var req struct {
 		Validity string `json:"validity" binding:"required"`
 	}

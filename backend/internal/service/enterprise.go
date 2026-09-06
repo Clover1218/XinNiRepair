@@ -642,10 +642,10 @@ func memberRoleName(role int) string {
 	return "member"
 }
 
-// memberRoleLabel 角色中文名
+// memberRoleLabel 角色中文名 (V1.4: role=1 为“单位审核员”, 原“企业管理员”)
 func memberRoleLabel(role int) string {
 	if role == model.EnterpriseRoleAdmin {
-		return "管理员"
+		return "单位审核员"
 	}
 	return "成员"
 }

@@ -31,7 +31,7 @@ type UserProfile struct {
 	Nickname    string           `json:"nickname"`
 	AvatarURL   string           `json:"avatar_url"`
 	Phone       string           `json:"phone"`
-	Role        int              `json:"role"` // 平台角色: 0=普通用户 1=平台管理员
+	Role        int              `json:"role"` // 平台角色: 0=普通用户 1=维修业务员 2=超级管理员
 	Enterprises []EnterpriseInfo `json:"enterprises"`
 }
 
@@ -82,7 +82,7 @@ func (s *AuthService) Login(ctx context.Context, code string) (*LoginResult, err
 	return s.issueToken(ctx, user)
 }
 
-// AdminLogin 管理后台密码登录 (2.4): nickname + password, 仅平台管理员
+// AdminLogin 管理后台密码登录 (2.4): nickname + password, 仅维修业务员/超级管理员
 func (s *AuthService) AdminLogin(ctx context.Context, nickname, password string) (*LoginResult, error) {
 	user, err := s.users.FindUserByNickname(ctx, nickname)
 	if err != nil {

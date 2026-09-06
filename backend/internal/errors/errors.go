@@ -58,9 +58,9 @@ func (e *BizError) Is(target error) bool {
 
 // 认证错误 (1000-1999)
 var (
-	ErrUnauthorized     = &BizError{Code: 1000, Message: "未登录或登录已过期"}
-	ErrTokenInvalid     = &BizError{Code: 1001, Message: "Token无效"}
-	ErrTokenExpired     = &BizError{Code: 1002, Message: "Token已过期"}
+	ErrUnauthorized       = &BizError{Code: 1000, Message: "未登录或登录已过期"}
+	ErrTokenInvalid       = &BizError{Code: 1001, Message: "Token无效"}
+	ErrTokenExpired       = &BizError{Code: 1002, Message: "Token已过期"}
 	ErrWechatAuthFailed   = &BizError{Code: 1010, Message: "微信授权失败"}
 	ErrInvalidCredentials = &BizError{Code: 1011, Message: "账号或密码错误"}
 )

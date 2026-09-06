@@ -120,21 +120,25 @@ func main() {
 
 	entRepo := repository.NewEnterpriseRepository(db.DB)
 	memRepo := repository.NewMembershipRepository(db.DB)
+	projectRepo := repository.NewProjectRepository(db.DB)
 	entSvc := service.NewEnterpriseService(entRepo, memRepo, logger)
-	entH := handler.NewEnterpriseHandler(entSvc, logger)
+	accessSvc := service.NewAccessService(memRepo)
+	entH := handler.NewEnterpriseHandler(entSvc, accessSvc, logger)
 
 	orderRepo := repository.NewOrderRepository(db.DB)
 	imgRepo := repository.NewOrderImageRepository(db.DB)
 	tlRepo := repository.NewOrderTimelineRepository(db.DB)
-	orderSvc := service.NewOrderService(orderRepo, imgRepo, tlRepo, memRepo, imgBed, notifier, logger)
+	orderSvc := service.NewOrderService(orderRepo, imgRepo, tlRepo, memRepo, projectRepo, imgBed, notifier, logger)
 	orderH := handler.NewOrderHandler(orderSvc, logger)
 
-	adminOrderSvc := service.NewAdminOrderService(orderRepo, imgRepo, tlRepo, imgBed, notifier, logger)
+	adminOrderSvc := service.NewAdminOrderService(orderRepo, imgRepo, tlRepo, accessSvc, imgBed, notifier, logger)
 	exportSvc := service.NewOrderExportService(orderRepo, tlRepo, cfg.Shop.Name, logger)
 	userAdminSvc := service.NewUserAdminService(authRepo, logger)
-	adminH := handler.NewAdminHandler(adminOrderSvc, entSvc, exportSvc, userAdminSvc, logger)
+	projectSvc := service.NewProjectService(projectRepo, logger)
+	adminH := handler.NewAdminHandler(adminOrderSvc, entSvc, exportSvc, userAdminSvc, accessSvc, logger)
+	projectH := handler.NewProjectHandler(projectSvc, logger)
 
-	registerRoutes(engine, db, authH, entH, orderH, adminH, tokenSvc)
+	registerRoutes(engine, db, authH, entH, orderH, adminH, projectH, tokenSvc)
 
 	// ── 8. 启动 HTTP 服务 ──
 	srv := &http.Server{
@@ -168,7 +172,7 @@ func main() {
 }
 
 // registerRoutes 注册所有 API 路由
-func registerRoutes(r *gin.Engine, db *repository.DB, authH *handler.AuthHandler, entH *handler.EnterpriseHandler, orderH *handler.OrderHandler, adminH *handler.AdminHandler, tokenSvc *service.TokenService) {
+func registerRoutes(r *gin.Engine, db *repository.DB, authH *handler.AuthHandler, entH *handler.EnterpriseHandler, orderH *handler.OrderHandler, adminH *handler.AdminHandler, projectH *handler.ProjectHandler, tokenSvc *service.TokenService) {
 	// ── 健康检查 ──
 	r.GET("/health", func(c *gin.Context) {
 		ctx, canc := context.WithTimeout(c.Request.Context(), 2*time.Second)
@@ -208,16 +212,18 @@ func registerRoutes(r *gin.Engine, db *repository.DB, authH *handler.AuthHandler
 		enterprises := v1.Group("/enterprises")
 		enterprises.Use(middleware.JWTAuth(tokenSvc))
 		{
+			// 创建企业: 仅店方角色 (role=1 维修业务员 / role=2 超级管理员, 3.1)
 			enterprises.POST("", middleware.RequirePlatformAdmin(), entH.Create)
 			enterprises.POST("/join", entH.Join)     // 仅凭邀请码加入 (3.4)
 			enterprises.GET("/join", entH.JoinByGet) // 加入企业 (GET 版, 扫码场景)
 			enterprises.GET("/:enterprise_id", entH.Get)
-			enterprises.PUT("/:enterprise_id", middleware.RequirePlatformAdmin(), entH.Update)
-			enterprises.POST("/:enterprise_id/refresh/code", middleware.RequirePlatformAdmin(), entH.RefreshCode)
-			enterprises.GET("/:enterprise_id/members", middleware.RequirePlatformAdmin(), entH.ListMembers)
-			enterprises.PUT("/:enterprise_id/members/approve", middleware.RequirePlatformAdmin(), entH.Approve)
-			enterprises.PUT("/:enterprise_id/members/reject", middleware.RequirePlatformAdmin(), entH.Reject)
-			enterprises.DELETE("/:enterprise_id/members/:user_id", middleware.RequirePlatformAdmin(), entH.Remove)
+			// 单位内管理接口: 该企业单位审核员(membership.role=1) 或 店方角色, handler 内统一校验
+			enterprises.PUT("/:enterprise_id", entH.Update)
+			enterprises.POST("/:enterprise_id/refresh/code", entH.RefreshCode)
+			enterprises.GET("/:enterprise_id/members", entH.ListMembers)
+			enterprises.PUT("/:enterprise_id/members/approve", entH.Approve)
+			enterprises.PUT("/:enterprise_id/members/reject", entH.Reject)
+			enterprises.DELETE("/:enterprise_id/members/:user_id", entH.Remove)
 		}
 
 		// 报修工单接口 (用户端)
@@ -235,25 +241,34 @@ func registerRoutes(r *gin.Engine, db *repository.DB, authH *handler.AuthHandler
 			orders.POST("/:order_id/images", orderH.UploadImage)
 		}
 
-		// 管理后台接口 (第五章, 仅平台管理员)
+		// 管理后台接口 (第五章+第六章): 双层角色控制
 		admin := v1.Group("/admin")
-		admin.Use(middleware.JWTAuth(tokenSvc), middleware.RequirePlatformAdmin())
+		admin.Use(middleware.JWTAuth(tokenSvc))
 		{
-			admin.GET("/repairers", adminH.Repairers)        // 维修员列表 (5.15)
-			admin.GET("/orders/export", adminH.ExportOrders) // 导出工单记录 (5.14, 需在 :order_id 前注册)
-			admin.GET("/orders", adminH.ListOrders)
-			admin.GET("/orders/:order_id", adminH.OrderDetail)
-			admin.POST("/orders/:order_id/review", adminH.Review)
-			admin.POST("/orders/:order_id/accept", adminH.Accept)
-			admin.POST("/orders/:order_id/reject", adminH.Reject)
-			admin.POST("/orders/:order_id/complete", adminH.Complete)
-			admin.POST("/orders/:order_id/finance", adminH.UpdateFinance) // 修改对账信息 (5.6.1)
-			admin.POST("/orders/:order_id/receipts", adminH.UploadReceipt)
-			admin.GET("/enterprises", adminH.ListEnterprises)
-			admin.GET("/enterprises/:enterprise_id", adminH.EnterpriseDetail)
-			admin.GET("/enterprises/:enterprise_id/members", adminH.ListMembers)
+			// ── 仅店方角色 (维修业务员 role>=1 / 超级管理员) ──
+			staff := admin.Group("")
+			staff.Use(middleware.RequirePlatformAdmin())
+			{
+				staff.GET("/repairers", adminH.Repairers)                         // 维修员列表 (5.15)
+				staff.GET("/orders/export", adminH.ExportOrders)                  // 导出工单记录 (5.14)
+				staff.GET("/enterprises", adminH.ListEnterprises)                 // 企业列表 (5.8)
+				staff.GET("/enterprises/:enterprise_id", adminH.EnterpriseDetail) // 企业详情 (5.9)
+			}
 
-			// 用户管理 (第六章, 仅超级管理员)
+			// ── 工单处理: 店方角色或单位审核员(限本单位), 服务内按 Operator 校验 ──
+			admin.GET("/orders", adminH.ListOrders) // 工单列表 (5.1)
+			admin.GET("/orders/:order_id", adminH.OrderDetail)
+			admin.POST("/orders/:order_id/audit", adminH.Audit)                  // 审核通过 (5.3)
+			admin.POST("/orders/:order_id/review", adminH.Audit)                 // 兼容旧版 /review (行为同 audit)
+			admin.POST("/orders/:order_id/accept", adminH.Accept)                // 接单 (5.4)
+			admin.POST("/orders/:order_id/reject", adminH.Reject)                // 退回 (5.5)
+			admin.POST("/orders/:order_id/complete", adminH.Complete)            // 完工 (5.6)
+			admin.POST("/orders/:order_id/reopen", adminH.Reopen)                // 重新打开 (5.16)
+			admin.POST("/orders/:order_id/finance", adminH.UpdateFinance)        // 修改对账信息 (5.6.1)
+			admin.POST("/orders/:order_id/receipts", adminH.UploadReceipt)       // 上传收据 (5.7)
+			admin.GET("/enterprises/:enterprise_id/members", adminH.ListMembers) // 成员列表 (5.10)
+
+			// ── 用户管理 (第六章, 仅超级管理员) ──
 			users := admin.Group("/users")
 			users.Use(middleware.RequireSuperAdmin())
 			{
@@ -261,6 +276,24 @@ func registerRoutes(r *gin.Engine, db *repository.DB, authH *handler.AuthHandler
 				users.GET("/:user_id", adminH.UserDetail)                    // 用户详情 (6.2)
 				users.PUT("/:user_id", adminH.UpdateUser)                    // 更新用户属性 (6.3)
 				users.POST("/:user_id/reset-password", adminH.ResetPassword) // 重置密码 (6.4)
+			}
+
+			// ── 项目字典管理 (6.5, 仅超级管理员) ──
+			super := admin.Group("")
+			super.Use(middleware.RequireSuperAdmin())
+			{
+				super.GET("/categories", projectH.ListCategories)                 // 大类列表 (6.5.1)
+				super.POST("/categories", projectH.CreateCategory)                // 新增大类
+				super.PUT("/categories/:category_id", projectH.UpdateCategory)    // 修改大类
+				super.DELETE("/categories/:category_id", projectH.DeleteCategory) // 软删除大类
+				super.GET("/properties", projectH.ListProperties)                 // 属性列表 (6.5.2)
+				super.POST("/properties", projectH.CreateProperty)                // 新增属性
+				super.PUT("/properties/:property_id", projectH.UpdateProperty)    // 修改属性
+				super.DELETE("/properties/:property_id", projectH.DeleteProperty) // 软删除属性
+				super.GET("/problems", projectH.ListProblems)                     // 常见问题列表 (6.5.3)
+				super.POST("/problems", projectH.CreateProblem)                   // 新增常见问题
+				super.PUT("/problems/:problem_id", projectH.UpdateProblem)        // 修改常见问题
+				super.DELETE("/problems/:problem_id", projectH.DeleteProblem)     // 软删除常见问题
 			}
 		}
 	}

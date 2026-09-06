@@ -1,6 +1,7 @@
 // Package imagebed 提供自建图床的上传/删除能力。
 //
 // 上传协议:
+//
 //	POST {endpoint}  (multipart/form-data)
 //	字段: image (file) + token (text)
 //	成功返回: { "result":"success", "code":200, "url":"...", "thumb":"...", "del":"...", "id":1 }
@@ -91,13 +92,13 @@ func (c *Client) Upload(ctx context.Context, filename string, content io.Reader)
 	}
 
 	var result struct {
-		Result   string `json:"result"`
-		Code     int    `json:"code"`
-		Message  string `json:"message"`
-		URL      string `json:"url"`
-		Thumb    string `json:"thumb"`
-		Del      string `json:"del"`
-		ID       int    `json:"id"`
+		Result  string `json:"result"`
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+		URL     string `json:"url"`
+		Thumb   string `json:"thumb"`
+		Del     string `json:"del"`
+		ID      int    `json:"id"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result); err != nil {
 		return nil, fmt.Errorf("imagebed: decode response: %w", err)

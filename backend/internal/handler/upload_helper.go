@@ -71,8 +71,8 @@ func parseMultipart(c *gin.Context) (*UploadedFile, error) {
 // parseBase64JSON 从 JSON body 提取 base64 编码文件
 func parseBase64JSON(c *gin.Context) (*UploadedFile, error) {
 	var body struct {
-		File      string `json:"file"`      // base64 编码的文件数据
-		Filename  string `json:"filename"`  // 原始文件名
+		File      string `json:"file"`       // base64 编码的文件数据
+		Filename  string `json:"filename"`   // 原始文件名
 		SortOrder int    `json:"sort_order"` // 排序序号 (可选)
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {

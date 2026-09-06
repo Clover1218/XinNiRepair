@@ -1,7 +1,7 @@
 // OrderNotifier 工单订阅消息推送
 //
 // 对应《小程序订阅消息模板信息.md》三类模板:
-//   - 工单状态变更 (reported/reviewed/processing)
+//   - 工单状态变更 (审核通过/处理中/重新处理)
 //   - 工单退回 (reject)
 //   - 工单完结 (completed)
 //
@@ -44,7 +44,28 @@ func NewOrderNotifier(wechat *WechatService, users *repository.AuthRepository, l
 	return &OrderNotifier{wechat: wechat, users: users, logger: logger}
 }
 
-// NotifyOrderProcessing 工单处理中通知 (processing)
+// NotifyOrderAudited 工单审核通过通知 (audit: reported → pending_accept)
+//
+// 使用模板: 工单处理提醒 (tplOrderProcessing)
+// 字段: thing1=项目名称 character_string2=工单编号 phrase17=工单状态 time13=审核时间
+func (n *OrderNotifier) NotifyOrderAudited(ctx context.Context, order *model.RepairOrder) {
+	if order == nil {
+		return
+	}
+	openid, ok := n.reporterOpenid(ctx, order.ReporterID)
+	if !ok {
+		return
+	}
+	data := map[string]SubscribeMessageData{
+		"thing1":            {Value: truncateUTF8(orderProjectLabel(order), 20)},
+		"character_string2": {Value: orderNo(order)},
+		"phrase17":          {Value: "已通过审核"},
+		"time13":            {Value: time.Now().Format("2006-01-02 15:04:05")},
+	}
+	n.send(ctx, openid, tplOrderProcessing, data, order.ID)
+}
+
+// NotifyOrderProcessing 工单处理中通知 (accept: pending_accept → processing)
 //
 // 使用模板: 工单处理提醒 (tplOrderProcessing)
 // 字段: thing1=项目名称 character_string2=工单编号 phrase17=工单状态 time13=开始时间
@@ -57,9 +78,30 @@ func (n *OrderNotifier) NotifyOrderProcessing(ctx context.Context, order *model.
 		return
 	}
 	data := map[string]SubscribeMessageData{
-		"thing1":            {Value: truncateUTF8(order.ProjectName, 20)},
+		"thing1":            {Value: truncateUTF8(orderProjectLabel(order), 20)},
 		"character_string2": {Value: orderNo(order)},
 		"phrase17":          {Value: "处理中"},
+		"time13":            {Value: time.Now().Format("2006-01-02 15:04:05")},
+	}
+	n.send(ctx, openid, tplOrderProcessing, data, order.ID)
+}
+
+// NotifyOrderReopened 工单重新打开通知 (reopen: completed → processing)
+//
+// 使用模板: 工单处理提醒 (tplOrderProcessing)
+// 字段: thing1=项目名称 character_string2=工单编号 phrase17=工单状态 time13=重新处理时间
+func (n *OrderNotifier) NotifyOrderReopened(ctx context.Context, order *model.RepairOrder) {
+	if order == nil {
+		return
+	}
+	openid, ok := n.reporterOpenid(ctx, order.ReporterID)
+	if !ok {
+		return
+	}
+	data := map[string]SubscribeMessageData{
+		"thing1":            {Value: truncateUTF8(orderProjectLabel(order), 20)},
+		"character_string2": {Value: orderNo(order)},
+		"phrase17":          {Value: "重新处理中"},
 		"time13":            {Value: time.Now().Format("2006-01-02 15:04:05")},
 	}
 	n.send(ctx, openid, tplOrderProcessing, data, order.ID)
@@ -78,7 +120,7 @@ func (n *OrderNotifier) NotifyOrderReject(ctx context.Context, order *model.Repa
 		return
 	}
 	data := map[string]SubscribeMessageData{
-		"thing34":            {Value: truncateUTF8(order.ProjectName, 20)},
+		"thing34":            {Value: truncateUTF8(orderProjectLabel(order), 20)},
 		"character_string10": {Value: orderNo(order)},
 		"phrase7":            {Value: "已退回"},
 		"thing17":            {Value: truncateUTF8(reason, 20)},
@@ -109,7 +151,7 @@ func (n *OrderNotifier) NotifyOrderComplete(ctx context.Context, order *model.Re
 		completedAt = order.CompletedAt.Format("2006-01-02 15:04:05")
 	}
 	data := map[string]SubscribeMessageData{
-		"thing5":  {Value: truncateUTF8(order.ProjectName, 20)},
+		"thing5":  {Value: truncateUTF8(orderProjectLabel(order), 20)},
 		"number1": {Value: digitsOnly(orderNo(order))},
 		"phrase4": {Value: "已完成"},
 		"thing3":  {Value: truncateUTF8(operatorName, 20)},
@@ -143,7 +185,17 @@ func (n *OrderNotifier) send(ctx context.Context, openid, templateID string, dat
 	}
 }
 
-// orderNo 安全取工单号, 为空时回退占位符
+// orderProjectLabel 工单项目展示名 (大类+属性快照), 为空时回退描述前 20 字
+func orderProjectLabel(order *model.RepairOrder) string {
+	if order == nil {
+		return ""
+	}
+	name := strings.TrimSpace(order.CategoryName + " " + order.PropertyName)
+	if name != "" {
+		return name
+	}
+	return order.Description
+}
 func orderNo(order *model.RepairOrder) string {
 	if order.OrderNo != nil && *order.OrderNo != "" {
 		return *order.OrderNo

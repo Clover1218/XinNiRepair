@@ -1,15 +1,16 @@
 // OrderService 报修工单业务逻辑 (用户端 4.1-4.9)。
 //
-// 遵循《后端接口设计文档v1.0》第四章最新约定:
-//   - 4.2 创建空草稿 (请求体为空, order_no/enterprise_id 均留空)
-//   - 4.3 更新草稿 (enterprise_id 在此设置; images 用 status 全量替换)
-//   - 4.4 提交上报 (严格校验必填; order_no 接单时生成, 此处保持空)
-//   - 4.9 图片上传 (插入 status=temporary 记录)
+// 按《后端接口设计文档 v1.1》/《数据库字段设计文档 V1.4》对齐:
+//   - 4.1 options 返回项目字典树 (project_categories → properties/problems, 来自数据库)
+//   - 4.3 更新草稿 (category_id/property_id + 名称快照自动回填; 常见问题仅预填描述不落单)
+//   - 4.4 提交上报 (严格校验; 提交时生成工单号 WO{YYYYMMDD}{4位序号}, 通知本单位审核员/维修业务员)
+//   - 4.8 取消仅限 draft/reported/pending_accept
 package service
 
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
+	"gorm.io/datatypes"
 
 	apperrors "xin-ni-repair/internal/errors"
 	"xin-ni-repair/internal/model"
@@ -35,22 +37,8 @@ const maxFaultImages = 9
 const maxDraftCount = 5
 
 // ────────────────────────────────────────────
-// 静态枚举数据 (4.1)
+// 展示文案映射 (包级, 管理端共用)
 // ────────────────────────────────────────────
-
-var categoryLabels = map[string]string{
-	"computer": "电脑维修",
-	"network":  "网络故障",
-	"printer":  "打印机",
-	"other":    "其他设备",
-}
-
-var propertyLabels = map[string]string{
-	"repair":   "维修",
-	"purchase": "采购",
-	"replace":  "更换",
-	"warranty": "保修",
-}
 
 var urgencyLabels = map[string]string{
 	"normal":      "普通",
@@ -59,31 +47,53 @@ var urgencyLabels = map[string]string{
 }
 
 var statusLabels = map[string]string{
-	"draft":      "草稿",
-	"reported":   "已上报",
-	"reviewed":   "已阅",
-	"processing": "处理中",
-	"completed":  "已处理",
-	"cancelled":  "已取消",
+	"draft":          "草稿",
+	"reported":       "已上报",
+	"pending_accept": "待接单",
+	"processing":     "处理中",
+	"completed":      "已处理",
+	"cancelled":      "已取消",
 }
 
 var actionLabels = map[string]string{
 	"create_draft":   "创建草稿",
-	"submit":         "提交报修",
-	"review":         "查阅",
+	"submit":         "提交上报",
+	"audit":          "审核通过",
 	"accept":         "接单维修",
 	"complete":       "完工",
+	"reopen":         "重新打开",
 	"reject":         "退回",
+	"cancel":         "取消",
 	"upload_receipt": "上传收据",
 	"update_finance": "修改对账信息",
-	"cancel":         "取消",
 }
 
-// OptionItem 项目大类
-type OptionItem struct {
-	ID         string   `json:"id"`
-	Name       string   `json:"name"`
-	Attributes []string `json:"attributes"`
+// ────────────────────────────────────────────
+// 输出结构 (4.1-4.9)
+// ────────────────────────────────────────────
+
+// CategoryOption 项目大类选项 (4.1)
+type CategoryOption struct {
+	ID          string           `json:"id"`
+	Name        string           `json:"name"`
+	Description string           `json:"description"`
+	SortOrder   int              `json:"sort_order"`
+	Properties  []PropertyOption `json:"properties"`
+	Problems    []ProblemOption  `json:"problems"`
+}
+
+// PropertyOption 项目属性选项 (4.1)
+type PropertyOption struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// ProblemOption 常见问题选项 (4.1, 选中后预填描述)
+type ProblemOption struct {
+	ID              string   `json:"id"`
+	Name            string   `json:"name"`
+	Description     string   `json:"description"`
+	CommonSolutions []string `json:"common_solutions"`
 }
 
 // ValueLabel 键值对选项
@@ -100,24 +110,17 @@ type EnterpriseOption struct {
 
 // OrderOptions 新建工单可选枚举 (4.1)
 type OrderOptions struct {
-	ProjectCategories []OptionItem        `json:"project_categories"`
-	Properties        []ValueLabel        `json:"properties"`
-	CommonIssues      map[string][]string `json:"common_issues"`
-	UrgentLevels      []ValueLabel        `json:"urgent_levels"`
-	Enterprises       []EnterpriseOption  `json:"enterprises"`
+	Categories   []CategoryOption   `json:"categories"`
+	UrgentLevels []ValueLabel       `json:"urgent_levels"`
+	Enterprises  []EnterpriseOption `json:"enterprises"`
 }
-
-// ────────────────────────────────────────────
-// 输入 / 输出结构
-// ────────────────────────────────────────────
 
 // UpdateOrderInput 更新草稿入参 (4.3, 所有字段可选)
 type UpdateOrderInput struct {
-	EnterpriseID *string   `json:"enterprise_id"` // 在此设置企业归属 (首次设置时校验成员资格)
-	ProjectName  *string   `json:"project_name"`
-	Category     *string   `json:"category"`
-	Property     *string   `json:"property"`
-	Description  *string   `json:"description"`
+	EnterpriseID *string   `json:"enterprise_id"` // 报修单位 id (草稿可为空, 提交时必填)
+	CategoryID   *string   `json:"category_id"`   // 项目大类 ID
+	PropertyID   *string   `json:"property_id"`   // 项目属性 ID (须属于所选大类)
+	Description  *string   `json:"description"`   // 报修描述 (可含常见问题预填文本)
 	Urgency      *string   `json:"urgency"`
 	Room         *string   `json:"room"`
 	Contact      *string   `json:"contact"`
@@ -135,7 +138,7 @@ type OrderDraftResult struct {
 // SubmitResult 提交上报响应 (4.4)
 type SubmitResult struct {
 	ID          string    `json:"id"`
-	OrderNo     *string   `json:"order_no"` // 接单时生成, 提交阶段仍为空
+	OrderNo     *string   `json:"order_no"` // 提交时生成 WO{YYYYMMDD}{4位序号}
 	Status      string    `json:"status"`
 	SubmittedAt time.Time `json:"submitted_at"`
 }
@@ -152,9 +155,10 @@ type Pagination struct {
 type OrderListItem struct {
 	ID             string     `json:"id"`
 	OrderNo        *string    `json:"order_no"`
-	ProjectName    string     `json:"project_name"`
-	Category       string     `json:"category"`
-	CategoryLabel  string     `json:"category_label"`
+	CategoryID     string     `json:"category_id"`
+	CategoryName   string     `json:"category_name"`
+	PropertyID     string     `json:"property_id"`
+	PropertyName   string     `json:"property_name"`
 	Description    string     `json:"description"`
 	EnterpriseID   string     `json:"enterprise_id"`
 	EnterpriseName string     `json:"enterprise_name"`
@@ -194,32 +198,36 @@ type TimelineItem struct {
 
 // OrderDetail 工单详情 (4.7)
 type OrderDetail struct {
-	ID               string         `json:"id"`
-	OrderNo          *string        `json:"order_no"`
-	EnterpriseID     string         `json:"enterprise_id"`
-	EnterpriseName   string         `json:"enterprise_name"`
-	ProjectName      string         `json:"project_name"`
-	Category         string         `json:"category"`
-	CategoryLabel    string         `json:"category_label"`
-	Property         string         `json:"property"`
-	PropertyLabel    string         `json:"property_label"`
-	Description      string         `json:"description"`
-	Urgency          string         `json:"urgency"`
-	UrgencyLabel     string         `json:"urgency_label"`
-	Room             string         `json:"room"`
-	Contact          string         `json:"contact"`
-	Status           string         `json:"status"`
-	StatusLabel      string         `json:"status_label"`
-	RejectReason     string         `json:"reject_reason"`
-	RepairContent    string         `json:"repair_content"`
-	Amount           float64        `json:"amount"`
-	Images           []ImageItem    `json:"images"`
-	Receipts         []ImageItem    `json:"receipts"`
-	Timeline         []TimelineItem `json:"timeline"`
-	AvailableActions []string       `json:"available_actions"`
-	CreatedAt        time.Time      `json:"created_at"`
-	SubmittedAt      *time.Time     `json:"submitted_at"`
-	UpdatedAt        time.Time      `json:"updated_at"`
+	ID               string                `json:"id"`
+	OrderNo          *string               `json:"order_no"`
+	EnterpriseID     string                `json:"enterprise_id"`
+	EnterpriseName   string                `json:"enterprise_name"`
+	CategoryID       string                `json:"category_id"`
+	CategoryName     string                `json:"category_name"`
+	PropertyID       string                `json:"property_id"`
+	PropertyName     string                `json:"property_name"`
+	Description      string                `json:"description"`
+	Urgency          string                `json:"urgency"`
+	UrgencyLabel     string                `json:"urgency_label"`
+	Room             string                `json:"room"`
+	Contact          string                `json:"contact"`
+	Status           string                `json:"status"`
+	StatusLabel      string                `json:"status_label"`
+	RejectReason     string                `json:"reject_reason"`
+	RepairContent    string                `json:"repair_content"`
+	Quantity         int                   `json:"quantity"`
+	UnitPrice        float64               `json:"unit_price"`
+	Amount           float64               `json:"amount"`
+	Metadata         *model.RepairMetadata `json:"metadata,omitempty"`
+	AuditorName      string                `json:"auditor_name,omitempty"`
+	RepairerName     string                `json:"repairer_name,omitempty"`
+	Images           []ImageItem           `json:"images"`
+	Receipts         []ImageItem           `json:"receipts"`
+	Timeline         []TimelineItem        `json:"timeline"`
+	AvailableActions []string              `json:"available_actions"`
+	CreatedAt        time.Time             `json:"created_at"`
+	SubmittedAt      *time.Time            `json:"submitted_at"`
+	UpdatedAt        time.Time             `json:"updated_at"`
 }
 
 // UploadImageResult 图片上传响应 (4.9)
@@ -240,6 +248,7 @@ type OrderService struct {
 	images    *repository.OrderImageRepository
 	timelines *repository.OrderTimelineRepository
 	mems      *repository.MembershipRepository
+	projects  *repository.ProjectRepository
 	imagebed  *imagebed.Client
 	notifier  *OrderNotifier
 	logger    *zap.Logger
@@ -251,6 +260,7 @@ func NewOrderService(
 	images *repository.OrderImageRepository,
 	timelines *repository.OrderTimelineRepository,
 	mems *repository.MembershipRepository,
+	projects *repository.ProjectRepository,
 	imagebed *imagebed.Client,
 	notifier *OrderNotifier,
 	logger *zap.Logger,
@@ -260,17 +270,23 @@ func NewOrderService(
 		images:    images,
 		timelines: timelines,
 		mems:      mems,
+		projects:  projects,
 		imagebed:  imagebed,
 		notifier:  notifier,
 		logger:    logger,
 	}
 }
 
-// Options 查询新建工单可选枚举 (4.1)
+// Options 查询新建工单可选枚举 (4.1): 项目字典树 + 紧急程度 + 可上报单位
 func (s *OrderService) Options(ctx context.Context, userID string) (*OrderOptions, error) {
 	memberships, err := s.mems.FindApprovedByUser(ctx, userID)
 	if err != nil {
 		return nil, s.dbErr("find approved memberships failed", err)
+	}
+
+	cats, err := s.projects.ListCategoriesWithChildren(ctx)
+	if err != nil {
+		return nil, s.dbErr("list project categories failed", err)
 	}
 
 	enterprises := make([]EnterpriseOption, 0, len(memberships))
@@ -278,29 +294,36 @@ func (s *OrderService) Options(ctx context.Context, userID string) (*OrderOption
 		enterprises = append(enterprises, EnterpriseOption{ID: m.EnterpriseID, Name: m.Enterprise.Name})
 	}
 
+	categoryOptions := make([]CategoryOption, 0, len(cats))
+	for _, c := range cats {
+		opt := CategoryOption{
+			ID:          c.ID,
+			Name:        c.Name,
+			Description: c.Description,
+			SortOrder:   c.SortOrder,
+			Properties:  make([]PropertyOption, 0, len(c.Properties)),
+			Problems:    make([]ProblemOption, 0, len(c.Problems)),
+		}
+		for _, p := range c.Properties {
+			opt.Properties = append(opt.Properties, PropertyOption{ID: p.ID, Name: p.Name})
+		}
+		for _, p := range c.Problems {
+			opt.Problems = append(opt.Problems, ProblemOption{
+				ID:              p.ID,
+				Name:            p.Name,
+				Description:     p.Description,
+				CommonSolutions: unmarshalSolutions(p.CommonSolutions),
+			})
+		}
+		categoryOptions = append(categoryOptions, opt)
+	}
+
 	return &OrderOptions{
-		ProjectCategories: []OptionItem{
-			{ID: "computer", Name: "电脑维修", Attributes: []string{}},
-			{ID: "network", Name: "网络故障", Attributes: []string{}},
-			{ID: "printer", Name: "打印机", Attributes: []string{}},
-			{ID: "other", Name: "其他设备", Attributes: []string{}},
-		},
-		Properties: []ValueLabel{
-			{Value: "repair", Label: "维修"},
-			{Value: "purchase", Label: "采购"},
-			{Value: "replace", Label: "更换"},
-			{Value: "warranty", Label: "保修"},
-		},
-		CommonIssues: map[string][]string{
-			"computer": {"无法开机", "蓝屏/死机", "显示器无信号", "电脑运行缓慢", "软件安装请求"},
-			"network":  {"无法上网", "WiFi连接失败", "网速慢", "网络频繁断开"},
-			"printer":  {"打印机卡纸", "打印空白", "无法识别墨盒", "打印模糊"},
-			"other":    {"设备无法通电", "设备异响", "按键失灵", "其他"},
-		},
+		Categories: categoryOptions,
 		UrgentLevels: []ValueLabel{
-			{Value: "normal", Label: "普通"},
-			{Value: "urgent", Label: "紧急"},
-			{Value: "very_urgent", Label: "非常紧急"},
+			{Value: string(model.UrgencyNormal), Label: "普通"},
+			{Value: string(model.UrgencyUrgent), Label: "紧急"},
+			{Value: string(model.UrgencyVeryUrgent), Label: "非常紧急"},
 		},
 		Enterprises: enterprises,
 	}, nil
@@ -308,10 +331,9 @@ func (s *OrderService) Options(ctx context.Context, userID string) (*OrderOption
 
 // Create 创建空草稿 (4.2)
 //
-// 请求体为空。创建的空草稿: order_no 为空、enterprise_id 为空、其余字段为空,
-// 企业归属在 4.3 更新草稿时设置。
+// 请求体为空。创建的空草稿: order_no 为空、enterprise_id/category_id/property_id 为空,
+// 企业归属与项目大类/属性在 4.3 更新草稿时设置。
 func (s *OrderService) Create(ctx context.Context, userID string) (*OrderDraftResult, error) {
-	// 草稿数限制: 用户全部 draft 工单不超过 5 个
 	count, err := s.orders.CountDraftsByUser(ctx, userID)
 	if err != nil {
 		return nil, s.dbErr("count drafts failed", err)
@@ -324,7 +346,6 @@ func (s *OrderService) Create(ctx context.Context, userID string) (*OrderDraftRe
 		ID:         uuid.New().String(),
 		ReporterID: userID,
 		Status:     string(model.OrderDraft),
-		// OrderNo / EnterpriseID 及业务字段留空
 	}
 	if err := s.orders.Create(ctx, order); err != nil {
 		return nil, s.dbErr("create order failed", err)
@@ -350,7 +371,8 @@ func (s *OrderService) Create(ctx context.Context, userID string) (*OrderDraftRe
 
 // Update 更新草稿 (4.3)
 //
-// 所有字段可选; enterprise_id 在此设置企业归属 (首次设置时校验成员资格);
+// 所有字段可选; category_id/property_id 名称快照由后端自动回填;
+// 常见问题不作为工单字段 (前端选中后预填 description);
 // images 传完整列表, 按 status 全量替换。
 func (s *OrderService) Update(ctx context.Context, userID, orderID string, in UpdateOrderInput) (*OrderDraftResult, error) {
 	order, err := s.loadOwnedDraft(ctx, userID, orderID)
@@ -360,30 +382,61 @@ func (s *OrderService) Update(ctx context.Context, userID, orderID string, in Up
 
 	if in.EnterpriseID != nil {
 		v := strings.TrimSpace(*in.EnterpriseID)
+		if v == "" {
+			return nil, apperrors.ErrInvalidParam.WithMessage("enterprise_id 不能为空")
+		}
 		if err := s.verifyMembership(ctx, v, userID); err != nil {
 			return nil, err
 		}
 		order.EnterpriseID = &v
 	}
-	if in.ProjectName != nil {
-		v := strings.TrimSpace(*in.ProjectName)
-		if err := validateLength("project_name", v, 1, 20); err != nil {
-			return nil, err
+
+	// 大类变更: 校验有效 → 回填名称快照; 大类变了旧属性作废需重选
+	if in.CategoryID != nil {
+		v := strings.TrimSpace(*in.CategoryID)
+		cat, err := s.projects.FindActiveCategoryByID(ctx, v)
+		if err != nil {
+			return nil, s.dbErr("find category failed", err)
 		}
-		order.ProjectName = v
-	}
-	if in.Category != nil {
-		if !mapContains(categoryLabels, *in.Category) {
-			return nil, apperrors.ErrInvalidParam.WithMessage("category 取值: computer/network/printer/other")
+		if cat == nil {
+			return nil, apperrors.ErrInvalidParam.WithMessage("项目大类不存在或已删除")
 		}
-		order.Category = *in.Category
-	}
-	if in.Property != nil {
-		if !mapContains(propertyLabels, *in.Property) {
-			return nil, apperrors.ErrInvalidParam.WithMessage("property 取值: repair/purchase/replace/warranty")
+		order.CategoryID = &v
+		order.CategoryName = cat.Name
+		// 原属性不属于新大类时清空, 提示重新选择属性
+		if order.PropertyID != nil {
+			prop, err := s.projects.FindActivePropertyByID(ctx, *order.PropertyID)
+			if err != nil {
+				return nil, s.dbErr("find property failed", err)
+			}
+			if prop == nil || prop.CategoryID != v {
+				order.PropertyID = nil
+				order.PropertyName = ""
+			}
 		}
-		order.Property = *in.Property
 	}
+
+	// 属性变更: 校验有效 + 必须属于当前(或本次)大类
+	if in.PropertyID != nil {
+		v := strings.TrimSpace(*in.PropertyID)
+		prop, err := s.projects.FindActivePropertyByID(ctx, v)
+		if err != nil {
+			return nil, s.dbErr("find property failed", err)
+		}
+		if prop == nil {
+			return nil, apperrors.ErrInvalidParam.WithMessage("项目属性不存在或已删除")
+		}
+		catID := ""
+		if order.CategoryID != nil {
+			catID = *order.CategoryID
+		}
+		if catID == "" || prop.CategoryID != catID {
+			return nil, apperrors.ErrInvalidParam.WithMessage("project_property 必须属于所选项目大类，请先选择大类")
+		}
+		order.PropertyID = &v
+		order.PropertyName = prop.Name
+	}
+
 	if in.Description != nil {
 		v := strings.TrimSpace(*in.Description)
 		if err := validateLength("description", v, 1, 500); err != nil {
@@ -392,7 +445,7 @@ func (s *OrderService) Update(ctx context.Context, userID, orderID string, in Up
 		order.Description = v
 	}
 	if in.Urgency != nil {
-		if !mapContains(urgencyLabels, *in.Urgency) {
+		if _, ok := urgencyLabels[*in.Urgency]; !ok {
 			return nil, apperrors.ErrInvalidParam.WithMessage("urgency 取值: normal/urgent/very_urgent")
 		}
 		order.Urgency = *in.Urgency
@@ -434,19 +487,17 @@ func (s *OrderService) Update(ctx context.Context, userID, orderID string, in Up
 
 // Submit 提交上报 (4.4)
 //
-// 严格校验必填字段与成员资格后置为 reported; order_no 保持为空,
-// 由接单时生成或手动填入 (4.2 约定)。
+// 严格校验必填项完整性与字典有效性后置为 reported; 提交时生成工单号
+// WO{YYYYMMDD}{4位序号} 并写入 submitted_at; 时间轴 submit。
 func (s *OrderService) Submit(ctx context.Context, userID, orderID string) (*SubmitResult, error) {
 	order, err := s.loadOwnedDraft(ctx, userID, orderID)
 	if err != nil {
 		return nil, err
 	}
 
-	// 必填字段严格校验 (4.4 校验表)
-	if err := s.validateSubmitFields(order); err != nil {
+	if err := s.validateSubmitFields(ctx, order); err != nil {
 		return nil, err
 	}
-	// 企业成员资格校验
 	if err := s.verifyMembership(ctx, enterpriseIDStr(order.EnterpriseID), userID); err != nil {
 		return nil, err
 	}
@@ -455,7 +506,6 @@ func (s *OrderService) Submit(ctx context.Context, userID, orderID string) (*Sub
 	order.Status = string(model.OrderReported)
 	order.SubmittedAt = &now
 
-	// 提交时生成工单号: XNB-{YYYYMMDD}-{3位当日流水号} (4.4 业务规则)
 	orderNo, err := s.orders.GenerateOrderNo(ctx, now)
 	if err != nil {
 		return nil, s.dbErr("generate order no failed", err)
@@ -471,6 +521,9 @@ func (s *OrderService) Submit(ctx context.Context, userID, orderID string) (*Sub
 	}
 	s.logger.Info("order submitted", zap.String("order_id", order.ID), zap.String("order_no", orderNo))
 
+	// 新单提醒: 该单位单位审核员与业务范围内维修业务员 (WebSocket/站内暂未实现, 预留通知钩子)
+	s.notifyReviewersOnSubmit(ctx, order)
+
 	return &SubmitResult{
 		ID:          order.ID,
 		OrderNo:     order.OrderNo,
@@ -479,7 +532,16 @@ func (s *OrderService) Submit(ctx context.Context, userID, orderID string) (*Sub
 	}, nil
 }
 
-// Delete 删除草稿 (4.5): 关联故障图软删除 (status=deleted) + 工单状态置为 cancelled
+// notifyReviewersOnSubmit 新单提醒钩子。
+// v1.1 约定: 提交上报后本单位单位审核员与维修业务员收到新单提醒。
+// WebSocket/站内通知中心接口尚未排期实现, 此处仅记录日志, 便于后续接入。
+func (s *OrderService) notifyReviewersOnSubmit(ctx context.Context, order *model.RepairOrder) {
+	s.logger.Info("notify reviewers on submit (hook)",
+		zap.String("order_id", order.ID),
+		zap.String("order_no", orderNo(order)))
+}
+
+// Delete 删除草稿 (4.5): 关联故障图软删除 (status=deleted) + 工单状态置为 cancelled (保留追溯)
 func (s *OrderService) Delete(ctx context.Context, userID, orderID string) error {
 	order, err := s.loadOwnedDraft(ctx, userID, orderID)
 	if err != nil {
@@ -498,7 +560,7 @@ func (s *OrderService) Delete(ctx context.Context, userID, orderID string) error
 }
 
 // List 我的工单列表 (4.6)
-// status 支持逗号分隔的多状态筛选, 如 "reported,reviewed,processing"
+// status 支持逗号分隔的多状态筛选, 如 "reported,pending_accept,processing"
 func (s *OrderService) List(ctx context.Context, userID, enterpriseID, status string, page, pageSize int) (*OrderListResult, error) {
 	var statuses []string
 	if status != "" {
@@ -508,7 +570,7 @@ func (s *OrderService) List(ctx context.Context, userID, enterpriseID, status st
 				continue
 			}
 			if _, ok := statusLabels[v]; !ok {
-				return nil, apperrors.ErrInvalidParam.WithMessage("status 取值: draft/reported/reviewed/processing/completed/cancelled, 多个用逗号分隔")
+				return nil, apperrors.ErrInvalidParam.WithMessage("status 取值: draft/reported/pending_accept/processing/completed/cancelled, 多个用逗号分隔")
 			}
 			statuses = append(statuses, v)
 		}
@@ -529,9 +591,10 @@ func (s *OrderService) List(ctx context.Context, userID, enterpriseID, status st
 		list = append(list, OrderListItem{
 			ID:             o.ID,
 			OrderNo:        o.OrderNo,
-			ProjectName:    o.ProjectName,
-			Category:       o.Category,
-			CategoryLabel:  categoryLabels[o.Category],
+			CategoryID:     nstr(o.CategoryID),
+			CategoryName:   o.CategoryName,
+			PropertyID:     nstr(o.PropertyID),
+			PropertyName:   o.PropertyName,
 			Description:    o.Description,
 			EnterpriseID:   enterpriseIDStr(o.EnterpriseID),
 			EnterpriseName: o.Enterprise.Name,
@@ -559,7 +622,7 @@ func (s *OrderService) List(ctx context.Context, userID, enterpriseID, status st
 	}, nil
 }
 
-// Detail 工单详情 (4.7)
+// Detail 工单详情 (4.7): 仅报修人可查看
 func (s *OrderService) Detail(ctx context.Context, userID, orderID string) (*OrderDetail, error) {
 	order, err := s.orders.FindByID(ctx, orderID)
 	if err != nil {
@@ -572,7 +635,6 @@ func (s *OrderService) Detail(ctx context.Context, userID, orderID string) (*Ord
 		return nil, apperrors.ErrForbidden
 	}
 
-	// 仅展示 active 图片 (temporary 未确认, deleted 已删除, 均不展示)
 	images, err := s.images.ListActiveByOrder(ctx, orderID, string(model.ImageFault))
 	if err != nil {
 		return nil, s.dbErr("list images failed", err)
@@ -591,11 +653,10 @@ func (s *OrderService) Detail(ctx context.Context, userID, orderID string) (*Ord
 		OrderNo:          order.OrderNo,
 		EnterpriseID:     enterpriseIDStr(order.EnterpriseID),
 		EnterpriseName:   order.Enterprise.Name,
-		ProjectName:      order.ProjectName,
-		Category:         order.Category,
-		CategoryLabel:    categoryLabels[order.Category],
-		Property:         order.Property,
-		PropertyLabel:    propertyLabels[order.Property],
+		CategoryID:       nstr(order.CategoryID),
+		CategoryName:     order.CategoryName,
+		PropertyID:       nstr(order.PropertyID),
+		PropertyName:     order.PropertyName,
 		Description:      order.Description,
 		Urgency:          order.Urgency,
 		UrgencyLabel:     urgencyLabels[order.Urgency],
@@ -605,7 +666,12 @@ func (s *OrderService) Detail(ctx context.Context, userID, orderID string) (*Ord
 		StatusLabel:      statusLabels[order.Status],
 		RejectReason:     order.RejectReason,
 		RepairContent:    order.RepairContent,
+		Quantity:         order.Quantity,
+		UnitPrice:        order.UnitPrice,
 		Amount:           order.Amount,
+		Metadata:         parseOrderMetadata(order.Metadata),
+		AuditorName:      order.Auditor.Nickname,
+		RepairerName:     order.Repairer.Nickname,
 		Images:           buildImageItems(images),
 		Receipts:         buildImageItems(receipts),
 		Timeline:         buildTimelineItems(timelines),
@@ -616,16 +682,17 @@ func (s *OrderService) Detail(ctx context.Context, userID, orderID string) (*Ord
 	}, nil
 }
 
-// Cancel 取消工单 (4.8)
+// Cancel 取消工单 (4.8): 仅 draft/reported/pending_accept, 报修人可取消
 func (s *OrderService) Cancel(ctx context.Context, userID, orderID, reason string) error {
 	order, err := s.loadOwnedOrder(ctx, userID, orderID)
 	if err != nil {
 		return err
 	}
-	switch order.Status {
-	case string(model.OrderDraft), string(model.OrderReported), string(model.OrderReviewed):
-	default:
-		return apperrors.ErrOrderCannotEdit
+	if !model.IsCancelableStatus(model.OrderStatus(order.Status)) {
+		return apperrors.ErrOrderCannotEdit.WithMessage("仅 draft/reported/pending_accept 状态的工单可取消")
+	}
+	if err := validateLength("reason", reason, 0, 200); err != nil {
+		return err
 	}
 
 	from := order.Status
@@ -643,7 +710,7 @@ func (s *OrderService) Cancel(ctx context.Context, userID, orderID, reason strin
 // UploadImage 图片上传 (4.9)
 //
 // 上传成功后插入 order_images 记录: status=temporary, image_type=fault;
-// sort_order 默认 -1 (由 4.3 更新草稿统一设置)。
+// sort_order 默认 -1 (由 4.3 更新草稿统一设置)。格式支持 jpg/png/webp (V1.4)。
 func (s *OrderService) UploadImage(ctx context.Context, userID, orderID, filename string, size int64, content io.Reader, sortOrder int) (*UploadImageResult, error) {
 	order, err := s.loadOwnedOrder(ctx, userID, orderID)
 	if err != nil {
@@ -653,7 +720,6 @@ func (s *OrderService) UploadImage(ctx context.Context, userID, orderID, filenam
 		return nil, apperrors.ErrOrderCannotEdit
 	}
 
-	// 大小与格式校验
 	if size <= 0 || size > maxImageSize {
 		return nil, apperrors.ErrImageInvalid.WithMessage("图片大小需不超过 5MB")
 	}
@@ -667,7 +733,6 @@ func (s *OrderService) UploadImage(ctx context.Context, userID, orderID, filenam
 		return nil, apperrors.ErrImageInvalid.WithMessage("仅支持 jpg/png/webp 格式")
 	}
 
-	// 数量限制: 同一工单未删除 (status != deleted) 故障图 ≤ 9
 	count, err := s.images.CountNotDeleted(ctx, orderID, string(model.ImageFault))
 	if err != nil {
 		return nil, s.dbErr("count images failed", err)
@@ -676,14 +741,12 @@ func (s *OrderService) UploadImage(ctx context.Context, userID, orderID, filenam
 		return nil, apperrors.ErrImageTooMany
 	}
 
-	// 图床上传
 	upload, err := s.imagebed.Upload(ctx, filename, io.MultiReader(bytes.NewReader(head), content))
 	if err != nil {
 		s.logger.Error("image bed upload failed", zap.Error(err))
 		return nil, apperrors.ErrOSSUpload.WithError(err)
 	}
 
-	// 排序值: 不传则默认 -1, 由更新草稿接口统一设置; 传入则使用传入值
 	if sortOrder <= 0 {
 		sortOrder = -1
 	}
@@ -740,7 +803,7 @@ func (s *OrderService) loadOwnedOrder(ctx context.Context, userID, orderID strin
 	return order, nil
 }
 
-// verifyMembership 校验用户是该企业已审批成员
+// verifyMembership 校验用户是该企业已审批成员 (单位审核员/普通成员均可)
 func (s *OrderService) verifyMembership(ctx context.Context, enterpriseID, userID string) error {
 	m, err := s.mems.FindByEnterpriseAndUser(ctx, enterpriseID, userID)
 	if err != nil {
@@ -752,24 +815,39 @@ func (s *OrderService) verifyMembership(ctx context.Context, enterpriseID, userI
 	return nil
 }
 
-// validateSubmitFields 4.4 提交校验: 必填字段完整性与枚举合法性
-func (s *OrderService) validateSubmitFields(order *model.RepairOrder) error {
+// validateSubmitFields 4.4 提交校验: 必填字段完整性与字典有效性
+func (s *OrderService) validateSubmitFields(ctx context.Context, order *model.RepairOrder) error {
 	if enterpriseIDStr(order.EnterpriseID) == "" {
-		return apperrors.ErrDraftNotSubmittable.WithMessage("缺少 enterprise_id，请先在草稿中设置企业")
+		return apperrors.ErrDraftNotSubmittable.WithMessage("缺少 enterprise_id，请先在草稿中设置报修单位")
 	}
-	if err := validateLength("project_name", order.ProjectName, 1, 20); err != nil {
-		return apperrors.ErrDraftNotSubmittable.WithMessage(err.Error())
+	if nstr(order.CategoryID) == "" {
+		return apperrors.ErrDraftNotSubmittable.WithMessage("缺少 category_id（项目大类为必填项）")
 	}
-	if !mapContains(categoryLabels, order.Category) {
-		return apperrors.ErrDraftNotSubmittable.WithMessage("category 必须为 computer/network/printer/other")
+	if nstr(order.PropertyID) == "" {
+		return apperrors.ErrDraftNotSubmittable.WithMessage("缺少 property_id（项目属性为必填项）")
 	}
-	if !mapContains(propertyLabels, order.Property) {
-		return apperrors.ErrDraftNotSubmittable.WithMessage("property 必须为 repair/purchase/replace/warranty")
+	// 字典有效性: 大类/属性需存在且属性必须属于该大类 (防止字典被删后仍可提交)
+	cat, err := s.projects.FindActiveCategoryByID(ctx, *order.CategoryID)
+	if err != nil {
+		return s.dbErr("find category failed", err)
+	}
+	if cat == nil {
+		return apperrors.ErrDraftNotSubmittable.WithMessage("所选项目大类不存在或已删除，请重新选择")
+	}
+	prop, err := s.projects.FindActivePropertyByID(ctx, *order.PropertyID)
+	if err != nil {
+		return s.dbErr("find property failed", err)
+	}
+	if prop == nil {
+		return apperrors.ErrDraftNotSubmittable.WithMessage("所选项目属性不存在或已删除，请重新选择")
+	}
+	if prop.CategoryID != *order.CategoryID {
+		return apperrors.ErrDraftNotSubmittable.WithMessage("所选项目属性不属于所选项目大类，请重新选择")
 	}
 	if err := validateLength("description", order.Description, 1, 500); err != nil {
 		return apperrors.ErrDraftNotSubmittable.WithMessage(err.Error())
 	}
-	if !mapContains(urgencyLabels, order.Urgency) {
+	if _, ok := urgencyLabels[order.Urgency]; !ok {
 		return apperrors.ErrDraftNotSubmittable.WithMessage("urgency 必须为 normal/urgent/very_urgent")
 	}
 	if err := validateLength("room", order.Room, 1, 20); err != nil {
@@ -784,16 +862,12 @@ func (s *OrderService) validateSubmitFields(order *model.RepairOrder) error {
 	return nil
 }
 
-// replaceImages 图片全量替换 (status 流程, 供 4.3 故障图 / 5.6 收据图共用):
-//  1. 将工单下指定类型的图全部标记为 deleted
-//  2. 按传入列表顺序, 将对应 URL 行的 sort_order 与 status 置为 active (不存在则创建)
+// replaceImages 图片全量替换 (status 流程, 供 4.3 故障图 / 5.6 收据图共用)
 func (s *OrderService) replaceImages(ctx context.Context, orderID, imageType string, urls []string) error {
-	// 1. 全部置 deleted
 	if err := s.images.MarkAllDeleted(ctx, orderID, imageType); err != nil {
 		return s.dbErr("mark images deleted failed", err)
 	}
 
-	// 2. 按列表激活
 	for idx, raw := range urls {
 		u := strings.TrimSpace(raw)
 		if u == "" {
@@ -851,10 +925,24 @@ func (s *OrderService) dbErr(msg string, err error) error {
 	return apperrors.ErrDatabaseError.WithError(err)
 }
 
-// mapContains 判断 key 是否存在于 map
-func mapContains(m map[string]string, key string) bool {
-	_, ok := m[key]
-	return ok
+// availableActions 按状态计算用户端可执行操作
+func availableActions(status string) []string {
+	switch model.OrderStatus(status) {
+	case model.OrderDraft:
+		return []string{"submit", "cancel"}
+	case model.OrderReported, model.OrderPendingAccept:
+		return []string{"cancel"}
+	default:
+		return []string{}
+	}
+}
+
+// nstr 解引用字符串指针, nil 返回空串
+func nstr(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
 }
 
 // enterpriseIDStr 解引用企业 ID 指针, nil 时返回空串
@@ -877,19 +965,7 @@ func validateLength(field, v string, min, max int) error {
 	return nil
 }
 
-// availableActions 按状态计算用户端可执行操作
-func availableActions(status string) []string {
-	switch status {
-	case string(model.OrderDraft):
-		return []string{"submit", "cancel"}
-	case string(model.OrderReported), string(model.OrderReviewed):
-		return []string{"cancel"}
-	default:
-		return []string{}
-	}
-}
-
-// validImageFormat 校验图片格式 (后缀 + 魔数)
+// validImageFormat 校验图片格式 (后缀 + 魔数; 支持 jpg/png/webp)
 func validImageFormat(head []byte, filename string) bool {
 	switch strings.ToLower(filepath.Ext(filename)) {
 	case ".jpg", ".jpeg", ".png", ".webp":
@@ -922,7 +998,7 @@ func buildImageItems(images []model.OrderImage) []ImageItem {
 	return items
 }
 
-// buildTimelineItems 组装时间轴列表
+// buildTimelineItems 组装时间轴列表 (用户端)
 func buildTimelineItems(timelines []model.OrderTimeline) []TimelineItem {
 	items := make([]TimelineItem, 0, len(timelines))
 	for _, tl := range timelines {
@@ -938,4 +1014,19 @@ func buildTimelineItems(timelines []model.OrderTimeline) []TimelineItem {
 		})
 	}
 	return items
+}
+
+// parseOrderMetadata 解析 metadata JSONB 为 RepairMetadata 指针, 空/全空返回 nil
+func parseOrderMetadata(raw datatypes.JSON) *model.RepairMetadata {
+	if len(raw) == 0 {
+		return nil
+	}
+	var meta model.RepairMetadata
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		return nil
+	}
+	if meta.RepairResult == "" && meta.RepairMethod == "" && meta.WarrantyPeriod == "" && meta.ExtraRemark == "" && meta.RepairDuration == 0 {
+		return nil
+	}
+	return &meta
 }

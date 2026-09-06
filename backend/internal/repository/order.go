@@ -30,10 +30,15 @@ func (r *OrderRepository) Create(ctx context.Context, order *model.RepairOrder) 
 	return r.db.WithContext(ctx).Create(order).Error
 }
 
-// FindByID 按 ID 查询工单 (含企业关联), 不存在时返回 nil
+// FindByID 按 ID 查询工单 (含关联人/单位/审核人/维修员), 不存在时返回 nil
 func (r *OrderRepository) FindByID(ctx context.Context, id string) (*model.RepairOrder, error) {
 	var order model.RepairOrder
-	err := r.db.WithContext(ctx).Preload("Enterprise").Where("id = ?", id).First(&order).Error
+	err := r.db.WithContext(ctx).
+		Preload("Enterprise").
+		Preload("Reporter").
+		Preload("Auditor").
+		Preload("Repairer").
+		Where("id = ?", id).First(&order).Error
 	if err == gorm.ErrRecordNotFound {
 		return nil, nil
 	}
@@ -87,17 +92,19 @@ func (r *OrderRepository) ListByReporter(ctx context.Context, reporterID, enterp
 
 // OrderAdminFilter 管理端工单筛选条件 (5.1)
 type OrderAdminFilter struct {
-	Status     []string
-	Urgency    string
-	Keyword    string
-	DateFrom   *time.Time
-	DateTo     *time.Time
-	ReporterID string
-	SortBy     string // submitted_at | urgency | created_at
-	SortOrder  string // asc | desc
+	Status       []string
+	Urgency      string
+	Keyword      string
+	EnterpriseID string // 企业精确筛选 (前端以企业下拉形式使用; 单位审核员必传且限定本单位)
+	CategoryID   string // 项目大类精确筛选
+	DateFrom     *time.Time
+	DateTo       *time.Time
+	ReporterID   string
+	SortBy       string // order_no | enterprise_name | reporter | category_name | urgency | status | submitted_at | created_at
+	SortOrder    string // asc | desc
 }
 
-// ListForAdmin 管理端分页查询工单 (5.1), 支持多状态/紧急度/关键字/时间范围/报修人筛选
+// ListForAdmin 管理端分页查询工单 (5.1), 支持多状态/紧急度/关键字/单位/大类/时间范围/报修人筛选
 func (r *OrderRepository) ListForAdmin(ctx context.Context, f OrderAdminFilter, offset, limit int) ([]model.RepairOrder, int64, error) {
 	base := r.db.WithContext(ctx).Model(&model.RepairOrder{}).
 		Joins("JOIN users ON users.id = repair_orders.reporter_id")
@@ -109,8 +116,15 @@ func (r *OrderRepository) ListForAdmin(ctx context.Context, f OrderAdminFilter, 
 	}
 	if f.Keyword != "" {
 		like := "%" + f.Keyword + "%"
-		base = base.Where("repair_orders.order_no LIKE ? OR repair_orders.project_name LIKE ? OR users.nickname LIKE ?",
-			like, like, like)
+		// 工单号 / 大类名快照 / 属性名快照 / 描述 / 报修人昵称
+		base = base.Where("repair_orders.order_no LIKE ? OR repair_orders.category_name LIKE ? OR repair_orders.property_name LIKE ? OR repair_orders.description LIKE ? OR users.nickname LIKE ?",
+			like, like, like, like, like)
+	}
+	if f.EnterpriseID != "" {
+		base = base.Where("repair_orders.enterprise_id = ?", f.EnterpriseID)
+	}
+	if f.CategoryID != "" {
+		base = base.Where("repair_orders.category_id = ?", f.CategoryID)
 	}
 	if f.DateFrom != nil {
 		base = base.Where("repair_orders.submitted_at >= ?", *f.DateFrom)
@@ -127,12 +141,12 @@ func (r *OrderRepository) ListForAdmin(ctx context.Context, f OrderAdminFilter, 
 		return nil, 0, err
 	}
 
-	sortField := "repair_orders.submitted_at" // 默认按提交时间
-	switch f.SortBy {
-	case "urgency":
-		sortField = "repair_orders.urgency"
-	case "created_at":
-		sortField = "repair_orders.created_at"
+	sortField, sErr := adminOrderSortField(f.SortBy)
+	if sErr != nil {
+		return nil, 0, sErr
+	}
+	if strings.HasPrefix(sortField, "enterprises.") {
+		base = base.Joins("JOIN enterprises ON enterprises.id = repair_orders.enterprise_id")
 	}
 	dir := "DESC"
 	if strings.EqualFold(f.SortOrder, "asc") {
@@ -150,6 +164,30 @@ func (r *OrderRepository) ListForAdmin(ctx context.Context, f OrderAdminFilter, 
 		return nil, 0, err
 	}
 	return orders, total, nil
+}
+
+// adminOrderSortField 管理端排序字段白名单 → SQL 列 (防注入)
+func adminOrderSortField(sortBy string) (string, error) {
+	switch sortBy {
+	case "", "submitted_at":
+		return "repair_orders.submitted_at", nil
+	case "order_no":
+		return "repair_orders.order_no", nil
+	case "enterprise_name":
+		return "enterprises.name", nil
+	case "reporter":
+		return "users.nickname", nil
+	case "category_name":
+		return "repair_orders.category_name", nil
+	case "urgency":
+		return "repair_orders.urgency", nil
+	case "status":
+		return "repair_orders.status", nil
+	case "created_at":
+		return "repair_orders.created_at", nil
+	default:
+		return "", fmt.Errorf("invalid sort_by: %s", sortBy)
+	}
 }
 
 // ListForExportByEnterprise 企业模式下导出 (5.14): 按 enterprise_id + 完工时间范围查询, 完工时间正序
@@ -171,13 +209,15 @@ func (r *OrderRepository) ListForExportByEnterprise(ctx context.Context, enterpr
 	return orders, nil
 }
 
-// ListForExportByRepairer 业务员模式下导出 (5.14): 通过时间轴 complete 操作人关联查询工单, 完工时间正序
+// ListForExportByRepairer 业务员模式下导出 (5.14): 优先按 repairer_id(接单时绑定) 关联,
+// 历史工单 (repairer_id 为空) 回退按时间轴 complete 操作人关联; 完工时间正序
 func (r *OrderRepository) ListForExportByRepairer(ctx context.Context, repairerID, status string, from, to time.Time) ([]model.RepairOrder, error) {
-	sub := r.db.Model(&model.OrderTimeline{}).
+	subComplete := r.db.Model(&model.OrderTimeline{}).
 		Select("DISTINCT order_id").
 		Where("operator_id = ? AND action = ?", repairerID, string(model.ActionComplete))
 	base := r.db.WithContext(ctx).Model(&model.RepairOrder{}).
-		Where("id IN (?) AND completed_at IS NOT NULL", sub).
+		Where("completed_at IS NOT NULL").
+		Where("repairer_id = ? OR id IN (?)", repairerID, subComplete).
 		Where("completed_at >= ? AND completed_at <= ?", from, to)
 	if status != "" {
 		base = base.Where("status = ?", status)
@@ -206,9 +246,10 @@ func (r *OrderRepository) ListRepairers(ctx context.Context) ([]model.User, erro
 	return users, nil
 }
 
-// GenerateOrderNo 生成当日工单号: XNB-{YYYYMMDD}-{3位当日流水号} (提交上报时调用)
+// GenerateOrderNo 生成当日工单号: WO{YYYYMMDD}{4位当日流水号} (提交上报时调用)
+// 示例: WO202609060001; 草稿阶段 order_no 为空
 func (r *OrderRepository) GenerateOrderNo(ctx context.Context, now time.Time) (string, error) {
-	prefix := fmt.Sprintf("XNB-%s-", now.Format("20060102"))
+	prefix := fmt.Sprintf("WO%s", now.Format("20060102"))
 
 	var maxNo string
 	err := r.db.WithContext(ctx).Model(&model.RepairOrder{}).
@@ -221,12 +262,12 @@ func (r *OrderRepository) GenerateOrderNo(ctx context.Context, now time.Time) (s
 	}
 
 	seq := 1
-	if len(maxNo) == len(prefix)+3 {
-		if _, err := fmt.Sscanf(maxNo[len(prefix):], "%03d", &seq); err == nil {
+	if len(maxNo) == len(prefix)+4 {
+		if _, err := fmt.Sscanf(maxNo[len(prefix):], "%04d", &seq); err == nil {
 			seq++
 		}
 	}
-	return fmt.Sprintf("%s%03d", prefix, seq), nil
+	return fmt.Sprintf("%s%04d", prefix, seq), nil
 }
 
 // ────────────────────────────────────────────

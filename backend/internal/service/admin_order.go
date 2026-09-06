@@ -1,6 +1,10 @@
-// AdminOrderService 管理后台工单处理业务逻辑 (第五章 5.1-5.7)。
+// AdminOrderService 管理后台工单处理业务逻辑 (第五章 5.1-5.16)。
 //
-// 鉴权由中间件 RequirePlatformAdmin 保证 (仅平台管理员)。
+// 权限: 本服务内统一按 Operator(用户ID+平台角色) 判定:
+//   - 店方操作 (接单/处理/完工/重新打开/收据/对账): 维修业务员(role=1)/超管(role=2)
+//   - 单位侧操作 (审核通过 reported→pending_accept、退回 reported): 该单位单位审核员(membership.role=1) 亦可
+//
+// 具体单位域校验统一走 AccessService, 便于后续甲方细化"业务范围"等约束时集中调整。
 package service
 
 import (
@@ -43,7 +47,10 @@ type AdminOrderItem struct {
 	Reporter       AdminReporter `json:"reporter"`
 	EnterpriseID   string        `json:"enterprise_id"`
 	EnterpriseName string        `json:"enterprise_name"`
-	ProjectName    string        `json:"project_name"`
+	CategoryID     string        `json:"category_id"`
+	CategoryName   string        `json:"category_name"`
+	PropertyID     string        `json:"property_id"`
+	PropertyName   string        `json:"property_name"`
 	Description    string        `json:"description"`
 	Urgency        string        `json:"urgency"`
 	UrgencyLabel   string        `json:"urgency_label"`
@@ -93,11 +100,10 @@ type AdminOrderDetail struct {
 	OrderNo          *string               `json:"order_no"`
 	EnterpriseID     string                `json:"enterprise_id"`
 	EnterpriseName   string                `json:"enterprise_name"`
-	ProjectName      string                `json:"project_name"`
-	Category         string                `json:"category"`
-	CategoryLabel    string                `json:"category_label"`
-	Property         string                `json:"property"`
-	PropertyLabel    string                `json:"property_label"`
+	CategoryID       string                `json:"category_id"`
+	CategoryName     string                `json:"category_name"`
+	PropertyID       string                `json:"property_id"`
+	PropertyName     string                `json:"property_name"`
 	Description      string                `json:"description"`
 	Urgency          string                `json:"urgency"`
 	UrgencyLabel     string                `json:"urgency_label"`
@@ -111,13 +117,17 @@ type AdminOrderDetail struct {
 	UnitPrice        float64               `json:"unit_price"`
 	Amount           float64               `json:"amount"`
 	Metadata         *model.RepairMetadata `json:"metadata,omitempty"`
+	AuditorName      string                `json:"auditor_name,omitempty"`
+	AuditorID        string                `json:"auditor_id,omitempty"`
+	RepairerName     string                `json:"repairer_name,omitempty"`
+	RepairerID       string                `json:"repairer_id,omitempty"`
 	Images           []ImageItem           `json:"images"`
 	Receipts         []ImageItem           `json:"receipts"`
 	Timeline         []AdminTimelineItem   `json:"timeline"`
 	AvailableActions []AdminAction         `json:"available_actions"`
 	CreatedAt        time.Time             `json:"created_at"`
 	SubmittedAt      *time.Time            `json:"submitted_at"`
-	ReviewedAt       *time.Time            `json:"reviewed_at,omitempty"`
+	AuditedAt        *time.Time            `json:"audited_at,omitempty"`
 	AcceptedAt       *time.Time            `json:"accepted_at,omitempty"`
 	CompletedAt      *time.Time            `json:"completed_at,omitempty"`
 	UpdatedAt        time.Time             `json:"updated_at"`
@@ -132,6 +142,7 @@ type AdminOrderService struct {
 	orders    *repository.OrderRepository
 	images    *repository.OrderImageRepository
 	timelines *repository.OrderTimelineRepository
+	access    *AccessService
 	imagebed  *imagebed.Client
 	notifier  *OrderNotifier
 	logger    *zap.Logger
@@ -142,6 +153,7 @@ func NewAdminOrderService(
 	orders *repository.OrderRepository,
 	images *repository.OrderImageRepository,
 	timelines *repository.OrderTimelineRepository,
+	access *AccessService,
 	imagebed *imagebed.Client,
 	notifier *OrderNotifier,
 	logger *zap.Logger,
@@ -150,22 +162,26 @@ func NewAdminOrderService(
 		orders:    orders,
 		images:    images,
 		timelines: timelines,
+		access:    access,
 		imagebed:  imagebed,
 		notifier:  notifier,
 		logger:    logger,
 	}
 }
 
-// ListRepairers 维修员(业务员)列表 (5.15): 平台管理员即维修员
+// ListRepairers 维修员(业务员)列表 (5.15): users.role>=1 即维修业务员/超管
 func (s *AdminOrderService) ListRepairers(ctx context.Context) ([]model.User, error) {
 	return s.orders.ListRepairers(ctx)
 }
 
 // ListOrders 工单列表 (5.1)
-func (s *AdminOrderService) ListOrders(ctx context.Context, f repository.OrderAdminFilter, page, pageSize int) (*AdminOrderList, error) {
+//
+// 鉴权: 店方角色 (role>=1) 可查全部; 单位审核员 (role=0 + membership.role=1)
+// 必须传 enterprise_id 且限定于其有权限的单位。
+func (s *AdminOrderService) ListOrders(ctx context.Context, op Operator, f repository.OrderAdminFilter, page, pageSize int) (*AdminOrderList, error) {
 	for _, st := range f.Status {
 		if _, ok := statusLabels[st]; !ok {
-			return nil, apperrors.ErrInvalidParam.WithMessage("status 取值: draft/reported/reviewed/processing/completed/cancelled")
+			return nil, apperrors.ErrInvalidParam.WithMessage("status 取值: draft/reported/pending_accept/processing/completed/cancelled")
 		}
 	}
 	if f.Urgency != "" {
@@ -173,11 +189,25 @@ func (s *AdminOrderService) ListOrders(ctx context.Context, f repository.OrderAd
 			return nil, apperrors.ErrInvalidParam.WithMessage("urgency 取值: normal/urgent/very_urgent")
 		}
 	}
-	if f.SortBy != "" && f.SortBy != "submitted_at" && f.SortBy != "urgency" && f.SortBy != "created_at" {
-		return nil, apperrors.ErrInvalidParam.WithMessage("sort_by 取值: submitted_at/urgency/created_at")
+	if f.SortBy != "" {
+		switch f.SortBy {
+		case "order_no", "enterprise_name", "reporter", "category_name", "urgency", "status", "submitted_at", "created_at":
+		default:
+			return nil, apperrors.ErrInvalidParam.WithMessage("sort_by 取值: order_no/enterprise_name/reporter/category_name/urgency/status/submitted_at/created_at")
+		}
 	}
 	if f.SortOrder != "" && !strings.EqualFold(f.SortOrder, "asc") && !strings.EqualFold(f.SortOrder, "desc") {
 		return nil, apperrors.ErrInvalidParam.WithMessage("sort_order 取值: asc/desc")
+	}
+
+	// 单位审核员限定本单位
+	if !op.IsStoreStaff() {
+		if f.EnterpriseID == "" {
+			return nil, apperrors.ErrWrongEnterprise.WithMessage("单位审核员需指定 enterprise_id 并仅可查看本单位工单")
+		}
+		if err := s.access.CanManageEnterprise(ctx, f.EnterpriseID, op.UserID, op.Role); err != nil {
+			return nil, err
+		}
 	}
 
 	orders, total, err := s.orders.ListForAdmin(ctx, f, (page-1)*pageSize, pageSize)
@@ -202,7 +232,10 @@ func (s *AdminOrderService) ListOrders(ctx context.Context, f repository.OrderAd
 			Reporter:       AdminReporter{ID: o.Reporter.ID, Nickname: o.Reporter.Nickname, AvatarURL: o.Reporter.AvatarUrl},
 			EnterpriseID:   enterpriseIDStr(o.EnterpriseID),
 			EnterpriseName: o.Enterprise.Name,
-			ProjectName:    o.ProjectName,
+			CategoryID:     nstr(o.CategoryID),
+			CategoryName:   o.CategoryName,
+			PropertyID:     nstr(o.PropertyID),
+			PropertyName:   o.PropertyName,
 			Description:    o.Description,
 			Urgency:        o.Urgency,
 			UrgencyLabel:   urgencyLabels[o.Urgency],
@@ -228,9 +261,14 @@ func (s *AdminOrderService) ListOrders(ctx context.Context, f repository.OrderAd
 }
 
 // Detail 工单详情 (5.2)
-func (s *AdminOrderService) Detail(ctx context.Context, orderID string) (*AdminOrderDetail, error) {
+//
+// 鉴权: 店方角色; 或该工单所属单位的单位审核员。
+func (s *AdminOrderService) Detail(ctx context.Context, op Operator, orderID string) (*AdminOrderDetail, error) {
 	order, err := s.loadOrder(ctx, orderID)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.access.CanAccessOrder(ctx, order.EnterpriseID, op.UserID, op.Role); err != nil {
 		return nil, err
 	}
 
@@ -247,18 +285,15 @@ func (s *AdminOrderService) Detail(ctx context.Context, orderID string) (*AdminO
 		return nil, s.dbErr("list timelines failed", err)
 	}
 
-	meta := parseOrderMetadata(order.Metadata)
-
 	return &AdminOrderDetail{
 		ID:               order.ID,
 		OrderNo:          order.OrderNo,
 		EnterpriseID:     enterpriseIDStr(order.EnterpriseID),
 		EnterpriseName:   order.Enterprise.Name,
-		ProjectName:      order.ProjectName,
-		Category:         order.Category,
-		CategoryLabel:    categoryLabels[order.Category],
-		Property:         order.Property,
-		PropertyLabel:    propertyLabels[order.Property],
+		CategoryID:       nstr(order.CategoryID),
+		CategoryName:     order.CategoryName,
+		PropertyID:       nstr(order.PropertyID),
+		PropertyName:     order.PropertyName,
 		Description:      order.Description,
 		Urgency:          order.Urgency,
 		UrgencyLabel:     urgencyLabels[order.Urgency],
@@ -271,37 +306,28 @@ func (s *AdminOrderService) Detail(ctx context.Context, orderID string) (*AdminO
 		Quantity:         order.Quantity,
 		UnitPrice:        order.UnitPrice,
 		Amount:           order.Amount,
-		Metadata:         meta,
+		Metadata:         parseOrderMetadata(order.Metadata),
+		AuditorName:      order.Auditor.Nickname,
+		AuditorID:        nstr(order.AuditedBy),
+		RepairerName:     order.Repairer.Nickname,
+		RepairerID:       nstr(order.RepairerID),
 		Images:           buildImageItems(images),
 		Receipts:         buildImageItems(receipts),
 		Timeline:         buildAdminTimelineItems(timelines),
 		AvailableActions: adminAvailableActions(order.Status),
 		CreatedAt:        order.CreatedAt,
 		SubmittedAt:      order.SubmittedAt,
-		ReviewedAt:       order.ReviewedAt,
+		AuditedAt:        order.AuditedAt,
 		AcceptedAt:       order.AcceptedAt,
 		CompletedAt:      order.CompletedAt,
 		UpdatedAt:        order.UpdatedAt,
 	}, nil
 }
 
-// parseOrderMetadata 解析 repair_orders.metadata JSONB 为 RepairMetadata 指针, 全为空字段时返回 nil
-func parseOrderMetadata(raw datatypes.JSON) *model.RepairMetadata {
-	if len(raw) == 0 {
-		return nil
-	}
-	var meta model.RepairMetadata
-	if err := json.Unmarshal(raw, &meta); err != nil {
-		return nil
-	}
-	if meta.RepairResult == "" && meta.RepairMethod == "" && meta.WarrantyPeriod == "" && meta.ExtraRemark == "" && meta.RepairDuration == 0 {
-		return nil
-	}
-	return &meta
-}
-
-// Review 查阅工单 (5.3): reported → reviewed
-func (s *AdminOrderService) Review(ctx context.Context, adminID, orderID, remark, ip string) error {
+// Audit 审核通过工单 (5.3): reported → pending_accept
+//
+// 鉴权: 该单位单位审核员或店方角色。
+func (s *AdminOrderService) Audit(ctx context.Context, op Operator, orderID, remark, ip string) error {
 	if err := validateLength("remark", remark, 0, 100); err != nil {
 		return err
 	}
@@ -310,21 +336,39 @@ func (s *AdminOrderService) Review(ctx context.Context, adminID, orderID, remark
 		return err
 	}
 	if order.Status != string(model.OrderReported) {
-		return apperrors.ErrOrderCannotEdit.WithMessage("仅 reported 状态的工单可查阅")
+		return apperrors.ErrOrderCannotEdit.WithMessage("仅 reported 状态的工单可审核通过")
+	}
+	if err := s.access.CanAccessOrder(ctx, order.EnterpriseID, op.UserID, op.Role); err != nil {
+		return err
 	}
 
 	now := time.Now()
 	from := order.Status
-	order.Status = string(model.OrderReviewed)
-	order.ReviewedAt = &now
+	order.Status = string(model.OrderPendingAccept)
+	order.AuditedAt = &now
+	order.AuditedBy = &op.UserID
 	if err := s.orders.Update(ctx, order); err != nil {
 		return s.dbErr("update order failed", err)
 	}
-	return s.appendAdminTimeline(ctx, order, adminID, string(model.ActionReview), from, string(model.OrderReviewed), remark, ip)
+	if err := s.appendAdminTimeline(ctx, order, op.UserID, string(model.ActionAudit), from, string(model.OrderPendingAccept), remark, ip); err != nil {
+		return err
+	}
+	// 通知报修人: 已通过审核, 等待业务员接单
+	if s.notifier != nil {
+		s.notifier.NotifyOrderAudited(ctx, order)
+	}
+	s.logger.Info("order audited",
+		zap.String("order_id", order.ID), zap.String("operator_id", op.UserID), zap.String("role", fmt.Sprint(op.Role)))
+	return nil
 }
 
-// Accept 接单维修 (5.4): reviewed → processing
-func (s *AdminOrderService) Accept(ctx context.Context, adminID, orderID, remark, ip string) error {
+// Accept 接单维修 (5.4): pending_accept → processing
+//
+// 鉴权: 店方角色 (维修业务员/超管)。
+func (s *AdminOrderService) Accept(ctx context.Context, op Operator, orderID, remark, ip string) error {
+	if err := s.access.StaffOnly(op); err != nil {
+		return err
+	}
 	if err := validateLength("remark", remark, 0, 100); err != nil {
 		return err
 	}
@@ -332,26 +376,29 @@ func (s *AdminOrderService) Accept(ctx context.Context, adminID, orderID, remark
 	if err != nil {
 		return err
 	}
-	if order.Status != string(model.OrderReviewed) {
-		return apperrors.ErrOrderCannotEdit.WithMessage("仅 reviewed 状态的工单可接单")
+	if order.Status != string(model.OrderPendingAccept) {
+		return apperrors.ErrOrderCannotEdit.WithMessage("仅 pending_accept 状态的工单可接单")
 	}
 
 	now := time.Now()
 	from := order.Status
 	order.Status = string(model.OrderProcessing)
 	order.AcceptedAt = &now
+	order.RepairerID = &op.UserID // 维修业务员（接单人）: accept 时写入
 	if err := s.orders.Update(ctx, order); err != nil {
 		return s.dbErr("update order failed", err)
 	}
-	// 订阅消息: 工单处理中 (通知报修人)
 	if s.notifier != nil {
 		s.notifier.NotifyOrderProcessing(ctx, order)
 	}
-	return s.appendAdminTimeline(ctx, order, adminID, string(model.ActionAccept), from, string(model.OrderProcessing), remark, ip)
+	return s.appendAdminTimeline(ctx, order, op.UserID, string(model.ActionAccept), from, string(model.OrderProcessing), remark, ip)
 }
 
-// Reject 退回工单 (5.5): reported/reviewed/processing → draft
-func (s *AdminOrderService) Reject(ctx context.Context, adminID, orderID, reason, ip string) error {
+// Reject 退回工单 (5.5): reported/pending_accept/processing → draft
+//
+// 鉴权: reported 由该单位单位审核员或店方角色退回;
+// pending_accept/processing 仅店方角色退回。
+func (s *AdminOrderService) Reject(ctx context.Context, op Operator, orderID, reason, ip string) error {
 	reason = strings.TrimSpace(reason)
 	n := len([]rune(reason))
 	if n < 10 || n > 200 {
@@ -363,24 +410,35 @@ func (s *AdminOrderService) Reject(ctx context.Context, adminID, orderID, reason
 		return err
 	}
 	switch order.Status {
-	case string(model.OrderReported), string(model.OrderReviewed), string(model.OrderProcessing):
+	case string(model.OrderReported):
+		// 单位审核员或店方角色可退回已上报工单
+		if err := s.access.CanAccessOrder(ctx, order.EnterpriseID, op.UserID, op.Role); err != nil {
+			return err
+		}
+	case string(model.OrderPendingAccept), string(model.OrderProcessing):
+		if err := s.access.StaffOnly(op); err != nil {
+			return apperrors.ErrNotAdmin.WithMessage("仅维修业务员/超级管理员可退回待接单或处理中的工单")
+		}
 	default:
-		return apperrors.ErrOrderCannotEdit.WithMessage("仅 reported/reviewed/processing 状态的工单可退回")
+		return apperrors.ErrOrderCannotEdit.WithMessage("仅 reported/pending_accept/processing 状态的工单可退回")
 	}
 
 	from := order.Status
 	order.Status = string(model.OrderDraft)
 	order.RejectReason = reason
+	// 退回派生规则: 清空流转时间戳/责任人 (按适用情况), 保留 reject_reason 供"已退回"展示
 	order.SubmittedAt = nil
-	order.ReviewedAt = nil
+	order.AuditedAt = nil
+	order.AuditedBy = nil
 	order.AcceptedAt = nil
+	order.RepairerID = nil
 	if err := s.orders.Update(ctx, order); err != nil {
 		return s.dbErr("update order failed", err)
 	}
 	if s.notifier != nil {
 		s.notifier.NotifyOrderReject(ctx, order, reason)
 	}
-	return s.appendAdminTimeline(ctx, order, adminID, string(model.ActionReject), from, string(model.OrderDraft), reason, ip)
+	return s.appendAdminTimeline(ctx, order, op.UserID, string(model.ActionReject), from, string(model.OrderDraft), reason, ip)
 }
 
 // CompleteOrderInput 完工请求入参 (5.6)
@@ -402,7 +460,12 @@ type UpdateFinanceInput struct {
 }
 
 // Complete 完工 (5.6): processing → completed, 收据全量替换, 记录对账字段
-func (s *AdminOrderService) Complete(ctx context.Context, adminID, orderID, ip string, in CompleteOrderInput) error {
+//
+// 鉴权: 店方角色。
+func (s *AdminOrderService) Complete(ctx context.Context, op Operator, orderID, ip string, in CompleteOrderInput) error {
+	if err := s.access.StaffOnly(op); err != nil {
+		return err
+	}
 	remark := strings.TrimSpace(in.Remark)
 	if err := validateLength("remark", remark, 1, 200); err != nil {
 		return apperrors.ErrInvalidParam.WithMessage("完工备注必填且不超过200字")
@@ -445,24 +508,25 @@ func (s *AdminOrderService) Complete(ctx context.Context, adminID, orderID, ip s
 		return s.dbErr("update order failed", err)
 	}
 
-	// 收据全量替换 (status 流程)
 	if err := s.replaceImages(ctx, order.ID, string(model.ImageReceipt), in.Receipts); err != nil {
 		return err
 	}
 
 	s.logger.Info("order completed",
-		zap.String("order_id", order.ID), zap.String("operator_id", adminID))
+		zap.String("order_id", order.ID), zap.String("operator_id", op.UserID))
 
-	// 订阅消息: 工单完结通知 (通知报修人)
 	if s.notifier != nil {
-		s.notifier.NotifyOrderComplete(ctx, order, adminID)
+		s.notifier.NotifyOrderComplete(ctx, order, op.UserID)
 	}
 
-	return s.appendAdminTimeline(ctx, order, adminID, string(model.ActionComplete), from, string(model.OrderCompleted), remark, ip)
+	return s.appendAdminTimeline(ctx, order, op.UserID, string(model.ActionComplete), from, string(model.OrderCompleted), remark, ip)
 }
 
-// UpdateFinance 修改对账信息 (5.6.1): 仅 completed 状态, 至少传一项
-func (s *AdminOrderService) UpdateFinance(ctx context.Context, adminID, orderID, ip string, in UpdateFinanceInput) error {
+// UpdateFinance 修改对账信息 (5.6.1): 仅 completed 状态, 至少传一项; 鉴权: 店方角色
+func (s *AdminOrderService) UpdateFinance(ctx context.Context, op Operator, orderID, ip string, in UpdateFinanceInput) error {
+	if err := s.access.StaffOnly(op); err != nil {
+		return err
+	}
 	order, err := s.loadOrder(ctx, orderID)
 	if err != nil {
 		return err
@@ -474,7 +538,6 @@ func (s *AdminOrderService) UpdateFinance(ctx context.Context, adminID, orderID,
 		return apperrors.ErrInvalidParam.WithMessage("至少需要传入一个字段")
 	}
 
-	// 记录修改前快照, 用于时间轴增量差异日志
 	beforeQuantity := order.Quantity
 	beforeUnitPrice := order.UnitPrice
 	beforeRepairContent := order.RepairContent
@@ -505,10 +568,118 @@ func (s *AdminOrderService) UpdateFinance(ctx context.Context, adminID, orderID,
 		return s.dbErr("update order failed", err)
 	}
 
-	// 时间轴差异日志 (from_status=to_status=completed, 仅记录增量变化字段)
 	diff := financeIncrementDiff(beforeQuantity, beforeUnitPrice, beforeRepairContent, beforeMeta, order)
-	return s.appendAdminTimeline(ctx, order, adminID, string(model.ActionUpdateFinance), order.Status, order.Status, diff, ip)
+	return s.appendAdminTimeline(ctx, order, op.UserID, string(model.ActionUpdateFinance), order.Status, order.Status, diff, ip)
 }
+
+// Reopen 重新打开工单 (5.16): completed → processing (重新维修, 清空完工信息)
+//
+// 鉴权: 店方角色。
+func (s *AdminOrderService) Reopen(ctx context.Context, op Operator, orderID, remark, ip string) error {
+	if err := s.access.StaffOnly(op); err != nil {
+		return err
+	}
+	if err := validateLength("remark", remark, 0, 200); err != nil {
+		return err
+	}
+	order, err := s.loadOrder(ctx, orderID)
+	if err != nil {
+		return err
+	}
+	if order.Status != string(model.OrderCompleted) {
+		return apperrors.ErrOrderCannotEdit.WithMessage("仅 completed 状态的工单可重新打开")
+	}
+
+	from := order.Status
+	order.Status = string(model.OrderProcessing)
+	order.CompletedAt = nil // 再次完工后重新登记
+	if err := s.orders.Update(ctx, order); err != nil {
+		return s.dbErr("update order failed", err)
+	}
+	if err := s.appendAdminTimeline(ctx, order, op.UserID, string(model.ActionReopen), from, string(model.OrderProcessing), remark, ip); err != nil {
+		return err
+	}
+	// 通知报修人: 工单已重新处理
+	if s.notifier != nil {
+		s.notifier.NotifyOrderReopened(ctx, order)
+	}
+	s.logger.Info("order reopened",
+		zap.String("order_id", order.ID), zap.String("operator_id", op.UserID))
+	return nil
+}
+
+// UploadReceipt 上传收据图片 (5.7): processing(完工时) 或 completed(完工后补充)
+//
+// 鉴权: 店方角色。
+func (s *AdminOrderService) UploadReceipt(ctx context.Context, op Operator, orderID, filename string, size int64, content io.Reader, ip string) (*UploadImageResult, error) {
+	if err := s.access.StaffOnly(op); err != nil {
+		return nil, err
+	}
+	order, err := s.loadOrder(ctx, orderID)
+	if err != nil {
+		return nil, err
+	}
+	switch order.Status {
+	case string(model.OrderProcessing), string(model.OrderCompleted):
+	default:
+		return nil, apperrors.ErrOrderCannotEdit.WithMessage("仅 processing/completed 状态的工单可上传收据")
+	}
+
+	if size <= 0 || size > maxImageSize {
+		return nil, apperrors.ErrImageInvalid.WithMessage("图片大小需不超过 5MB")
+	}
+	head := make([]byte, 512)
+	n, err := io.ReadFull(io.LimitReader(content, int64(len(head))), head)
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		return nil, apperrors.ErrImageInvalid
+	}
+	head = head[:n]
+	if !validImageFormat(head, filename) {
+		return nil, apperrors.ErrImageInvalid.WithMessage("仅支持 jpg/png/webp 格式")
+	}
+
+	count, err := s.images.CountNotDeleted(ctx, orderID, string(model.ImageReceipt))
+	if err != nil {
+		return nil, s.dbErr("count receipts failed", err)
+	}
+	if count >= maxReceiptImages {
+		return nil, apperrors.ErrImageTooMany.WithMessage("收据最多 3 张")
+	}
+
+	upload, err := s.imagebed.Upload(ctx, filename, io.MultiReader(bytes.NewReader(head), content))
+	if err != nil {
+		s.logger.Error("image bed upload failed", zap.Error(err))
+		return nil, apperrors.ErrOSSUpload.WithError(err)
+	}
+
+	img := &model.OrderImage{
+		ID:        uuid.New().String(),
+		OrderID:   orderID,
+		ImageUrl:  upload.URL,
+		ImageType: string(model.ImageReceipt),
+		Status:    string(model.ImageTemporary),
+		SortOrder: -1, // 由 5.6 完工接口统一设置
+		FileSize:  int(size),
+	}
+	if err := s.images.Create(ctx, img); err != nil {
+		return nil, s.dbErr("create receipt record failed", err)
+	}
+
+	if err := s.appendAdminTimeline(ctx, order, op.UserID, string(model.ActionUploadReceipt), order.Status, order.Status, "", ip); err != nil {
+		return nil, err
+	}
+
+	return &UploadImageResult{
+		ID:        img.ID,
+		URL:       img.ImageUrl,
+		SortOrder: img.SortOrder,
+		FileSize:  img.FileSize,
+	}, nil
+}
+
+// ────────────────────────────────────────────
+// 内部辅助
+// ────────────────────────────────────────────
 
 // setOrderMetadata 校验并写入 metadata JSONB (为空时填入 RepairMetadata 默认值)
 func (s *AdminOrderService) setOrderMetadata(ctx context.Context, order *model.RepairOrder, meta model.RepairMetadata) error {
@@ -551,8 +722,7 @@ func appendChangePrice(diff, label string, old, new float64) string {
 	return appendChange(diff, label, fmt.Sprintf("%.2f", old), fmt.Sprintf("%.2f", new))
 }
 
-// financeIncrementDiff 生成修改对账信息的增量 diff 文案, 未变化字段跳过, 多个变化用 "; " 分隔
-// 示例: "数量: 1 -> 2; 单价: 2.00 -> 3.00; 维修结果: -> 完全修复"
+// financeIncrementDiff 生成修改对账信息的增量 diff 文案, 未变化字段跳过
 func financeIncrementDiff(
 	beforeQuantity int, beforeUnitPrice float64, beforeRepairContent string,
 	oldMeta model.RepairMetadata, newOrder *model.RepairOrder,
@@ -570,75 +740,6 @@ func financeIncrementDiff(
 	return diff
 }
 
-// UploadReceipt 上传收据图片 (5.7): 仅 processing, status=temporary, sort_order=-1
-func (s *AdminOrderService) UploadReceipt(ctx context.Context, adminID, orderID, filename string, size int64, content io.Reader, ip string) (*UploadImageResult, error) {
-	order, err := s.loadOrder(ctx, orderID)
-	if err != nil {
-		return nil, err
-	}
-	if order.Status != string(model.OrderProcessing) {
-		return nil, apperrors.ErrOrderCannotEdit.WithMessage("仅 processing 状态的工单可上传收据")
-	}
-
-	// 大小与格式校验
-	if size <= 0 || size > maxImageSize {
-		return nil, apperrors.ErrImageInvalid.WithMessage("图片大小需不超过 5MB")
-	}
-	head := make([]byte, 512)
-	n, err := io.ReadFull(io.LimitReader(content, int64(len(head))), head)
-	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
-		return nil, apperrors.ErrImageInvalid
-	}
-	head = head[:n]
-	if !validImageFormat(head, filename) {
-		return nil, apperrors.ErrImageInvalid.WithMessage("仅支持 jpg/png/webp 格式")
-	}
-
-	// 数量限制: 同一工单未删除收据 ≤ 3
-	count, err := s.images.CountNotDeleted(ctx, orderID, string(model.ImageReceipt))
-	if err != nil {
-		return nil, s.dbErr("count receipts failed", err)
-	}
-	if count >= maxReceiptImages {
-		return nil, apperrors.ErrImageTooMany.WithMessage("收据最多 3 张")
-	}
-
-	// 图床上传
-	upload, err := s.imagebed.Upload(ctx, filename, io.MultiReader(bytes.NewReader(head), content))
-	if err != nil {
-		s.logger.Error("image bed upload failed", zap.Error(err))
-		return nil, apperrors.ErrOSSUpload.WithError(err)
-	}
-
-	img := &model.OrderImage{
-		ID:        uuid.New().String(),
-		OrderID:   orderID,
-		ImageUrl:  upload.URL,
-		ImageType: string(model.ImageReceipt),
-		Status:    string(model.ImageTemporary),
-		SortOrder: -1, // 由 5.6 完工接口统一设置
-		FileSize:  int(size),
-	}
-	if err := s.images.Create(ctx, img); err != nil {
-		return nil, s.dbErr("create receipt record failed", err)
-	}
-
-	if err := s.appendAdminTimeline(ctx, order, adminID, string(model.ActionUploadReceipt), order.Status, order.Status, "", ip); err != nil {
-		return nil, err
-	}
-
-	return &UploadImageResult{
-		ID:        img.ID,
-		URL:       img.ImageUrl,
-		SortOrder: img.SortOrder,
-		FileSize:  img.FileSize,
-	}, nil
-}
-
-// ────────────────────────────────────────────
-// 内部辅助
-// ────────────────────────────────────────────
-
 // loadOrder 查询工单, 不存在返回错误
 func (s *AdminOrderService) loadOrder(ctx context.Context, orderID string) (*model.RepairOrder, error) {
 	order, err := s.orders.FindByID(ctx, orderID)
@@ -653,12 +754,10 @@ func (s *AdminOrderService) loadOrder(ctx context.Context, orderID string) (*mod
 
 // replaceImages 图片全量替换 (status 流程, 复用于收据图)
 func (s *AdminOrderService) replaceImages(ctx context.Context, orderID, imageType string, urls []string) error {
-	// 1. 全部置 deleted
 	if err := s.images.MarkAllDeleted(ctx, orderID, imageType); err != nil {
 		return s.dbErr("mark images deleted failed", err)
 	}
 
-	// 2. 按列表激活
 	for idx, raw := range urls {
 		u := strings.TrimSpace(raw)
 		if u == "" {
@@ -713,25 +812,25 @@ func (s *AdminOrderService) appendAdminTimeline(ctx context.Context, order *mode
 
 // adminAvailableActions 按状态返回管理端可执行动作 (5.2)
 func adminAvailableActions(status string) []AdminAction {
-	switch status {
-	case string(model.OrderReported):
+	switch model.OrderStatus(status) {
+	case model.OrderReported:
 		return []AdminAction{
-			{Action: "review", Label: "查阅", ToStatus: string(model.OrderReviewed), ConfirmMessage: "确认已查阅该工单？"},
-			{Action: "reject", Label: "退回", ToStatus: string(model.OrderDraft), RequireReason: true, ReasonMinLength: 10, ConfirmMessage: "退回后报修人可修改重新提交，确认退回？"},
+			{Action: string(model.ActionAudit), Label: "审核通过", ToStatus: string(model.OrderPendingAccept), ConfirmMessage: "审核通过后工单进入待接单并上报维修业务员，确认？"},
+			{Action: string(model.ActionReject), Label: "退回", ToStatus: string(model.OrderDraft), RequireReason: true, ReasonMinLength: 10, ConfirmMessage: "退回后报修人可修改重新提交，确认退回？"},
 		}
-	case string(model.OrderReviewed):
+	case model.OrderPendingAccept:
 		return []AdminAction{
-			{Action: "accept", Label: "接单维修", ToStatus: string(model.OrderProcessing), ConfirmMessage: "确认接单维修该工单？"},
-			{Action: "reject", Label: "退回", ToStatus: string(model.OrderDraft), RequireReason: true, ReasonMinLength: 10, ConfirmMessage: "退回后报修人可修改重新提交，确认退回？"},
+			{Action: string(model.ActionAccept), Label: "接单维修", ToStatus: string(model.OrderProcessing), ConfirmMessage: "确认接单维修该工单？"},
+			{Action: string(model.ActionReject), Label: "退回", ToStatus: string(model.OrderDraft), RequireReason: true, ReasonMinLength: 10, ConfirmMessage: "退回后报修人可修改重新提交，确认退回？"},
 		}
-	case string(model.OrderProcessing):
+	case model.OrderProcessing:
 		return []AdminAction{
-			{Action: "complete", Label: "完工", ToStatus: string(model.OrderCompleted), ConfirmMessage: "确认完工该工单？"},
-			{Action: "reject", Label: "退回", ToStatus: string(model.OrderDraft), RequireReason: true, ReasonMinLength: 10, ConfirmMessage: "退回后报修人可修改重新提交，确认退回？"},
+			{Action: string(model.ActionComplete), Label: "完工", ToStatus: string(model.OrderCompleted), ConfirmMessage: "确认完工该工单？"},
+			{Action: string(model.ActionReject), Label: "退回", ToStatus: string(model.OrderDraft), RequireReason: true, ReasonMinLength: 10, ConfirmMessage: "退回后报修人可修改重新提交，确认退回？"},
 		}
-	case string(model.OrderCompleted):
+	case model.OrderCompleted:
 		return []AdminAction{
-			// 已完工工单仍可修改对账信息, 状态保持 completed 不变
+			{Action: string(model.ActionReopen), Label: "重新打开", ToStatus: string(model.OrderProcessing), ConfirmMessage: "重新打开后工单回到处理中，可再次完工登记，确认？"},
 			{Action: string(model.ActionUpdateFinance), Label: "修改对账信息", ToStatus: string(model.OrderCompleted), ConfirmMessage: "确认修改该工单的对账信息？"},
 		}
 	default:
@@ -748,7 +847,7 @@ func buildAdminTimelineItems(timelines []model.OrderTimeline) []AdminTimelineIte
 			Action:       tl.Action,
 			ActionLabel:  actionLabels[tl.Action],
 			OperatorName: tl.Operator.Nickname,
-			OperatorRole: operatorRoleName(tl.Operator.Role),
+			OperatorRole: operatorRoleName(tl.Operator.Role, tl.Action),
 			FromStatus:   strPtr(tl.FromStatus),
 			ToStatus:     strPtr(tl.ToStatus),
 			Remark:       strPtr(tl.Remark),
@@ -767,13 +866,17 @@ func strPtr(s string) *string {
 	return &s
 }
 
-// operatorRoleName 操作人角色名 (>=2=超级管理员, >=1=管理员, 其余为报修人)
-func operatorRoleName(role int) string {
-	if role >= model.PlatformRoleSuperAdmin {
+// operatorRoleName 操作人角色展示名
+// 平台角色 >=2=超级管理员, >=1=维修业务员; audit 动作且为普通用户时为单位审核员; 其余为报修人。
+func operatorRoleName(role int, action string) string {
+	if role >= model.PlatformRoleSuper {
 		return "超级管理员"
 	}
-	if role >= model.PlatformRolePlatformAdmin {
-		return "管理员"
+	if role >= model.PlatformRoleRepairer {
+		return "维修业务员"
+	}
+	if action == string(model.ActionAudit) || action == string(model.ActionReject) {
+		return "单位审核员"
 	}
 	return "报修人"
 }

@@ -87,16 +87,17 @@ npx vue-tsc --noEmit         # 类型检查
 
 - 分层：`handler → service → repository → model`，禁止跨层调用（如 handler 直连 repository）。
 - 依赖装配集中在 `cmd/server/main.go`，新增 service/handler 后需在此注册并挂路由。
-- 路由统一挂在 `/api/v1` 下；鉴权用 `middleware.JWTAuth`，平台管理员接口再加 `middleware.RequirePlatformAdmin`（role>=1），超级管理员（role=2）接口单独控制。
+- 路由统一挂在 `/api/v1` 下；鉴权用 `middleware.JWTAuth`。角色为**双层模型**：全局 `users.role` 0=普通用户 / 1=维修业务员（原平台管理员，店方）/ 2=超级管理员；单位内 `memberships.role` 0=普通成员 / 1=单位审核员。后台工单处理接口用 `middleware.RequirePlatformAdmin`（role>=1），单位审核员操作（本单位成员审批、本单位工单审核）按该企业 membership.role=1 校验，超级管理员（role=2）接口单独控制。
 - 错误处理统一走 `apperrors` + `pkg/response`：成功 `response.OK(c, data)`，失败 `response.FailError(c, err)`；JSON 格式为 `{"code": xxx, "message": "..."}`。
 - 响应结构体字段按需使用 `omitempty`，避免返回空值噪音。
 
 ## 6. 业务与领域要点
 
-- **工单状态机**：draft → reported(已上报) → reviewed(已阅) → processing(处理中) → completed(已完结)；reject(退回) / cancelled(取消) 分支。
-- **角色**：平台用户 role 0=普通/1=平台管理员/2=超级管理员；企业内另有 membership 角色（admin/member）与状态（pending/approved/…）。
+- **工单状态机**：draft(草稿) → reported(已上报) → pending_accept(待接单) → processing(处理中) → completed(已处理/完成)；`reject` 退回（原因≥10字，回 draft，退回非独立状态）、`cancelled`(已取消) 终态、completed 可 `reopen`(重新打开)→processing。审核通过由单位审核员执行：写 `audited_at/audited_by`（`reviewed_at` 已废弃）。
+- **角色（双层模型）**：全局 users.role 0=普通用户 / 1=维修业务员（原平台管理员，店方：接单/处理/完工/收据与费用登记）/ 2=超级管理员（另管项目字典）；单位内 memberships.role 0=普通成员 / 1=单位审核员（成员审批 + 本单位工单审核 reported→pending_accept/退回 + 汇总统计）；membership 状态 pending/approved/rejected/removed。
 - **企业邀请**：邀请码 + 有效期（刷新接口），成员加入支持 `auto_approve`（免审核）开关，企业设置更新走 `PUT /api/v1/enterprises/:id`（name + auto_approve，局部更新）。
-- **工单完结对账**：completed 时必填 `remark/receipts/quantity/unit_price/repair_content`，附加 `metadata`（维修结果/方式/保修期/时长/额外备注）；金额列为 GORM 生成列 `quantity * unit_price`。
+- **项目字典（库表存储，替代 JSON）**：`project_categories` / `project_properties` / `project_problems` 三表（软删除 `deleted_at` + `sort_order` 排序，大类↔属性/常见问题一对多）；工单存 `category_id`/`property_id` + 名称快照（`category_name`/`property_name`），常见问题仅作描述快捷填充、不落库。
+- **工单完结对账**：completed 时必填 `repair_content`/`quantity`/`unit_price` + 收据（1-3 张，完工后可补充、可替换不可删），金额列为 GORM 生成列 `quantity * unit_price`；metadata（维修结果/方式/保修期/时长/额外备注）。
 - **导出**（5.14）：enterprise（企业对账单）/ repairer（业务员汇总，按企业分组 + 小计）两种模式，excelize 内存生成 xlsx；无数据返回业务错误（前端需正确解析 Blob 错误体）。
 - **微信订阅消息**：模板配置见 `docs/小程序订阅消息模板信息.md`；发送封装在 `service/notifier.go`，通知失败仅记日志不阻塞业务；模板字段名（如 time13）必须与微信后台一致。
 
@@ -116,7 +117,7 @@ npx vue-tsc --noEmit         # 类型检查
 ## 8. 已知约束与经验教训（务必遵守）
 
 1. 环境变量非空时覆盖 config.yaml 同名配置。
-2. 数据库 schema 变更：GORM `AutoMigrate` **不会修改已有列**，改列须手写 SQL 迁移到 `backend/migrations/` 并手动执行。
+2. 数据库 schema 变更：GORM `AutoMigrate` **不会修改已有列**，改列须手写 SQL 迁移到 `backend/migrations/` 并执行（可用 `go run ./cmd/migrate migrations/xxx.sql` 逐条执行，或 psql）。
 3. 微信手机号解密/获取依赖有效的 AppID/Secret；接口返回非 2xx 或空 body 时要给出明确错误文案，不要让 `unexpected end of JSON input` 之类的原始错误透出。
 4. `wx.cloud.callContainer` 不支持 multipart/form-data，小程序上传一律 base64。
 5. `service.Update*` 类接口用指针字段做局部更新；校验前先判断"值未变化"（幂等），例如超管回传自身 role=2 不应触发"不可设为超管"拦截。
@@ -125,9 +126,49 @@ npx vue-tsc --noEmit         # 类型检查
 
 ## 9. 文档索引
 
-- `docs/后端接口设计文档v1.0.md` — 全部 API 规范（改接口须同步此文档）
-- `docs/数据库字段设计文档_V1.3.md` — 数据库设计
-- `docs/报修系统需求规格说明书_V1.1.md` — 需求与章节编号来源（5.1/5.14 等）
-- `docs/电脑维修店报修系统部署文档.md` — 生产部署
+- `docs/v2/后端接口设计文档v1.1.md` — 全部 API 规范（改接口须同步此文档；v0/v1 目录留存旧版）
+- `docs/v2/数据库字段设计文档_V1.4.md` — 数据库设计（当前基线）
+- `docs/v2/报修系统需求规格说明书_V1.3.md` — 需求与章节编号来源（v1.2 就地修订后全面同步）
+- `docs/v1/电脑维修店报修系统部署文档.md` — 生产部署（旧版留存）
 - `docs/小程序订阅消息模板信息.md` — 订阅消息模板 ID 与字段
 - `web-frontend/docs/新泥报修系统-管理后台前端开发文档V1.1.md` — Web 后台页面规范（改页面须同步）
+
+
+## 10. 测试流程
+
+### 10.1 修改后最低验证要求
+
+修改 Go 后端代码后必须执行：
+
+```bash
+go build ./...
+go vet ./...
+```
+如涉及已有测试：
+```bash
+go test ./...
+```
+### 10.2 API 集成验收
+
+涉及 API 修改时，除编译验证外，应进行实际 API 调用验收。
+
+测试流程：
+
+连接本地 PostgreSQL
+启动后端服务
+使用测试账号通过正常登录接口获取 JWT
+调用相关 API
+验证 HTTP 状态码
+验证响应 code/message/data
+验证数据库状态变化
+验证关联状态机与权限逻辑
+
+禁止仅通过代码阅读判断功能正确。
+
+### 10.3 测试账号
+|角色|昵称|密码|
+|---|---|---|
+|维修业务员|测试用户1|admin123|
+|超级管理员|管理员|admin123|
+
+测试账号仅存在于本地开发数据库。
