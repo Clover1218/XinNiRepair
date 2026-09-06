@@ -210,6 +210,27 @@ func (h *EnterpriseHandler) Remove(c *gin.Context) {
 	response.OK(c, gin.H{"removed": true})
 }
 
+// SetMemberRole 设置成员单位内身份 (PUT /enterprises/:enterprise_id/members/:user_id/role; V1.2 新增)
+// 权限: 仅维修业务员/超级管理员 (role>=1), 由路由层 RequirePlatformAdmin 保证;
+// 单位审核员无权提升/降级他人为审核员。
+func (h *EnterpriseHandler) SetMemberRole(c *gin.Context) {
+	var req struct {
+		Role string `json:"role" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Warn("SetMemberRole Enterprise: invalid request body", zap.Error(err))
+		response.Fail(c, apperrors.ErrInvalidParam.WithMessage("缺少 role (reviewer/member)"))
+		return
+	}
+	if err := h.svc.SetMemberRole(c.Request.Context(), c.Param("enterprise_id"), c.Param("user_id"), req.Role); err != nil {
+		h.logger.Error("SetMemberRole Enterprise: service error", zap.Error(err),
+			zap.String("enterprise_id", c.Param("enterprise_id")), zap.String("user_id", c.Param("user_id")))
+		response.FailError(c, err)
+		return
+	}
+	response.OK(c, gin.H{"updated": true})
+}
+
 // RefreshCode 刷新邀请码 (POST /enterprises/:enterprise_id/refresh/code; 单位审核员或店方角色)
 func (h *EnterpriseHandler) RefreshCode(c *gin.Context) {
 	if !h.requireManage(c, c.Param("enterprise_id")) {

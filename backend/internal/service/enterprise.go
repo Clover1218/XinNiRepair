@@ -412,13 +412,15 @@ func enterpriseStatusName(status int) string {
 	return "active"
 }
 
-// ListMembers 成员列表 (5.10 / 3.5, 仅平台管理员), role 取值 admin/member
+// ListMembers 成员列表 (5.10 / 3.5), role 取值 reviewer/member (兼容旧值 admin)
 func (s *EnterpriseService) ListMembers(ctx context.Context, enterpriseID string, page, pageSize int, status, role, keyword string) (*MemberList, error) {
 	if status != "" && !memberStatusWhitelist[status] {
 		return nil, apperrors.ErrInvalidParam.WithMessage("status 取值: pending/approved/rejected/removed")
 	}
-	if role != "" && role != "admin" && role != "member" {
-		return nil, apperrors.ErrInvalidParam.WithMessage("role 取值: admin/member")
+	switch role {
+	case "", "member", "reviewer", "admin":
+	default:
+		return nil, apperrors.ErrInvalidParam.WithMessage("role 取值: reviewer/member")
 	}
 
 	memberships, total, err := s.mems.ListByEnterprise(ctx, enterpriseID, status, role, keyword, (page-1)*pageSize, pageSize)
@@ -521,7 +523,7 @@ func (s *EnterpriseService) batchUpdateStatus(ctx context.Context, enterpriseID 
 	return &BatchResult{SuccessCount: success, FailedCount: failed}, nil
 }
 
-// Remove 移除成员 (仅平台管理员)
+// Remove 移除成员 (仅平台管理员→店方角色/单位审核员, 见 handler 层鉴权)
 func (s *EnterpriseService) Remove(ctx context.Context, enterpriseID, userID string) error {
 	m, err := s.mems.FindByEnterpriseAndUser(ctx, enterpriseID, userID)
 	if err != nil {
@@ -543,6 +545,67 @@ func (s *EnterpriseService) Remove(ctx context.Context, enterpriseID, userID str
 	s.logger.Info("member removed",
 		zap.String("enterprise_id", enterpriseID),
 		zap.String("user_id", userID))
+	return nil
+}
+
+// SetMemberRole 设置成员的单位内身份 (V1.2 新增: 普通成员 ↔ 单位审核员)
+//
+// role 取值: "reviewer"(单位审核员, membership.role=1) / "member"(普通成员, role=0);
+// 兼容旧别名 "admin"(等价 reviewer)。
+//
+// 业务规则 (路由层限定仅店方角色 role>=1 可调用):
+//   - 仅可对 approved 成员操作; 幂等 (已是目标身份直接返回)
+//   - 降级时至少保留一名单位审核员
+func (s *EnterpriseService) SetMemberRole(ctx context.Context, enterpriseID, userID, role string) error {
+	m, err := s.mems.FindByEnterpriseAndUser(ctx, enterpriseID, userID)
+	if err != nil {
+		return s.dbErr("find membership failed", err)
+	}
+	if m == nil {
+		return apperrors.ErrMemberNotFound
+	}
+	if m.Status != string(model.MemberApproved) {
+		return apperrors.ErrMemberStatusInvalid.WithMessage("仅已通过成员可设置审核员身份")
+	}
+
+	targetReviewer := false
+	switch role {
+	case "reviewer", "admin":
+		targetReviewer = true
+	case "member":
+		targetReviewer = false
+	default:
+		return apperrors.ErrInvalidParam.WithMessage("role 取值: reviewer(单位审核员)/member(普通成员)")
+	}
+
+	if targetReviewer {
+		if m.Role == model.EnterpriseRoleReviewer {
+			return nil // 幂等
+		}
+		m.Role = model.EnterpriseRoleReviewer
+	} else {
+		if m.Role == model.EnterpriseRoleMember {
+			return nil // 幂等
+		}
+		if m.Role == model.EnterpriseRoleReviewer {
+			cnt, err := s.mems.CountReviewers(ctx, enterpriseID)
+			if err != nil {
+				return s.dbErr("count reviewers failed", err)
+			}
+			if cnt <= 1 {
+				return apperrors.ErrInvalidParam.WithMessage("至少保留一名单位审核员，不能将最后一名审核员降级")
+			}
+		}
+		m.Role = model.EnterpriseRoleMember
+	}
+
+	if err := s.mems.Update(ctx, m); err != nil {
+		return s.dbErr("update membership role failed", err)
+	}
+	s.logger.Info("member role updated",
+		zap.String("enterprise_id", enterpriseID),
+		zap.String("user_id", userID),
+		zap.String("role", role))
 	return nil
 }
 
@@ -634,10 +697,10 @@ func parseValidity(v string) (time.Duration, error) {
 	}
 }
 
-// memberRoleName 企业成员角色展示名
+// memberRoleName 企业成员身份字符串 (V1.2: reviewer=单位审核员 / member=普通成员)
 func memberRoleName(role int) string {
 	if role == model.EnterpriseRoleAdmin {
-		return "admin"
+		return "reviewer"
 	}
 	return "member"
 }

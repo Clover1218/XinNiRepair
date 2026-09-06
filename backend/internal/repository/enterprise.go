@@ -254,6 +254,25 @@ func (r *MembershipRepository) CountApproved(ctx context.Context, enterpriseID s
 	return count, err
 }
 
+// CountApprovedReviewerByUser 统计用户“已通过且为单位审核员(membership.role=1)”的单位数
+// (用于判定该用户是否具备 Web 后台登录资格)
+func (r *MembershipRepository) CountApprovedReviewerByUser(ctx context.Context, userID string) (int64, error) {
+	var count int64
+	err := r.db.WithContext(ctx).Model(&model.Membership{}).
+		Where("user_id = ? AND status = ? AND role = ?", userID, model.MemberApproved, model.EnterpriseRoleReviewer).
+		Count(&count).Error
+	return count, err
+}
+
+// CountReviewers 统计企业内已通过的“单位审核员”人数
+func (r *MembershipRepository) CountReviewers(ctx context.Context, enterpriseID string) (int64, error) {
+	var count int64
+	err := r.db.WithContext(ctx).Model(&model.Membership{}).
+		Where("enterprise_id = ? AND status = ? AND role = ?", enterpriseID, model.MemberApproved, model.EnterpriseRoleReviewer).
+		Count(&count).Error
+	return count, err
+}
+
 // ListByEnterprise 分页查询企业成员, 支持状态/角色筛选与昵称/手机号模糊搜索
 func (r *MembershipRepository) ListByEnterprise(ctx context.Context, enterpriseID, status, role string, keyword string, offset, limit int) ([]model.Membership, int64, error) {
 	base := r.db.WithContext(ctx).
@@ -264,9 +283,9 @@ func (r *MembershipRepository) ListByEnterprise(ctx context.Context, enterpriseI
 		base = base.Where("memberships.status = ?", status)
 	}
 	if role != "" {
-		roleVal := model.EnterpriseRoleMember // member 默认 0
-		if role == "admin" {
-			roleVal = model.EnterpriseRoleAdmin
+		roleVal := model.EnterpriseRoleMember      // member 默认 0
+		if role == "reviewer" || role == "admin" { // admin 为旧别名
+			roleVal = model.EnterpriseRoleReviewer
 		}
 		base = base.Where("memberships.role = ?", roleVal)
 	}

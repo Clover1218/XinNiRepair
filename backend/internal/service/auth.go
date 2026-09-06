@@ -46,15 +46,17 @@ type LoginResult struct {
 // AuthService 认证业务逻辑
 type AuthService struct {
 	users  *repository.AuthRepository
+	mems   *repository.MembershipRepository
 	token  *TokenService
 	wechat *WechatService
 	logger *zap.Logger
 }
 
 // NewAuthService 创建 AuthService
-func NewAuthService(users *repository.AuthRepository, token *TokenService, wechat *WechatService, logger *zap.Logger) *AuthService {
+func NewAuthService(users *repository.AuthRepository, mems *repository.MembershipRepository, token *TokenService, wechat *WechatService, logger *zap.Logger) *AuthService {
 	return &AuthService{
 		users:  users,
+		mems:   mems,
 		token:  token,
 		wechat: wechat,
 		logger: logger,
@@ -82,7 +84,12 @@ func (s *AuthService) Login(ctx context.Context, code string) (*LoginResult, err
 	return s.issueToken(ctx, user)
 }
 
-// AdminLogin 管理后台密码登录 (2.4): nickname + password, 仅维修业务员/超级管理员
+// AdminLogin 管理后台密码登录 (2.4): nickname + password
+//
+// 可登录人群:
+//   - 维修业务员 (role=1) / 超级管理员 (role=2)
+//   - 普通用户 (role=0) 但在任一单位担任“单位审核员”(membership.role=1 且 approved)
+//     (该账号需已由超级管理员设置密码; 无密码账号提示需先联系管理员设置)
 func (s *AuthService) AdminLogin(ctx context.Context, nickname, password string) (*LoginResult, error) {
 	user, err := s.users.FindUserByNickname(ctx, nickname)
 	if err != nil {
@@ -95,8 +102,16 @@ func (s *AuthService) AdminLogin(ctx context.Context, nickname, password string)
 	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(password)); err != nil {
 		return nil, apperrors.ErrInvalidCredentials
 	}
-	if user.Role < model.PlatformRolePlatformAdmin {
-		return nil, apperrors.ErrNotAdmin
+	if user.Role < model.PlatformRoleRepairer {
+		// role=0: 仅“单位审核员”身份可登录 Web 后台
+		reviewer, err := s.mems.CountApprovedReviewerByUser(ctx, user.ID)
+		if err != nil {
+			s.logger.Error("count reviewer memberships failed", zap.Error(err), zap.String("user_id", user.ID))
+			return nil, apperrors.ErrDatabaseError.WithError(err)
+		}
+		if reviewer == 0 {
+			return nil, apperrors.ErrNotAdmin.WithMessage("仅维修业务员/超级管理员或单位审核员可登录管理后台")
+		}
 	}
 
 	return s.issueToken(ctx, user)

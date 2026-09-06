@@ -15,12 +15,13 @@ import (
 // UserAdminService 超级管理员用户管理逻辑 (第六章)
 type UserAdminService struct {
 	users  *repository.AuthRepository
+	mems   *repository.MembershipRepository
 	logger *zap.Logger
 }
 
 // NewUserAdminService 创建 UserAdminService
-func NewUserAdminService(users *repository.AuthRepository, logger *zap.Logger) *UserAdminService {
-	return &UserAdminService{users: users, logger: logger}
+func NewUserAdminService(users *repository.AuthRepository, mems *repository.MembershipRepository, logger *zap.Logger) *UserAdminService {
+	return &UserAdminService{users: users, mems: mems, logger: logger}
 }
 
 // AdminUserItem 用户列表项
@@ -222,7 +223,13 @@ func (s *UserAdminService) UpdateUser(ctx context.Context, userID, operatorID st
 	return s.GetUser(ctx, userID)
 }
 
-// ResetPassword 重置用户密码 (6.4)
+// ResetPassword 重置/设置用户登录密码 (6.4)
+//
+// 适用人群:
+//   - 维修业务员 (role=1) / 超级管理员 (role=2)
+//   - 单位审核员 (role=0 但在任一已通过单位中 membership.role=1): 为其开通 Web 后台密码登录
+//
+// 纯微信报修人 (role=0 且非单位审核员) 无登录密码, 不可设置。
 func (s *UserAdminService) ResetPassword(ctx context.Context, userID, newPassword string) error {
 	user, err := s.users.FindUserByID(ctx, userID)
 	if err != nil {
@@ -232,9 +239,14 @@ func (s *UserAdminService) ResetPassword(ctx context.Context, userID, newPasswor
 		return apperrors.ErrUserNotFound
 	}
 
-	// 普通微信用户无登录密码
-	if user.Role < model.PlatformRolePlatformAdmin {
-		return apperrors.ErrInvalidParam.WithMessage("该用户无登录密码（微信用户）")
+	if user.Role < model.PlatformRoleRepairer {
+		reviewer, err := s.mems.CountApprovedReviewerByUser(ctx, userID)
+		if err != nil {
+			return s.dbErr("count reviewer memberships failed", err)
+		}
+		if reviewer == 0 {
+			return apperrors.ErrInvalidParam.WithMessage("该用户无登录密码（微信用户），仅可为维修业务员或单位审核员设置密码")
+		}
 	}
 
 	if len(newPassword) < 6 || len(newPassword) > 32 {

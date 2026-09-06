@@ -102,6 +102,7 @@ func main() {
 
 	// ── 7. 注册路由 ──
 	authRepo := repository.NewAuthRepository(db.DB)
+	memRepo := repository.NewMembershipRepository(db.DB)
 	tokenSvc := service.NewTokenService(cfg.JWT)
 	wechatSvc := service.NewWechatService(cfg.Wechat)
 
@@ -111,7 +112,7 @@ func main() {
 		Timeout:  cfg.ImageBed.Timeout,
 	})
 
-	authSvc := service.NewAuthService(authRepo, tokenSvc, wechatSvc, logger)
+	authSvc := service.NewAuthService(authRepo, memRepo, tokenSvc, wechatSvc, logger)
 	// 初始化店主账号 (幂等, 首次启动自动创建, 密码可通过 ADMIN_PASSWORD 配置)
 	authH := handler.NewAuthHandler(authSvc, imgBed, logger)
 
@@ -119,7 +120,6 @@ func main() {
 	notifier := service.NewOrderNotifier(wechatSvc, authRepo, logger)
 
 	entRepo := repository.NewEnterpriseRepository(db.DB)
-	memRepo := repository.NewMembershipRepository(db.DB)
 	projectRepo := repository.NewProjectRepository(db.DB)
 	entSvc := service.NewEnterpriseService(entRepo, memRepo, logger)
 	accessSvc := service.NewAccessService(memRepo)
@@ -133,7 +133,7 @@ func main() {
 
 	adminOrderSvc := service.NewAdminOrderService(orderRepo, imgRepo, tlRepo, accessSvc, imgBed, notifier, logger)
 	exportSvc := service.NewOrderExportService(orderRepo, tlRepo, cfg.Shop.Name, logger)
-	userAdminSvc := service.NewUserAdminService(authRepo, logger)
+	userAdminSvc := service.NewUserAdminService(authRepo, memRepo, logger)
 	projectSvc := service.NewProjectService(projectRepo, logger)
 	adminH := handler.NewAdminHandler(adminOrderSvc, entSvc, exportSvc, userAdminSvc, accessSvc, logger)
 	projectH := handler.NewProjectHandler(projectSvc, logger)
@@ -224,6 +224,8 @@ func registerRoutes(r *gin.Engine, db *repository.DB, authH *handler.AuthHandler
 			enterprises.PUT("/:enterprise_id/members/approve", entH.Approve)
 			enterprises.PUT("/:enterprise_id/members/reject", entH.Reject)
 			enterprises.DELETE("/:enterprise_id/members/:user_id", entH.Remove)
+			// 设置成员单位内身份 (普通成员↔单位审核员): V1.2, 仅店方角色 (role>=1)
+			enterprises.PUT("/:enterprise_id/members/:user_id/role", middleware.RequirePlatformAdmin(), entH.SetMemberRole)
 		}
 
 		// 报修工单接口 (用户端)

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
 	"xin-ni-repair/internal/config"
@@ -44,6 +45,7 @@ type v14TestEnv struct {
 	orderSvc  *OrderService
 	adminSvc  *AdminOrderService
 	accessSvc *AccessService
+	entSvc    *EnterpriseService
 	projSvc   *ProjectService
 }
 
@@ -70,6 +72,7 @@ func newV14Env(t *testing.T) *v14TestEnv {
 		ents:      repository.NewEnterpriseRepository(db),
 	}
 	env.accessSvc = NewAccessService(env.mems)
+	env.entSvc = NewEnterpriseService(env.ents, env.mems, zapNop())
 	img := imagebed.New(imagebed.Config{Endpoint: "http://127.0.0.1:9/none"})
 	env.orderSvc = NewOrderService(env.orders, env.images, env.timelines, env.mems, env.projects, img, nil, zapNop())
 	env.adminSvc = NewAdminOrderService(env.orders, env.images, env.timelines, env.accessSvc, img, nil, zapNop())
@@ -368,6 +371,102 @@ func TestV14DictionaryCRUD(t *testing.T) {
 		t.Fatal("大类软删除后其属性应不可见")
 	}
 	_ = prob
+}
+
+func TestV14ReviewerWebAccessAndMemberRole(t *testing.T) {
+	if os.Getenv("RUN_DB_TESTS") != "1" {
+		t.Skip("set RUN_DB_TESTS=1 to run db integration tests")
+	}
+	env := newV14Env(t)
+	defer env.cleanup(t)
+
+	// 1) 提升: 普通成员 → 单位审核员; 幂等; 非法值报错; 降级恢复
+	if err := env.accessSvc.CanManageEnterprise(env.ctx, env.entID, env.reporterID, 0); err == nil {
+		t.Fatal("提升前 reporter 不应具备单位管理权限")
+	}
+	if err := env.entSvc.SetMemberRole(env.ctx, env.entID, env.reporterID, "reviewer"); err != nil {
+		t.Fatalf("promote reviewer: %v", err)
+	}
+	if err := env.accessSvc.CanManageEnterprise(env.ctx, env.entID, env.reporterID, 0); err != nil {
+		t.Fatalf("提升后 reporter 应具备单位管理权限: %v", err)
+	}
+	if err := env.entSvc.SetMemberRole(env.ctx, env.entID, env.reporterID, "reviewer"); err != nil {
+		t.Fatalf("重复提升应幂等: %v", err)
+	}
+	if err := env.entSvc.SetMemberRole(env.ctx, env.entID, env.reporterID, "boss"); err == nil {
+		t.Fatal("非法 role 应报错")
+	}
+	if err := env.entSvc.SetMemberRole(env.ctx, env.entID, env.reporterID, "member"); err != nil {
+		t.Fatalf("demote member: %v", err)
+	}
+	if err := env.accessSvc.CanManageEnterprise(env.ctx, env.entID, env.reporterID, 0); err == nil {
+		t.Fatal("降级后 reporter 不应再具备单位管理权限")
+	}
+
+	// 2) 最后一名单位审核员不可降级 (seed 中仅 reviewer 一名审核员)
+	if err := env.entSvc.SetMemberRole(env.ctx, env.entID, env.reviewerID, "member"); err == nil {
+		t.Fatal("最后一名单位审核员应禁止降级")
+	}
+
+	// 3) 成员列表 role 筛选 reviewer
+	list, _, err := env.mems.ListByEnterprise(env.ctx, env.entID, "", "reviewer", "", 0, 50)
+	if err != nil {
+		t.Fatalf("list reviewer members: %v", err)
+	}
+	if len(list) != 1 || list[0].UserID != env.reviewerID {
+		t.Fatalf("应仅返回一名审核员: %+v", list)
+	}
+
+	// 4) 审核员账号设置密码后可登录 Web
+	cfg, err := config.Load("../../config/config.yaml")
+	if err != nil {
+		t.Fatalf("config: %v", err)
+	}
+	hash, _ := bcrypt.GenerateFromPassword([]byte("review123"), bcrypt.DefaultCost)
+	reviewer, err := env.users.FindUserByID(env.ctx, env.reviewerID)
+	if err != nil || reviewer == nil {
+		t.Fatalf("load reviewer: %v", err)
+	}
+	reviewer.Password = string(hash)
+	if err := env.users.UpdateUser(env.ctx, reviewer); err != nil {
+		t.Fatalf("set reviewer password: %v", err)
+	}
+
+	tokenSvc := NewTokenService(cfg.JWT)
+	authSvc := NewAuthService(env.users, env.mems, tokenSvc, nil, zapNop())
+	login, err := authSvc.AdminLogin(env.ctx, "flow_审核员", "review123")
+	if err != nil {
+		t.Fatalf("审核员应可登录 Web 后台: %v", err)
+	}
+	if login.User.Role != model.PlatformRoleUser {
+		t.Fatalf("审核员登录后 role 应为 0: %v", login.User.Role)
+	}
+	if login.AccessToken == "" {
+		t.Fatal("应签发 token")
+	}
+
+	// 5) 非审核员普通成员即使有密码也不能登录
+	hash2, _ := bcrypt.GenerateFromPassword([]byte("mem12345"), bcrypt.DefaultCost)
+	mem, err := env.users.FindUserByID(env.ctx, env.reporterID)
+	if err != nil || mem == nil {
+		t.Fatalf("load reporter: %v", err)
+	}
+	mem.Password = string(hash2)
+	if err := env.users.UpdateUser(env.ctx, mem); err != nil {
+		t.Fatalf("set reporter password: %v", err)
+	}
+	if _, err := authSvc.AdminLogin(env.ctx, "flow_报修人", "mem12345"); err == nil {
+		t.Fatal("普通成员不应能登录管理后台")
+	}
+
+	// 6) 超管重置密码: role=0 单位审核员放行, 纯微信成员不放行
+	userAdmin := NewUserAdminService(env.users, env.mems, zapNop())
+	if err := userAdmin.ResetPassword(env.ctx, env.reporterID, "abc123456"); err == nil {
+		t.Fatal("纯微信成员不应允许重置密码")
+	}
+	if err := userAdmin.ResetPassword(env.ctx, env.reviewerID, "abc123456"); err != nil {
+		t.Fatalf("单位审核员应允许设置密码: %v", err)
+	}
 }
 
 // strPtr2 便捷 string 指针
