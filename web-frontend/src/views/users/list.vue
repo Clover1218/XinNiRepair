@@ -18,7 +18,7 @@ const query = reactive({
 
 const roleOptions = [
   { value: 0, label: '普通用户' },
-  { value: 1, label: '平台管理员' },
+  { value: 1, label: '维修业务员' },
   { value: 2, label: '超级管理员' }
 ]
 
@@ -30,7 +30,7 @@ const roleTagType: Record<number, '' | 'success' | 'warning' | 'danger'> = {
 
 const roleLabel: Record<number, string> = {
   0: '普通用户',
-  1: '平台管理员',
+  1: '维修业务员',
   2: '超级管理员'
 }
 
@@ -39,6 +39,11 @@ const memberStatusLabel: Record<string, string> = {
   pending: '待审核',
   rejected: '已拒绝',
   removed: '已移除'
+}
+
+/** 是否为单位审核员（role=0 且在其单位中 membership.role=1 并已通过） */
+function isReviewer(row: UserListItem): boolean {
+  return row.member_role === 1 && row.member_status === 'approved'
 }
 
 async function loadList() {
@@ -108,23 +113,33 @@ async function submitEdit() {
   }
 }
 
-// ── 重置密码 ──
-async function handleResetPassword(row: UserListItem) {
-  if (row.role === 0) {
-    ElMessage.warning('普通微信用户无登录密码，无需重置')
-    return
-  }
+// ── 重置/设置密码（6.4） ──
+// 适用范围：维修业务员/超管（role>=1）重置；单位审核员（role=0 + reviewer 身份）设置 Web 登录密码；纯微信用户不可。
+async function handleResetPassword(row: UserListItem, asReviewer = false) {
+  const title = asReviewer
+    ? `设置密码，开通「${row.nickname}」的 Web 后台登录`
+    : `重置 ${row.nickname} 的密码`
   try {
-    const { value } = await ElMessageBox.prompt('请输入新密码（6-32位）', `重置 ${row.nickname} 的密码`, {
+    const { value } = await ElMessageBox.prompt('请输入新密码（6-32位）', title, {
       confirmButtonText: '确定',
       cancelButtonText: '取消',
       inputPattern: /^.{6,32}$/,
       inputErrorMessage: '密码长度需 6-32 位'
     })
     await adminAPI.resetPassword(row.id, value)
-    ElMessage.success('密码已重置')
+    ElMessage.success(asReviewer ? '已设置，该账号可用密码登录 Web 后台' : '密码已重置')
   } catch {
     // 用户取消或请求失败
+  }
+}
+
+function handleResetEntry(row: UserListItem) {
+  if (row.role >= 1) {
+    handleResetPassword(row, false)
+  } else if (isReviewer(row)) {
+    handleResetPassword(row, true)
+  } else {
+    ElMessage.warning('纯微信用户无登录密码；仅单位审核员或维修业务员可设置')
   }
 }
 
@@ -207,7 +222,24 @@ onMounted(loadList)
         <el-table-column label="操作" width="180" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
-            <el-button link type="warning" @click="handleResetPassword(row)">重置密码</el-button>
+            <el-button
+              v-if="row.role >= 1"
+              link
+              type="warning"
+              @click="handleResetEntry(row)"
+            >重置密码</el-button>
+            <el-button
+              v-else-if="isReviewer(row)"
+              link
+              type="success"
+              @click="handleResetEntry(row)"
+            >设置密码</el-button>
+            <el-button
+              v-else
+              link
+              type="info"
+              disabled
+            >重置密码</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -240,7 +272,7 @@ onMounted(loadList)
           >
             <el-option v-if="originalRole === 2" label="超级管理员" :value="2" />
             <el-option label="普通用户" :value="0" />
-            <el-option label="平台管理员" :value="1" />
+            <el-option label="维修业务员" :value="1" />
             <!-- 超级管理员不可通过界面设置 -->
           </el-select>
           <div v-if="originalRole === 2" class="role-tip">超级管理员角色不可修改</div>

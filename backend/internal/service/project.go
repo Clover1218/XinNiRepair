@@ -28,33 +28,33 @@ import (
 // 视图结构 (树形)
 // ────────────────────────────────────────────
 
-// PropertyView 项目属性视图
+// PropertyView 项目属性视图 (树形接口可携带其下常见问题)
 type PropertyView struct {
-	ID          string `json:"id"`
-	CategoryID  string `json:"category_id"`
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	SortOrder   int    `json:"sort_order"`
+	ID          string        `json:"id"`
+	CategoryID  string        `json:"category_id"`
+	Name        string        `json:"name"`
+	Description string        `json:"description"`
+	SortOrder   int           `json:"sort_order"`
+	Problems    []ProblemView `json:"problems,omitempty"` // 树形接口返回属性下问题; 单独属性列表为空
 }
 
-// ProblemView 常见问题视图
+// ProblemView 常见问题视图 (V1.4: 直接隶属项目属性)
 type ProblemView struct {
 	ID              string   `json:"id"`
-	CategoryID      string   `json:"category_id"`
+	PropertyID      string   `json:"property_id"`
 	Name            string   `json:"name"`
 	Description     string   `json:"description"`
 	CommonSolutions []string `json:"common_solutions"`
 	SortOrder       int      `json:"sort_order"`
 }
 
-// CategoryView 项目大类视图 (含属性/常见问题子项)
+// CategoryView 项目大类视图 (含属性子项; 常见问题随属性返回, 不再直属大类)
 type CategoryView struct {
 	ID          string         `json:"id"`
 	Name        string         `json:"name"`
 	Description string         `json:"description"`
 	SortOrder   int            `json:"sort_order"`
 	Properties  []PropertyView `json:"properties"`
-	Problems    []ProblemView  `json:"problems"`
 }
 
 // ────────────────────────────────────────────
@@ -76,9 +76,9 @@ type PropertyInput struct {
 	SortOrder   *int    `json:"sort_order"`
 }
 
-// ProblemInput 常见问题增改入参
+// ProblemInput 常见问题增改入参 (V1.4: 隶属属性)
 type ProblemInput struct {
-	CategoryID      *string  `json:"category_id"`
+	PropertyID      *string  `json:"property_id"`
 	Name            *string  `json:"name"`
 	Description     *string  `json:"description"`
 	CommonSolutions []string `json:"common_solutions"`
@@ -136,7 +136,7 @@ func (s *ProjectService) CreateCategory(ctx context.Context, in CategoryInput) (
 	if err := s.projects.CreateCategory(ctx, cat); err != nil {
 		return nil, s.dbErr("create category failed", err)
 	}
-	return &CategoryView{ID: cat.ID, Name: cat.Name, Description: cat.Description, SortOrder: cat.SortOrder, Properties: []PropertyView{}, Problems: []ProblemView{}}, nil
+	return &CategoryView{ID: cat.ID, Name: cat.Name, Description: cat.Description, SortOrder: cat.SortOrder, Properties: []PropertyView{}}, nil
 }
 
 // UpdateCategory 修改大类 (局部更新)
@@ -314,15 +314,15 @@ func (s *ProjectService) DeleteProperty(ctx context.Context, id string) error {
 // 常见问题
 // ────────────────────────────────────────────
 
-// ListProblems 按大类列出有效常见问题
-func (s *ProjectService) ListProblems(ctx context.Context, categoryID string) ([]ProblemView, error) {
-	if categoryID == "" {
-		return nil, apperrors.ErrInvalidParam.WithMessage("category_id 必填")
+// ListProblems 按项目属性列出有效常见问题
+func (s *ProjectService) ListProblems(ctx context.Context, propertyID string) ([]ProblemView, error) {
+	if propertyID == "" {
+		return nil, apperrors.ErrInvalidParam.WithMessage("property_id 必填")
 	}
-	if err := s.requireActiveCategory(ctx, categoryID); err != nil {
+	if err := s.requireActiveProperty(ctx, propertyID); err != nil {
 		return nil, err
 	}
-	list, err := s.projects.ListProblems(ctx, categoryID)
+	list, err := s.projects.ListProblems(ctx, propertyID)
 	if err != nil {
 		return nil, s.dbErr("list problems failed", err)
 	}
@@ -331,11 +331,11 @@ func (s *ProjectService) ListProblems(ctx context.Context, categoryID string) ([
 
 // CreateProblem 新增常见问题
 func (s *ProjectService) CreateProblem(ctx context.Context, in ProblemInput) (*ProblemView, error) {
-	categoryID := strings.TrimSpace(ptrStr(in.CategoryID))
-	if categoryID == "" {
-		return nil, apperrors.ErrInvalidParam.WithMessage("category_id 必填")
+	propertyID := strings.TrimSpace(ptrStr(in.PropertyID))
+	if propertyID == "" {
+		return nil, apperrors.ErrInvalidParam.WithMessage("property_id 必填")
 	}
-	if err := s.requireActiveCategory(ctx, categoryID); err != nil {
+	if err := s.requireActiveProperty(ctx, propertyID); err != nil {
 		return nil, err
 	}
 	name := strings.TrimSpace(ptrStr(in.Name))
@@ -346,12 +346,12 @@ func (s *ProjectService) CreateProblem(ctx context.Context, in ProblemInput) (*P
 	if err := validateLength("description", desc, 0, 200); err != nil {
 		return nil, err
 	}
-	n, err := s.projects.CountProblemName(ctx, categoryID, name, "")
+	n, err := s.projects.CountProblemName(ctx, propertyID, name, "")
 	if err != nil {
 		return nil, s.dbErr("count problem name failed", err)
 	}
 	if n > 0 {
-		return nil, apperrors.ErrInvalidParam.WithMessage("该项目大类下常见问题已存在: " + name)
+		return nil, apperrors.ErrInvalidParam.WithMessage("该项目属性下常见问题已存在: " + name)
 	}
 
 	solutions, err := marshalSolutions(in.CommonSolutions)
@@ -360,7 +360,7 @@ func (s *ProjectService) CreateProblem(ctx context.Context, in ProblemInput) (*P
 	}
 	p := &model.ProjectProblem{
 		ID:              uuid.New().String(),
-		CategoryID:      categoryID,
+		PropertyID:      propertyID,
 		Name:            name,
 		Description:     desc,
 		CommonSolutions: solutions,
@@ -373,7 +373,7 @@ func (s *ProjectService) CreateProblem(ctx context.Context, in ProblemInput) (*P
 	return &v, nil
 }
 
-// UpdateProblem 修改常见问题
+// UpdateProblem 修改常见问题 (支持将问题移动到另一属性)
 func (s *ProjectService) UpdateProblem(ctx context.Context, id string, in ProblemInput) (*ProblemView, error) {
 	p, err := s.projects.FindActiveProblemByID(ctx, id)
 	if err != nil {
@@ -382,21 +382,36 @@ func (s *ProjectService) UpdateProblem(ctx context.Context, id string, in Proble
 	if p == nil {
 		return nil, apperrors.ErrNotFound.WithMessage("常见问题不存在")
 	}
+	// 归属属性: 默认保持; 若显式传入 property_id 则校验并移动
+	targetPropertyID := p.PropertyID
+	if in.PropertyID != nil {
+		pid := strings.TrimSpace(*in.PropertyID)
+		if pid == "" {
+			return nil, apperrors.ErrInvalidParam.WithMessage("property_id 必填")
+		}
+		if err := s.requireActiveProperty(ctx, pid); err != nil {
+			return nil, err
+		}
+		targetPropertyID = pid
+	}
 	if in.Name != nil {
 		name := strings.TrimSpace(*in.Name)
 		if err := validateProjectName("常见问题", name, 1, 100); err != nil {
 			return nil, err
 		}
-		if name != p.Name {
-			n, err := s.projects.CountProblemName(ctx, p.CategoryID, name, id)
+		if name != p.Name || targetPropertyID != p.PropertyID {
+			n, err := s.projects.CountProblemName(ctx, targetPropertyID, name, id)
 			if err != nil {
 				return nil, s.dbErr("count problem name failed", err)
 			}
 			if n > 0 {
-				return nil, apperrors.ErrInvalidParam.WithMessage("该项目大类下常见问题已存在: " + name)
+				return nil, apperrors.ErrInvalidParam.WithMessage("该项目属性下常见问题已存在: " + name)
 			}
 			p.Name = name
 		}
+	}
+	if targetPropertyID != p.PropertyID {
+		p.PropertyID = targetPropertyID
 	}
 	if in.Description != nil {
 		desc := strings.TrimSpace(*in.Description)
@@ -441,6 +456,18 @@ func (s *ProjectService) DeleteProblem(ctx context.Context, id string) error {
 // 辅助
 // ────────────────────────────────────────────
 
+// requireActiveProperty 校验项目属性存在且有效
+func (s *ProjectService) requireActiveProperty(ctx context.Context, propertyID string) error {
+	p, err := s.projects.FindActivePropertyByID(ctx, propertyID)
+	if err != nil {
+		return s.dbErr("find property failed", err)
+	}
+	if p == nil {
+		return apperrors.ErrNotFound.WithMessage("项目属性不存在或已删除")
+	}
+	return nil
+}
+
 // requireActiveCategory 校验大类存在且有效
 func (s *ProjectService) requireActiveCategory(ctx context.Context, categoryID string) error {
 	cat, err := s.projects.FindActiveCategoryByID(ctx, categoryID)
@@ -476,7 +503,6 @@ func toCategoryViews(cats []model.ProjectCategory) []CategoryView {
 			Description: c.Description,
 			SortOrder:   c.SortOrder,
 			Properties:  toPropertyViews(c.Properties),
-			Problems:    toProblemViews(c.Problems),
 		})
 	}
 	return out
@@ -497,6 +523,7 @@ func toPropertyView(p model.ProjectProperty) PropertyView {
 		Name:        p.Name,
 		Description: p.Description,
 		SortOrder:   p.SortOrder,
+		Problems:    toProblemViews(p.Problems),
 	}
 }
 
@@ -511,7 +538,7 @@ func toProblemViews(list []model.ProjectProblem) []ProblemView {
 func toProblemView(p model.ProjectProblem) ProblemView {
 	return ProblemView{
 		ID:              p.ID,
-		CategoryID:      p.CategoryID,
+		PropertyID:      p.PropertyID,
 		Name:            p.Name,
 		Description:     p.Description,
 		CommonSolutions: unmarshalSolutions(p.CommonSolutions),

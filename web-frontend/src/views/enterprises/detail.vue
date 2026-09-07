@@ -4,20 +4,27 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import QRCode from 'qrcode'
 import { adminAPI } from '@/api/admin'
-import type { EnterpriseDetail, MemberItem } from '@/types'
+import { useUserStore } from '@/stores/user'
+import type { EnterpriseDetail, EnterpriseMineDetail, MemberItem } from '@/types'
 import { formatDateTime } from '@/utils/format'
 
 const route = useRoute()
 const router = useRouter()
+const userStore = useUserStore()
 const enterpriseId = route.params.id as string
 
+// 权限：店方可查看任意单位详情；单位审核员仅本单位（本页用于两者）
+const canManage = computed(() => userStore.canManageEnterprise(enterpriseId))
+const isStore = computed(() => userStore.isStoreStaff)
+
 const loading = ref(false)
-const detail = ref<EnterpriseDetail | null>(null)
+const detail = ref<EnterpriseDetail | EnterpriseMineDetail | null>(null)
 
 const memberTabs = [
   { label: '全部', value: '' },
   { label: '已通过', value: 'approved' },
   { label: '待审核', value: 'pending' },
+  { label: '已拒绝', value: 'rejected' },
   { label: '已移除', value: 'removed' }
 ]
 
@@ -28,18 +35,6 @@ const memberPage = ref(1)
 const memberPageSize = ref(20)
 const memberLoading = ref(false)
 
-const roleLabelMap: Record<string, string> = {
-  admin: '管理员',
-  member: '普通成员'
-}
-
-const statusLabelMap: Record<string, string> = {
-  pending: '待审核',
-  approved: '已通过',
-  rejected: '已拒绝',
-  removed: '已移除'
-}
-
 const statusTagType: Record<string, string> = {
   pending: 'warning',
   approved: 'success',
@@ -47,19 +42,29 @@ const statusTagType: Record<string, string> = {
   removed: 'info'
 }
 
+/** 本企业当前单位审核员总数（用于“最后一名审核员禁止降级”的前端禁用提示） */
+const reviewerTotal = ref(0)
+
 const fetchDetail = async () => {
-  const res = await adminAPI.getEnterpriseDetail(enterpriseId)
+  // 店方走 /admin 详情（含工单数/状态），单位审核员走 /enterprises/:id（含 my_role）
+  const res = isStore.value
+    ? await adminAPI.getEnterpriseDetail(enterpriseId)
+    : await adminAPI.getEnterpriseMine(enterpriseId)
   detail.value = res.data
 }
 
 const fetchMembers = async () => {
   memberLoading.value = true
   try {
-    const res = await adminAPI.getMembers(enterpriseId, {
+    const params = {
       page: memberPage.value,
       page_size: memberPageSize.value,
       status: activeTab.value || undefined
-    })
+    }
+    // 店方走 /admin 成员列表；单位审核员走 /enterprises/:id/members（两者返回结构一致）
+    const res = isStore.value
+      ? await adminAPI.getMembers(enterpriseId, params)
+      : await adminAPI.getEnterpriseMembers(enterpriseId, params)
     members.value = res.data.list
     memberTotal.value = res.data.total
   } finally {
@@ -67,8 +72,20 @@ const fetchMembers = async () => {
   }
 }
 
+const loadReviewerCount = async () => {
+  if (!isStore.value) return
+  try {
+    const res = isStore.value
+      ? await adminAPI.getMembers(enterpriseId, { page: 1, page_size: 1, role: 'reviewer', status: 'approved' })
+      : await adminAPI.getEnterpriseMembers(enterpriseId, { page: 1, page_size: 1, role: 'reviewer', status: 'approved' })
+    reviewerTotal.value = res.data.total
+  } catch {
+    /* 忽略统计失败 */
+  }
+}
+
 const reload = async () => {
-  await Promise.all([fetchDetail(), fetchMembers()])
+  await Promise.all([fetchDetail(), fetchMembers(), loadReviewerCount()])
 }
 
 const handleTabChange = () => {
@@ -87,8 +104,7 @@ const handleMemberSizeChange = (s: number) => {
   fetchMembers()
 }
 
-const displayRole = (m: MemberItem) => m.role_label || roleLabelMap[m.role] || m.role
-const displayStatus = (m: MemberItem) => m.status_label || statusLabelMap[m.status] || m.status
+const displayStatus = (m: MemberItem) => m.status_label || m.status
 
 // ---- 成员操作 ----
 const handleApprove = async (row: MemberItem) => {
@@ -119,6 +135,36 @@ const handleRemove = async (row: MemberItem) => {
   reload()
 }
 
+// ---- V1.2 设/取消单位审核员（仅店方角色可操作） ----
+const togglingRole = ref(false)
+
+const handleToggleReviewer = async (row: MemberItem) => {
+  const toReviewer = row.role !== 'reviewer'
+  const tip = toReviewer
+    ? `确认将「${row.nickname}」设为单位审核员？其将可审核本单位工单、审批成员加入，并可（由超管设置密码后）登录 Web 后台。`
+    : `确认取消「${row.nickname}」的单位审核员身份？`
+  try {
+    await ElMessageBox.confirm(tip, '成员身份调整', {
+      type: 'warning',
+      confirmButtonText: '确定',
+      cancelButtonText: '取消'
+    })
+  } catch {
+    return
+  }
+  togglingRole.value = true
+  try {
+    await adminAPI.setMemberRole(enterpriseId, row.user_id, toReviewer ? 'reviewer' : 'member')
+    ElMessage.success(toReviewer ? '已设为单位审核员' : '已取消单位审核员')
+    await reload()
+    if (toReviewer && !userStore.isSuperAdmin) {
+      ElMessage.info('如需该成员登录 Web 后台，请由超级管理员在【用户管理】中为其设置密码')
+    }
+  } finally {
+    togglingRole.value = false
+  }
+}
+
 // ---- 编辑企业设置 ----
 const editDialogVisible = ref(false)
 const editName = ref('')
@@ -139,13 +185,13 @@ const handleSave = async () => {
   }
   saving.value = true
   try {
-    await adminAPI.updateEnterprise(enterpriseId, {
+    const res = await adminAPI.updateEnterprise(enterpriseId, {
       name,
       auto_approve: editAutoApprove.value
     })
     ElMessage.success('企业设置已更新')
     editDialogVisible.value = false
-    await fetchDetail()
+    detail.value = res.data
   } finally {
     saving.value = false
   }
@@ -174,14 +220,21 @@ const handleRefresh = async () => {
     const res = await adminAPI.refreshInviteCode(enterpriseId, selectedValidity.value)
     ElMessage.success('邀请码已刷新')
     refreshDialogVisible.value = false
-    await fetchDetail()
-    if (res.data.invite_code !== detail.value?.invite_code) {
-      // 以接口返回为准
-      detail.value = { ...detail.value!, invite_code: res.data.invite_code, invite_code_expires_at: res.data.expires_at }
+    if (detail.value) {
+      detail.value = {
+        ...detail.value,
+        invite_code: res.data.invite_code,
+        invite_code_expires_at: res.data.expires_at
+      }
     }
   } finally {
     refreshing.value = false
   }
+}
+
+// 单位审核员在“企业管理”中可切换其担任审核员的单位（店方用列表/其它入口切换）
+const switchMineEnterprise = (entId: string) => {
+  if (entId !== enterpriseId) router.replace(`/enterprises/${entId}`)
 }
 
 const inviteExpiryText = computed(() => {
@@ -221,7 +274,15 @@ const inviteUrl = computed(() =>
   detail.value?.invite_code ? `https://xin-ni.com/join?code=${detail.value.invite_code}` : ''
 )
 
-onMounted(reload)
+onMounted(() => {
+  if (!canManage.value) {
+    // 非本单位审核员访问 → 回到本人落地页
+    ElMessage.error('无权访问该企业')
+    router.replace(userStore.landingPath)
+    return
+  }
+  reload()
+})
 </script>
 
 <template>
@@ -231,11 +292,25 @@ onMounted(reload)
         <div class="detail-header">
           <el-button link @click="router.back()">
             <el-icon><ArrowLeft /></el-icon>
-            返回列表
+            返回
           </el-button>
+          <!-- 单位审核员：担任审核员的单位不止一个时可切换（企业管理入口直接带第一个单位） -->
+          <el-select
+            v-if="!isStore && userStore.reviewerEnterprises.length > 1"
+            :model-value="enterpriseId"
+            class="ent-switch"
+            @change="switchMineEnterprise"
+          >
+            <el-option
+              v-for="e in userStore.reviewerEnterprises"
+              :key="e.enterprise_id"
+              :label="e.enterprise_name"
+              :value="e.enterprise_id"
+            />
+          </el-select>
           <span class="detail-title">{{ detail?.name }}</span>
-          <el-tag v-if="detail" :type="detail.status === 'active' ? 'success' : 'info'" class="detail-status">
-            {{ detail.status === 'active' ? '正常' : '停用' }}
+          <el-tag v-if="detail && 'my_role' in detail && detail.my_role === 'reviewer'" type="warning" size="small">
+            我担任本单位审核员
           </el-tag>
         </div>
       </template>
@@ -244,9 +319,9 @@ onMounted(reload)
         <div class="info-grid">
           <div class="info-item">
             <span class="info-label">成员数</span>
-            <span class="info-value">{{ detail.member_count }}</span>
+            <span class="info-value">{{ detail.member_count ?? '-' }}</span>
           </div>
-          <div class="info-item">
+          <div v-if="'order_count' in detail && detail.order_count !== undefined" class="info-item">
             <span class="info-label">工单数</span>
             <span class="info-value">{{ detail.order_count }}</span>
           </div>
@@ -289,6 +364,16 @@ onMounted(reload)
     <el-card shadow="never">
       <template #header>
         <span>成员列表（{{ memberTotal }}人）</span>
+        <el-tooltip
+          v-if="isStore && reviewerTotal <= 1 && activeTab === 'approved'"
+          content="企业需至少保留一名单位审核员"
+          placement="top"
+        >
+          <span class="reviewer-hint">
+            当前审核员 {{ reviewerTotal }} 人
+          </span>
+        </el-tooltip>
+        <span v-else class="reviewer-hint">审核员 {{ reviewerTotal }} 人</span>
       </template>
 
       <el-tabs v-model="activeTab" @tab-change="handleTabChange">
@@ -312,8 +397,12 @@ onMounted(reload)
           </template>
         </el-table-column>
         <el-table-column prop="phone" label="手机号" width="140" />
-        <el-table-column label="角色" width="120">
-          <template #default="{ row }">{{ displayRole(row) }}</template>
+        <el-table-column label="成员身份" width="130">
+          <template #default="{ row }">
+            <el-tag :type="row.role === 'reviewer' ? 'warning' : 'info'" size="small">
+              {{ row.role_label }}
+            </el-tag>
+          </template>
         </el-table-column>
         <el-table-column label="状态" width="110">
           <template #default="{ row }">
@@ -324,15 +413,32 @@ onMounted(reload)
         <el-table-column label="加入时间" width="160">
           <template #default="{ row }">{{ formatDateTime(row.joined_at) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="150" fixed="right">
+        <el-table-column label="操作" :width="isStore ? 240 : 90" fixed="right">
           <template #default="{ row }">
             <template v-if="row.status === 'pending'">
               <el-button link type="success" @click="handleApprove(row)">通过</el-button>
               <el-button link type="danger" @click="handleReject(row)">拒绝</el-button>
             </template>
-            <el-button v-else-if="row.status === 'approved'" link type="danger" @click="handleRemove(row)">
-              移除
-            </el-button>
+            <template v-else-if="row.status === 'approved'">
+              <el-button link type="danger" @click="handleRemove(row)">移除</el-button>
+              <!-- V1.2：设/取消单位审核员，仅店方角色；最后一名审核员禁止降级 -->
+              <el-tooltip
+                v-if="isStore"
+                :disabled="!(row.role === 'reviewer' && reviewerTotal <= 1)"
+                content="该成员是本单位最后一名审核员，不可取消"
+                placement="top"
+              >
+                <el-button
+                  link
+                  :type="row.role === 'reviewer' ? 'warning' : 'success'"
+                  :loading="togglingRole"
+                  :disabled="row.role === 'reviewer' && reviewerTotal <= 1"
+                  @click="handleToggleReviewer(row)"
+                >
+                  {{ row.role === 'reviewer' ? '取消审核员' : '设为单位审核员' }}
+                </el-button>
+              </el-tooltip>
+            </template>
             <span v-else class="no-action">—</span>
           </template>
         </el-table-column>
@@ -432,8 +538,8 @@ onMounted(reload)
   color: #303133;
 }
 
-.detail-status {
-  margin-left: auto;
+.ent-switch {
+  width: 220px;
 }
 
 .info-grid {
@@ -492,6 +598,12 @@ onMounted(reload)
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.reviewer-hint {
+  margin-left: 12px;
+  font-size: 12px;
+  color: #909399;
 }
 
 .pagination {

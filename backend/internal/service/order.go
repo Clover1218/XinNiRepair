@@ -72,20 +72,20 @@ var actionLabels = map[string]string{
 // 输出结构 (4.1-4.9)
 // ────────────────────────────────────────────
 
-// CategoryOption 项目大类选项 (4.1)
+// CategoryOption 项目大类选项 (4.1; V1.4 修订: 常见问题随属性返回)
 type CategoryOption struct {
 	ID          string           `json:"id"`
 	Name        string           `json:"name"`
 	Description string           `json:"description"`
 	SortOrder   int              `json:"sort_order"`
 	Properties  []PropertyOption `json:"properties"`
-	Problems    []ProblemOption  `json:"problems"`
 }
 
-// PropertyOption 项目属性选项 (4.1)
+// PropertyOption 项目属性选项 (4.1; 含其下常见问题)
 type PropertyOption struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID       string          `json:"id"`
+	Name     string          `json:"name"`
+	Problems []ProblemOption `json:"problems,omitempty"`
 }
 
 // ProblemOption 常见问题选项 (4.1, 选中后预填描述)
@@ -296,24 +296,25 @@ func (s *OrderService) Options(ctx context.Context, userID string) (*OrderOption
 
 	categoryOptions := make([]CategoryOption, 0, len(cats))
 	for _, c := range cats {
+		props := make([]PropertyOption, 0, len(c.Properties))
+		for _, p := range c.Properties {
+			problems := make([]ProblemOption, 0, len(p.Problems))
+			for _, q := range p.Problems {
+				problems = append(problems, ProblemOption{
+					ID:              q.ID,
+					Name:            q.Name,
+					Description:     q.Description,
+					CommonSolutions: unmarshalSolutions(q.CommonSolutions),
+				})
+			}
+			props = append(props, PropertyOption{ID: p.ID, Name: p.Name, Problems: problems})
+		}
 		opt := CategoryOption{
 			ID:          c.ID,
 			Name:        c.Name,
 			Description: c.Description,
 			SortOrder:   c.SortOrder,
-			Properties:  make([]PropertyOption, 0, len(c.Properties)),
-			Problems:    make([]ProblemOption, 0, len(c.Problems)),
-		}
-		for _, p := range c.Properties {
-			opt.Properties = append(opt.Properties, PropertyOption{ID: p.ID, Name: p.Name})
-		}
-		for _, p := range c.Problems {
-			opt.Problems = append(opt.Problems, ProblemOption{
-				ID:              p.ID,
-				Name:            p.Name,
-				Description:     p.Description,
-				CommonSolutions: unmarshalSolutions(p.CommonSolutions),
-			})
+			Properties:  props,
 		}
 		categoryOptions = append(categoryOptions, opt)
 	}

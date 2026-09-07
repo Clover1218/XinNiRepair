@@ -12,14 +12,37 @@ const activeMenu = computed(() => route.path)
 
 const displayName = computed(() => userStore.userInfo?.nickname || '管理员')
 
+const roleLabel = computed(() => {
+  if (userStore.isSuperAdmin) return '超级管理员'
+  if (userStore.isStoreStaff) return '维修业务员'
+  if (userStore.hasReviewerRole) return '单位审核员'
+  return ''
+})
+
 const menus = computed<Array<{ path: string; title: string; icon: string }>>(() => {
-  if (!userStore.isPlatformAdmin) return []
-  const items = [
-    { path: '/orders', title: '工单管理', icon: 'Tickets' },
-    { path: '/enterprises', title: '企业管理', icon: 'OfficeBuilding' }
-  ]
-  if (userStore.isSuperAdmin) {
-    items.push({ path: '/users', title: '用户管理', icon: 'User' })
+  const items: Array<{ path: string; title: string; icon: string }> = []
+  if (userStore.isStoreStaff) {
+    items.push(
+      { path: '/orders', title: '工单管理', icon: 'Tickets' },
+      { path: '/enterprises', title: '企业管理', icon: 'OfficeBuilding' }
+    )
+    if (userStore.isSuperAdmin) {
+      items.push(
+        { path: '/dictionary', title: '项目字典', icon: 'Collection' },
+        { path: '/users', title: '用户管理', icon: 'User' }
+      )
+    }
+  } else if (userStore.hasReviewerRole) {
+    // 单位审核员：登录后独立展示“单位审核”与“企业管理”两个入口
+    items.push({ path: '/review', title: '单位审核', icon: 'Checked' })
+    const first = userStore.reviewerEnterprises[0]
+    if (first) {
+      items.push({
+        path: `/enterprises/${first.enterprise_id}`,
+        title: '企业管理',
+        icon: 'OfficeBuilding'
+      })
+    }
   }
   return items
 })
@@ -57,6 +80,7 @@ const handleLogout = async () => {
             {{ displayName.charAt(0) }}
           </el-avatar>
           <span class="user-name">{{ displayName }}</span>
+          <el-tag v-if="roleLabel" size="small" type="warning">{{ roleLabel }}</el-tag>
           <el-button link type="primary" @click="handleLogout">
             <el-icon><SwitchButton /></el-icon>
             退出登录
@@ -64,7 +88,8 @@ const handleLogout = async () => {
         </div>
       </el-header>
       <el-main class="main">
-        <router-view />
+        <!-- fullPath 作 key：/enterprises/:id 切换单位时重挂载详情页（审核员多单位场景） -->
+        <router-view :key="route.fullPath" />
       </el-main>
     </el-container>
   </el-container>

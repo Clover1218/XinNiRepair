@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import type { UserInfo } from '@/types'
+import type { EnterpriseMembership, UserInfo } from '@/types'
 
 interface JwtPayload {
   user_id: string
@@ -52,18 +52,47 @@ export const useUserStore = defineStore('user', {
     }
   },
   getters: {
-    /** JWT payload 中的 role：0=普通用户，1=平台管理员，2=超级管理员 */
+    /** JWT payload 中的平台角色（1=维修业务员 2=超级管理员） */
     jwtRole(): string | number | null {
       if (!this.token) return null
       return decodeJwt(this.token)?.role ?? null
     },
-    /** 是否为平台管理员（含超级管理员，可访问后台） */
-    isPlatformAdmin(): boolean {
-      return Number(this.jwtRole) >= 1
+    /** 平台角色（优先 userInfo.role，兼容仅剩 token 的场景） */
+    platformRole(): number | null {
+      const r = this.userInfo?.role ?? Number(this.jwtRole)
+      return Number.isNaN(r) ? null : r
     },
-    /** 是否为超级管理员（可管理用户） */
+    /** 店方角色：维修业务员(role=1) / 超级管理员(role=2)，可跨单位操作 */
+    isStoreStaff(): boolean {
+      return Number(this.platformRole) >= 1
+    },
+    /** 超级管理员（可管理用户与项目字典） */
     isSuperAdmin(): boolean {
-      return Number(this.jwtRole) >= 2
+      return Number(this.platformRole) >= 2
+    },
+    /** 已通过的单位关系（单位审核员/普通成员均可） */
+    approvedMemberships(): EnterpriseMembership[] {
+      return (this.userInfo?.enterprises ?? []).filter(e => e.status === 'approved')
+    },
+    /** 本人担任“单位审核员”的单位（仅这些单位可在 Web 审核/管理） */
+    reviewerEnterprises(): EnterpriseMembership[] {
+      return this.approvedMemberships.filter(e => e.role === 'reviewer')
+    },
+    /** 是否具备单位审核员身份（登录后可进“单位审核”视图） */
+    hasReviewerRole(): boolean {
+      return this.reviewerEnterprises.length > 0
+    },
+    /** 是否可管理指定单位（店方全可；单位审核员仅其担任审核员的单位） */
+    canManageEnterprise(): (enterpriseId: string) => boolean {
+      return (enterpriseId: string) =>
+        this.isStoreStaff ||
+        this.reviewerEnterprises.some(e => e.enterprise_id === enterpriseId)
+    },
+    /** 登录后落地页 */
+    landingPath(): string {
+      if (this.isStoreStaff) return '/orders'
+      if (this.hasReviewerRole) return '/review'
+      return '/login'
     }
   }
 })

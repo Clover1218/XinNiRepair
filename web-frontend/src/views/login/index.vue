@@ -22,8 +22,8 @@ const handleLogin = async () => {
     const res = await authAPI.adminLogin({ nickname: nickname.value.trim(), password: password.value })
     userStore.setUser(res.data.user, res.data.access_token)
 
-    // 判断是否为平台管理员（JWT role：1=平台管理员，0=普通用户）
-    if (!userStore.isPlatformAdmin) {
+    // 店方角色（role>=1）或单位审核员（role=0 + membership.role=reviewer）可登录管理后台
+    if (!userStore.isStoreStaff && !userStore.hasReviewerRole) {
       ElMessage.error('该账号无管理权限')
       userStore.logout()
       return
@@ -31,7 +31,8 @@ const handleLogin = async () => {
 
     ElMessage.success('登录成功')
     const redirect = (route.query.redirect as string) || ''
-    router.push(redirect || '/enterprises')
+    // 单位审核员落地「单位审核」，店方角色落地「工单管理」；指定 redirect 时优先跳转
+    router.push(redirect.startsWith('/') ? redirect : userStore.landingPath)
   } finally {
     loading.value = false
   }

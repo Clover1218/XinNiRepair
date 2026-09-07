@@ -241,13 +241,12 @@ type ProjectCategory struct {
 	UpdatedAt   time.Time  `gorm:"autoUpdateTime"`
 
 	Properties []ProjectProperty `gorm:"foreignKey:CategoryID"`
-	Problems   []ProjectProblem  `gorm:"foreignKey:CategoryID"`
 }
 
 // TableName 指定表名 (GORM 默认复数化 project_categories 一致, 显式声明防歧义)
 func (ProjectCategory) TableName() string { return "project_categories" }
 
-// ProjectProperty 项目属性 (隶属项目大类, 一对多)
+// ProjectProperty 项目属性 (隶属项目大类, 一对多; 属性下可挂常见问题)
 type ProjectProperty struct {
 	ID          string     `gorm:"primaryKey;type:uuid"`
 	CategoryID  string     `gorm:"type:uuid;not null;index:idx_project_properties_category"`
@@ -258,16 +257,18 @@ type ProjectProperty struct {
 	CreatedAt   time.Time  `gorm:"autoCreateTime"`
 	UpdatedAt   time.Time  `gorm:"autoUpdateTime"`
 
-	Category ProjectCategory `gorm:"foreignKey:CategoryID"`
+	Category ProjectCategory  `gorm:"foreignKey:CategoryID"`
+	Problems []ProjectProblem `gorm:"foreignKey:PropertyID"`
 }
 
 // TableName 指定表名
 func (ProjectProperty) TableName() string { return "project_properties" }
 
-// ProjectProblem 常见问题 (隶属项目大类, 一对多; 仅用于快捷填充报修描述, 不落工单表)
+// ProjectProblem 常见问题 (隶属项目属性, 一对多; 仅用于快捷填充报修描述, 不落工单表)
+// V1.4 修订: 由隶属大类改为直接隶属项目属性
 type ProjectProblem struct {
 	ID              string         `gorm:"primaryKey;type:uuid"`
-	CategoryID      string         `gorm:"type:uuid;not null;index:idx_project_problems_category"`
+	PropertyID      string         `gorm:"type:uuid;not null;index:idx_project_problems_property"`
 	Name            string         `gorm:"type:varchar(100);not null"`
 	Description     string         `gorm:"type:varchar(200);not null;default:''"`
 	CommonSolutions datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'"` // ["更换屏幕","检查排线"]
@@ -276,7 +277,7 @@ type ProjectProblem struct {
 	CreatedAt       time.Time      `gorm:"autoCreateTime"`
 	UpdatedAt       time.Time      `gorm:"autoUpdateTime"`
 
-	Category ProjectCategory `gorm:"foreignKey:CategoryID"`
+	Property ProjectProperty `gorm:"foreignKey:PropertyID"`
 }
 
 // TableName 指定表名

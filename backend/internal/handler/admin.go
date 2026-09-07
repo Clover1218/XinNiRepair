@@ -60,14 +60,16 @@ func (h *AdminHandler) ListOrders(c *gin.Context) {
 	}
 
 	filter := repository.OrderAdminFilter{
-		Status:     statuses,
-		Urgency:    c.Query("urgency"),
-		Keyword:    c.Query("keyword"),
-		DateFrom:   dateFrom,
-		DateTo:     dateTo,
-		ReporterID: c.Query("reporter_id"),
-		SortBy:     c.Query("sort_by"),
-		SortOrder:  c.Query("sort_order"),
+		Status:       statuses,
+		Urgency:      c.Query("urgency"),
+		Keyword:      c.Query("keyword"),
+		EnterpriseID: c.Query("enterprise_id"), // 企业精确筛选 (单位审核员必传且限定本单位)
+		CategoryID:   c.Query("category_id"),   // 项目大类精确筛选
+		DateFrom:     dateFrom,
+		DateTo:       dateTo,
+		ReporterID:   c.Query("reporter_id"),
+		SortBy:       c.Query("sort_by"),
+		SortOrder:    c.Query("sort_order"),
 	}
 	result, err := h.orders.ListOrders(c.Request.Context(), opOf(c), filter, page, pageSize)
 	if err != nil {

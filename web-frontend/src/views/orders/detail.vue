@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox, type UploadRequestOptions, type UploadUserFile } from 'element-plus'
 import { adminAPI } from '@/api/admin'
+import { useUserStore } from '@/stores/user'
 import type { AvailableAction, OrderDetail } from '@/types'
 import { formatDateTime } from '@/utils/format'
 
@@ -13,20 +14,20 @@ const orderId = route.params.id as string
 const loading = ref(false)
 const detail = ref<OrderDetail | null>(null)
 
-// 状态中文映射（附录A）
+// 状态中文映射（时间轴流转展示用；卡片文案以后端 status_label 为准）
 const statusLabelMap: Record<string, string> = {
   draft: '草稿',
   reported: '已上报',
-  reviewed: '已阅',
+  pending_accept: '待接单',
   processing: '处理中',
-  completed: '已完成',
+  completed: '已处理',
   cancelled: '已取消'
 }
 
 const statusTagType: Record<string, string> = {
   draft: 'info',
   reported: 'danger',
-  reviewed: 'warning',
+  pending_accept: 'warning',
   processing: 'primary',
   completed: 'success',
   cancelled: 'info'
@@ -35,10 +36,10 @@ const statusTagType: Record<string, string> = {
 const imageUrls = computed(() => detail.value?.images.map(i => i.url) ?? [])
 const receiptUrls = computed(() => detail.value?.receipts.map(r => r.url) ?? [])
 
-/** V1.1：对账信息是否展示（completed 状态且有对账数据） */
+/** 对账信息是否展示（completed 状态） */
 const showFinance = computed(() => detail.value?.status === 'completed')
 
-/** V1.1：附加信息是否展示（completed 状态且有 metadata 数据） */
+/** 附加信息是否展示（completed 状态且有 metadata 数据） */
 const showMetadata = computed(() => {
   const d = detail.value
   if (!d || d.status !== 'completed') return false
@@ -47,7 +48,7 @@ const showMetadata = computed(() => {
   return !!(m.repair_result || m.repair_method || m.warranty_period || m.repair_duration != null || m.extra_remark)
 })
 
-/** 金额格式化（8.4）：保留两位小数 */
+/** 金额格式化：保留两位小数 */
 const formatMoney = (value?: number | null) => {
   if (value === undefined || value === null || Number.isNaN(Number(value))) return '-'
   return Number(value).toFixed(2)
@@ -63,7 +64,19 @@ const fetchDetail = async () => {
   }
 }
 
-// ---- 查阅 / 接单（简单操作，可带确认文案） ----
+// ── 动作可见性：店方全量；单位审核员仅 audit（reported 审核通过）与 reported 退回 ──
+const userStore = useUserStore()
+const visibleActions = computed<AvailableAction[]>(() => {
+  const actions = detail.value?.available_actions ?? []
+  if (userStore.isStoreStaff) return actions
+  return actions.filter(
+    a =>
+      a.action === 'audit' ||
+      (a.action === 'reject' && detail.value?.status === 'reported')
+  )
+})
+
+// ---- 简单操作：审核通过 / 接单 / 重新打开（可带确认文案） ----
 const runSimpleAction = async (action: AvailableAction) => {
   if (action.confirm_message) {
     try {
@@ -76,10 +89,12 @@ const runSimpleAction = async (action: AvailableAction) => {
       return
     }
   }
-  if (action.action === 'review') {
-    await adminAPI.reviewOrder(orderId)
+  if (action.action === 'audit') {
+    await adminAPI.auditOrder(orderId)
   } else if (action.action === 'accept') {
     await adminAPI.acceptOrder(orderId)
+  } else if (action.action === 'reopen') {
+    await adminAPI.reopenOrder(orderId)
   }
   ElMessage.success(`${action.label}成功`)
   await fetchDetail()
@@ -112,6 +127,12 @@ const handleRejectSubmit = async () => {
   }
 }
 
+const openRejectDialog = (action: AvailableAction) => {
+  rejectMinLength.value = action.reason_min_length ?? 10
+  rejectReason.value = ''
+  rejectDialogVisible.value = true
+}
+
 // ---- 完工（弹窗：维修备注 + 对账信息 + 收据上传） ----
 const completeDialogVisible = ref(false)
 const completeRemark = ref('')
@@ -122,7 +143,7 @@ const completing = ref(false)
 const previewVisible = ref(false)
 const previewUrl = ref('')
 
-// 对账信息（5.6 必填）
+// 对账信息（必填）
 const completeQuantity = ref<number | undefined>(undefined)
 const completeUnitPrice = ref<number | undefined>(undefined)
 const completeRepairContent = ref('')
@@ -249,7 +270,6 @@ const openCompleteDialog = () => {
   receipts.value = []
   receiptFileList.value = []
   receiptUrlMap.clear()
-  // 重置对账信息与元数据
   completeQuantity.value = undefined
   completeUnitPrice.value = undefined
   completeRepairContent.value = ''
@@ -261,7 +281,7 @@ const openCompleteDialog = () => {
   completeDialogVisible.value = true
 }
 
-// ---- V1.1 修改对账信息（5.6.1，completed 状态） ----
+// ---- 修改对账信息（completed 状态店方） ----
 const financeDialogVisible = ref(false)
 const financeQuantity = ref<number | undefined>(undefined)
 const financeUnitPrice = ref<number | undefined>(undefined)
@@ -342,12 +362,6 @@ const handleUpdateFinance = async () => {
   }
 }
 
-const openRejectDialog = (action: AvailableAction) => {
-  rejectMinLength.value = action.reason_min_length ?? 10
-  rejectReason.value = ''
-  rejectDialogVisible.value = true
-}
-
 // ---- 动作分发 ----
 const handleAction = (action: AvailableAction) => {
   if (action.action === 'reject') {
@@ -382,9 +396,9 @@ onMounted(fetchDetail)
 
       <template v-if="detail">
         <div class="meta-row">
-          <span v-if="detail.reporter" class="meta-item">
-            <el-icon><User /></el-icon>
-            报修人：{{ detail.reporter.nickname }}
+          <span class="meta-item">
+            <el-icon><OfficeBuilding /></el-icon>
+            企业：{{ detail.enterprise_name }}
           </span>
           <span class="meta-item">
             <el-icon><Clock /></el-icon>
@@ -394,6 +408,15 @@ onMounted(fetchDetail)
             <el-icon><Warning /></el-icon>
             紧急程度：
             <span class="urgency-text">{{ detail.urgency_label }}</span>
+          </span>
+          <span v-if="detail.auditor_name" class="meta-item">
+            <el-icon><Stamp /></el-icon>
+            审核人：{{ detail.auditor_name }}
+            <span class="meta-sub">（{{ formatDateTime(detail.audited_at) }}）</span>
+          </span>
+          <span v-if="detail.repairer_name" class="meta-item">
+            <el-icon><User /></el-icon>
+            接单/维修：{{ detail.repairer_name }}
           </span>
         </div>
 
@@ -414,23 +437,19 @@ onMounted(fetchDetail)
                 <span class="info-label">工单号</span>
                 <span class="info-value">{{ detail.order_no }}</span>
               </div>
-              <div v-if="detail.enterprise_name" class="info-cell">
+              <div class="info-cell">
                 <span class="info-label">报修企业</span>
                 <span class="info-value">{{ detail.enterprise_name }}</span>
-              </div>
-              <div class="info-cell">
-                <span class="info-label">项目名称</span>
-                <span class="info-value">{{ detail.project_name }}</span>
               </div>
             </div>
             <div class="info-row">
               <div class="info-cell">
-                <span class="info-label">维修类别</span>
-                <span class="info-value">{{ detail.category_label }}</span>
+                <span class="info-label">项目大类</span>
+                <span class="info-value">{{ detail.category_name || '-' }}</span>
               </div>
               <div class="info-cell">
-                <span class="info-label">维修类型</span>
-                <span class="info-value">{{ detail.property_label }}</span>
+                <span class="info-label">项目属性</span>
+                <span class="info-value">{{ detail.property_name || '-' }}</span>
               </div>
             </div>
             <div class="info-row">
@@ -452,7 +471,7 @@ onMounted(fetchDetail)
           </div>
         </div>
 
-        <!-- V1.1 新增：对账信息（completed 状态展示） -->
+        <!-- 对账信息（completed 状态展示） -->
         <div v-if="showFinance" class="section">
           <h3 class="section-title">对账信息</h3>
           <div class="info-grid">
@@ -479,7 +498,7 @@ onMounted(fetchDetail)
           </div>
         </div>
 
-        <!-- V1.1 新增：附加信息（completed 状态展示，metadata 独立区块） -->
+        <!-- 附加信息（completed 状态 metadata 独立区块） -->
         <div v-if="showMetadata" class="section">
           <h3 class="section-title">附加信息</h3>
           <div class="info-grid">
@@ -563,10 +582,10 @@ onMounted(fetchDetail)
       </template>
     </el-card>
 
-    <!-- 操作区 -->
-    <div v-if="detail?.available_actions?.length" class="action-bar">
+    <!-- 操作区（按钮由 visibleActions 驱动） -->
+    <div v-if="visibleActions.length" class="action-bar">
       <el-button
-        v-for="action in detail.available_actions"
+        v-for="action in visibleActions"
         :key="action.action"
         :type="action.action === 'reject' ? 'danger' : 'primary'"
         size="large"
@@ -601,7 +620,6 @@ onMounted(fetchDetail)
     <!-- 完工弹窗 -->
     <el-dialog v-model="completeDialogVisible" title="完工" width="640px">
       <el-form label-position="top">
-        <!-- 第一栏：维修备注 -->
         <div class="complete-block-title">维修备注（必填，≤200 字）</div>
         <el-form-item>
           <el-input
@@ -614,7 +632,6 @@ onMounted(fetchDetail)
           />
         </el-form-item>
 
-        <!-- 第二栏：对账信息 -->
         <div class="complete-block-title">对账信息（必填）</div>
         <div class="finance-row">
           <el-form-item label="数量（≥0）">
@@ -635,7 +652,6 @@ onMounted(fetchDetail)
           />
         </el-form-item>
 
-        <!-- 第三栏：收据图片 -->
         <div class="complete-block-title">收据图片（最多 3 张）</div>
         <el-form-item>
           <el-upload
@@ -651,7 +667,6 @@ onMounted(fetchDetail)
           </el-upload>
         </el-form-item>
 
-        <!-- 第四栏：维修附加信息 -->
         <div class="complete-block-title">维修附加信息（可选）</div>
         <div class="finance-row">
           <el-form-item label="维修结果">
@@ -691,7 +706,7 @@ onMounted(fetchDetail)
       </template>
     </el-dialog>
 
-    <!-- 修改对账信息弹窗（5.6.1） -->
+    <!-- 修改对账信息弹窗 -->
     <el-dialog v-model="financeDialogVisible" title="修改对账信息" width="560px">
       <el-form label-position="top">
         <el-form-item label="工单号">
@@ -847,6 +862,11 @@ onMounted(fetchDetail)
   align-items: center;
   gap: 4px;
   color: #606266;
+}
+
+.meta-sub {
+  color: #909399;
+  font-size: 12px;
 }
 
 .urgency-text {

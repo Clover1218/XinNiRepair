@@ -132,9 +132,9 @@ func (h *ProjectHandler) DeleteProperty(c *gin.Context) {
 
 // ── 常见问题 (project_problems) ──
 
-// ListProblems GET /admin/problems?category_id=xxx
+// ListProblems GET /admin/problems?property_id=xxx (V1.4: 问题隶属属性)
 func (h *ProjectHandler) ListProblems(c *gin.Context) {
-	list, err := h.svc.ListProblems(c.Request.Context(), c.Query("category_id"))
+	list, err := h.svc.ListProblems(c.Request.Context(), c.Query("property_id"))
 	if err != nil {
 		h.logger.Error("ListProblems: service error", zap.Error(err))
 		response.FailError(c, err)

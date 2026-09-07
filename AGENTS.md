@@ -96,7 +96,7 @@ npx vue-tsc --noEmit         # 类型检查
 - **工单状态机**：draft(草稿) → reported(已上报) → pending_accept(待接单) → processing(处理中) → completed(已处理/完成)；`reject` 退回（原因≥10字，回 draft，退回非独立状态）、`cancelled`(已取消) 终态、completed 可 `reopen`(重新打开)→processing。审核通过由单位审核员执行：写 `audited_at/audited_by`（`reviewed_at` 已废弃）。
 - **角色（双层模型）**：全局 users.role 0=普通用户 / 1=维修业务员（原平台管理员，店方：接单/处理/完工/收据与费用登记）/ 2=超级管理员（另管项目字典）；单位内 memberships.role 0=普通成员 / 1=单位审核员（成员审批 + 本单位工单审核 reported→pending_accept/退回 + 汇总统计）；membership 状态 pending/approved/rejected/removed。
 - **企业邀请**：邀请码 + 有效期（刷新接口），成员加入支持 `auto_approve`（免审核）开关，企业设置更新走 `PUT /api/v1/enterprises/:id`（name + auto_approve，局部更新）。
-- **项目字典（库表存储，替代 JSON）**：`project_categories` / `project_properties` / `project_problems` 三表（软删除 `deleted_at` + `sort_order` 排序，大类↔属性/常见问题一对多）；工单存 `category_id`/`property_id` + 名称快照（`category_name`/`property_name`），常见问题仅作描述快捷填充、不落库。
+- **项目字典（库表存储，替代 JSON）**：`project_categories` / `project_properties` / `project_problems` 三表（软删除 `deleted_at` + `sort_order` 排序；大类↔属性一对多，**常见问题直接隶属属性**（property↔problem 一对多，2026-09-07 修订），同属性内 name 唯一）；工单存 `category_id`/`property_id` + 名称快照（`category_name`/`property_name`），常见问题仅作描述快捷填充、不落库。
 - **工单完结对账**：completed 时必填 `repair_content`/`quantity`/`unit_price` + 收据（1-3 张，完工后可补充、可替换不可删），金额列为 GORM 生成列 `quantity * unit_price`；metadata（维修结果/方式/保修期/时长/额外备注）。
 - **导出**（5.14）：enterprise（企业对账单）/ repairer（业务员汇总，按企业分组 + 小计）两种模式，excelize 内存生成 xlsx；无数据返回业务错误（前端需正确解析 Blob 错误体）。
 - **微信订阅消息**：模板配置见 `docs/小程序订阅消息模板信息.md`；发送封装在 `service/notifier.go`，通知失败仅记日志不阻塞业务；模板字段名（如 time13）必须与微信后台一致。

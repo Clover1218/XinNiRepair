@@ -1,8 +1,14 @@
-/** 用户所属企业信息 */
+/** 平台角色：0=普通用户 1=维修业务员 2=超级管理员 */
+export type PlatformRole = 0 | 1 | 2
+
+/** 单位内成员身份字符串（接口统一 reviewer/member，兼容旧值 admin） */
+export type MemberRole = 'member' | 'reviewer'
+
+/** 用户所属企业信息（登录响应 /auth/me） */
 export interface EnterpriseMembership {
   enterprise_id: string
   enterprise_name: string
-  role: string
+  role: MemberRole
   status: string
 }
 
@@ -12,6 +18,7 @@ export interface UserInfo {
   nickname: string
   avatar_url: string
   phone: string
+  role: PlatformRole
   enterprises: EnterpriseMembership[]
 }
 
@@ -22,11 +29,11 @@ export interface LoginResult {
   user: UserInfo
 }
 
-/** 工单状态 */
+/** 工单状态（V1.4 状态机，无 reviewed） */
 export type OrderStatus =
   | 'draft'
   | 'reported'
-  | 'reviewed'
+  | 'pending_accept'
   | 'processing'
   | 'completed'
   | 'cancelled'
@@ -65,11 +72,14 @@ export interface OrderListItem {
     nickname: string
     avatar_url: string
   }
-  /** V1.1 新增：企业 ID */
   enterprise_id: string
-  /** V1.1 新增：企业名称 */
   enterprise_name: string
-  project_name: string
+  /** 项目大类 ID / 名称快照（V1.4 替代 project_name） */
+  category_id: string
+  category_name: string
+  /** 项目属性 ID / 名称快照 */
+  property_id: string
+  property_name: string
   description: string
   urgency: Urgency
   urgency_label: string
@@ -80,27 +90,27 @@ export interface OrderListItem {
   created_at: string
 }
 
-/** V1.1 新增：维修附加元数据（完工/对账使用） */
+/** 维修附加元数据（完工/对账使用） */
 export interface OrderMetadata {
-  repair_result?: string // 维修结果，如：完全修复
-  repair_method?: string // 维修方式，如：上门维修
-  warranty_period?: string // 保修期，如：3个月
-  extra_remark?: string // 额外备注
-  repair_duration?: number // 维修时长（分钟）
+  repair_result?: string
+  repair_method?: string
+  warranty_period?: string
+  extra_remark?: string
+  repair_duration?: number
 }
 
-/** V1.1 新增：对账信息（完工提交 / 修改对账共用） */
+/** 对账信息（完工提交 / 修改对账共用） */
 export interface FinanceInfo {
-  quantity?: number // 数量
-  unit_price?: number // 单价
-  amount?: number // 金额（后端 GENERATED 列自动计算，只读展示）
-  repair_content?: string // 具体维修操作内容
+  quantity?: number
+  unit_price?: number
+  amount?: number
+  repair_content?: string
   metadata?: OrderMetadata
 }
 
-/** 可执行动作（5.2 available_actions） */
+/** 可执行动作（5.2 available_actions；store 全量，审核员由前端按角色裁剪） */
 export interface AvailableAction {
-  action: 'review' | 'accept' | 'complete' | 'reject' | 'update_finance'
+  action: 'audit' | 'accept' | 'complete' | 'reject' | 'reopen' | 'update_finance'
   label: string
   to_status: string
   require_reason?: boolean
@@ -113,17 +123,12 @@ export interface AvailableAction {
 export interface OrderDetail {
   id: string
   order_no: string
-  /** 报修人信息（管理后台详情接口可能返回，4.7 用户端无此字段） */
-  reporter?: {
-    id: string
-    nickname: string
-    avatar_url: string
-  }
-  project_name: string
-  category: string
-  category_label: string
-  property: string
-  property_label: string
+  enterprise_id: string
+  enterprise_name: string
+  category_id: string
+  category_name: string
+  property_id: string
+  property_name: string
   description: string
   urgency: Urgency
   urgency_label: string
@@ -132,25 +137,25 @@ export interface OrderDetail {
   status: OrderStatus
   status_label: string
   reject_reason: string | null
+  repair_content: string
+  quantity: number
+  unit_price: number
+  amount: number
+  metadata?: OrderMetadata
+  auditor_id?: string
+  auditor_name?: string
+  repairer_id?: string
+  repairer_name?: string
   images: OrderImage[]
   receipts: OrderImage[]
   timeline: TimelineItem[]
   available_actions: AvailableAction[]
   created_at: string
   submitted_at: string
-  updated_at: string
-  reviewed_at?: string
+  audited_at?: string
   accepted_at?: string
   completed_at?: string
-  /** V1.1 新增：对账信息（completed 状态展示，完工/修改对账提交） */
-  quantity?: number
-  unit_price?: number
-  amount?: number
-  repair_content?: string
-  metadata?: OrderMetadata
-  /** V1.1 新增：企业 ID / 企业名称 */
-  enterprise_id?: string
-  enterprise_name?: string
+  updated_at: string
 }
 
 /** 分页响应 */
@@ -173,17 +178,28 @@ export interface EnterpriseListItem {
   created_at: string
 }
 
-/** 企业详情（5.9） */
+/** 企业详情（5.9 / 3.3，管理端返回 order_count/status） */
 export interface EnterpriseDetail {
   id: string
   name: string
   invite_code: string
   invite_code_expires_at: string | null
-  /** 免审核开关：开启后新成员加入无需审核 */
   auto_approve: boolean
   member_count: number
-  order_count: number
-  status: 'active' | 'inactive'
+  order_count?: number
+  status?: 'active' | 'inactive'
+  created_at: string
+}
+
+/** 企业详情（GET /enterprises/:id 单位视角：单位审核员使用，含 my_role） */
+export interface EnterpriseMineDetail {
+  id: string
+  name: string
+  invite_code: string
+  invite_code_expires_at: string | null
+  auto_approve: boolean
+  member_count?: number
+  my_role?: MemberRole
   created_at: string
 }
 
@@ -194,10 +210,10 @@ export interface MemberItem {
   nickname: string
   avatar_url: string
   phone: string
-  role: string
-  role_label?: string
-  status: string
-  status_label?: string
+  role: MemberRole
+  role_label: string
+  status: 'pending' | 'approved' | 'rejected' | 'removed'
+  status_label: string
   order_count: number
   joined_at: string
 }
@@ -209,7 +225,7 @@ export interface UserListItem {
   nickname: string
   avatar_url: string
   phone: string
-  role: number
+  role: PlatformRole
   created_at: string
   updated_at: string
   enterprise_name: string | null
@@ -239,4 +255,70 @@ export interface UserDetail {
   created_at: string
   updated_at: string
   memberships: UserMembership[]
+}
+
+// ───────────────────────────────────────────
+// 项目字典 / 报修选项（V1.4 库表化；问题直接隶属属性）
+// ───────────────────────────────────────────
+
+/** 报修选项大类（4.1 /orders/options） */
+export interface CategoryOption {
+  id: string
+  name: string
+  description: string
+  sort_order: number
+  properties: PropertyOption[]
+}
+
+/** 报修选项常见问题 */
+export interface ProblemOption {
+  id: string
+  name: string
+  common_solutions?: string[]
+}
+
+/** /orders/options 响应 */
+export interface OrderOptions {
+  categories: CategoryOption[]
+  enterprises: Array<{ id: string; name: string }>
+}
+
+/** 字典管理：大类（6.5.1，超管） */
+export interface DictionaryCategory {
+  id: string
+  name: string
+  description: string
+  sort_order: number
+}
+
+/** 字典管理：属性（6.5.2；树形接口携带其下常见问题） */
+export interface DictionaryProperty {
+  id: string
+  category_id: string
+  name: string
+  description: string
+  sort_order: number
+  problems?: DictionaryProblem[]
+}
+
+/** 字典管理：常见问题（6.5.3，隶属项目属性） */
+export interface DictionaryProblem {
+  id: string
+  property_id: string
+  name: string
+  description: string
+  common_solutions: string[]
+  sort_order: number
+}
+
+/** 字典树（含子项，6.5 大类列表返回；问题随属性返回） */
+export interface DictionaryCategoryTree extends DictionaryCategory {
+  properties: DictionaryProperty[]
+}
+
+/** 报修选项属性（4.1，含其下常见问题） */
+export interface PropertyOption {
+  id: string
+  name: string
+  problems?: ProblemOption[]
 }

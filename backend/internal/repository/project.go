@@ -40,7 +40,8 @@ func (r *ProjectRepository) ListCategories(ctx context.Context) ([]model.Project
 	return cats, nil
 }
 
-// ListCategoriesWithChildren 查询大类并预加载其有效属性/常见问题 (options/6.5 树形展示用)
+// ListCategoriesWithChildren 查询大类并预加载其有效属性及属性下问题 (options/6.5 树形展示用)
+// V1.4 修订: 常见问题直接挂属性, 不再预加载大类级 problems
 func (r *ProjectRepository) ListCategoriesWithChildren(ctx context.Context) ([]model.ProjectCategory, error) {
 	var cats []model.ProjectCategory
 	err := r.db.WithContext(ctx).
@@ -49,7 +50,7 @@ func (r *ProjectRepository) ListCategoriesWithChildren(ctx context.Context) ([]m
 		Preload("Properties", "deleted_at IS NULL", func(db *gorm.DB) *gorm.DB {
 			return db.Order("sort_order ASC, created_at ASC")
 		}).
-		Preload("Problems", "deleted_at IS NULL", func(db *gorm.DB) *gorm.DB {
+		Preload("Properties.Problems", "deleted_at IS NULL", func(db *gorm.DB) *gorm.DB {
 			return db.Order("sort_order ASC, created_at ASC")
 		}).
 		Find(&cats).Error
@@ -107,7 +108,7 @@ func (r *ProjectRepository) UpdateCategory(ctx context.Context, c *model.Project
 	return r.db.WithContext(ctx).Save(c).Error
 }
 
-// SoftDeleteCategory 软删除大类 (置 deleted_at; 连带软删除其属性/常见问题)
+// SoftDeleteCategory 软删除大类 (置 deleted_at; 连带软删除其属性, 并级联软删属性下的常见问题)
 func (r *ProjectRepository) SoftDeleteCategory(ctx context.Context, id string, at time.Time) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&model.ProjectCategory{}).Where("id = ?", id).Update("deleted_at", at).Error; err != nil {
@@ -117,7 +118,9 @@ func (r *ProjectRepository) SoftDeleteCategory(ctx context.Context, id string, a
 			Update("deleted_at", at).Error; err != nil {
 			return err
 		}
-		return tx.Model(&model.ProjectProblem{}).Where("category_id = ? AND deleted_at IS NULL", id).
+		// 问题不再直接关联大类: 级联其属性下问题
+		return tx.Model(&model.ProjectProblem{}).
+			Where("deleted_at IS NULL AND property_id IN (SELECT id FROM project_properties WHERE category_id = ?)", id).
 			Update("deleted_at", at).Error
 	})
 }
@@ -174,21 +177,28 @@ func (r *ProjectRepository) UpdateProperty(ctx context.Context, p *model.Project
 	return r.db.WithContext(ctx).Save(p).Error
 }
 
-// SoftDeleteProperty 软删除属性
+// SoftDeleteProperty 软删除属性 (级联软删其下常见问题)
 func (r *ProjectRepository) SoftDeleteProperty(ctx context.Context, id string, at time.Time) error {
-	return r.db.WithContext(ctx).Model(&model.ProjectProperty{}).
-		Where("id = ?", id).Update("deleted_at", at).Error
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&model.ProjectProperty{}).
+			Where("id = ?", id).Update("deleted_at", at).Error; err != nil {
+			return err
+		}
+		return tx.Model(&model.ProjectProblem{}).
+			Where("property_id = ? AND deleted_at IS NULL", id).
+			Update("deleted_at", at).Error
+	})
 }
 
 // ────────────────────────────────────────────
 // 常见问题
 // ────────────────────────────────────────────
 
-// ListProblems 查询某大类下有效常见问题, 按 sort_order 升序
-func (r *ProjectRepository) ListProblems(ctx context.Context, categoryID string) ([]model.ProjectProblem, error) {
+// ListProblems 查询某属性下有效常见问题, 按 sort_order 升序 (V1.4: 问题隶属属性)
+func (r *ProjectRepository) ListProblems(ctx context.Context, propertyID string) ([]model.ProjectProblem, error) {
 	var list []model.ProjectProblem
 	err := r.db.WithContext(ctx).
-		Where("category_id = ? AND deleted_at IS NULL", categoryID).
+		Where("property_id = ? AND deleted_at IS NULL", propertyID).
 		Order("sort_order ASC, created_at ASC").
 		Find(&list).Error
 	if err != nil {
@@ -210,10 +220,10 @@ func (r *ProjectRepository) FindActiveProblemByID(ctx context.Context, id string
 	return &p, nil
 }
 
-// CountProblemName 统计某大类下未删除同名问题数
-func (r *ProjectRepository) CountProblemName(ctx context.Context, categoryID, name, excludeID string) (int64, error) {
+// CountProblemName 统计某属性下未删除同名问题数 (V1.4: 同一属性内唯一)
+func (r *ProjectRepository) CountProblemName(ctx context.Context, propertyID, name, excludeID string) (int64, error) {
 	q := r.db.WithContext(ctx).Model(&model.ProjectProblem{}).
-		Where("category_id = ? AND name = ? AND deleted_at IS NULL", categoryID, name)
+		Where("property_id = ? AND name = ? AND deleted_at IS NULL", propertyID, name)
 	if excludeID != "" {
 		q = q.Where("id <> ?", excludeID)
 	}

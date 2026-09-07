@@ -2,33 +2,40 @@
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { adminAPI, type OrderListParams } from '@/api/admin'
+import { adminAPI, fetchOrderOptions, type OrderListParams } from '@/api/admin'
+import { useUserStore } from '@/stores/user'
 import type { EnterpriseListItem, OrderListItem, OrderStatus, Urgency } from '@/types'
 import { formatDateTime } from '@/utils/format'
 
 const router = useRouter()
+const userStore = useUserStore()
 
-// 状态 Tab（全部=不传）
+// 单位审核员不进入本页（独立 /review 视图），直接跳转
+if (!userStore.isStoreStaff) {
+  router.replace('/review')
+}
+
+// 状态 Tab（全部=不传，V1.4 状态机）
 const statusTabs = [
   { label: '全部', value: '' },
-  { label: '待查阅', value: 'reported' },
-  { label: '已阅', value: 'reviewed' },
+  { label: '待审核', value: 'reported' },
+  { label: '待接单', value: 'pending_accept' },
   { label: '处理中', value: 'processing' },
   { label: '已完成', value: 'completed' },
   { label: '已取消', value: 'cancelled' }
 ]
 
-// 8.1 状态标签颜色
+// 状态标签颜色
 const statusTagType: Record<OrderStatus, string> = {
   draft: 'info',
   reported: 'danger',
-  reviewed: 'warning',
+  pending_accept: 'warning',
   processing: 'primary',
   completed: 'success',
   cancelled: 'info'
 }
 
-// 8.2 紧急程度标识
+// 紧急程度标识
 const urgencyMap: Record<Urgency, { label: string; color: string; dots: number }> = {
   normal: { label: '普通', color: '#409eff', dots: 1 },
   urgent: { label: '紧急', color: '#e6a23c', dots: 2 },
@@ -37,8 +44,8 @@ const urgencyMap: Record<Urgency, { label: string; color: string; dots: number }
 
 const activeStatus = ref('')
 const enterpriseId = ref('')
-const orderNo = ref('')
-const projectName = ref('')
+const categoryId = ref('')
+const keyword = ref('')
 const urgency = ref('')
 const dateRange = ref<[string, string] | null>(null)
 // 排序状态（默认按提交时间倒序）
@@ -51,6 +58,9 @@ const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
 
+// 项目大类选项（数据源 /orders/options 4.1）
+const categoryOptions = ref<Array<{ id: string; name: string }>>([])
+
 const fetchList = async () => {
   loading.value = true
   try {
@@ -62,8 +72,8 @@ const fetchList = async () => {
     }
     if (activeStatus.value) params.status = activeStatus.value
     if (enterpriseId.value) params.enterprise_id = enterpriseId.value
-    if (orderNo.value.trim()) params.order_no = orderNo.value.trim()
-    if (projectName.value.trim()) params.project_name = projectName.value.trim()
+    if (categoryId.value) params.category_id = categoryId.value
+    if (keyword.value.trim()) params.keyword = keyword.value.trim()
     if (urgency.value) params.urgency = urgency.value
     if (dateRange.value) {
       params.date_from = `${dateRange.value[0]}T00:00:00+08:00`
@@ -84,8 +94,8 @@ const handleSearch = () => {
 
 const handleReset = () => {
   enterpriseId.value = ''
-  orderNo.value = ''
-  projectName.value = ''
+  categoryId.value = ''
+  keyword.value = ''
   urgency.value = ''
   dateRange.value = null
   activeStatus.value = ''
@@ -100,7 +110,7 @@ const handleTabChange = () => {
   fetchList()
 }
 
-// ---- V1.1 表格列排序（sortable="custom"，服务端排序） ----
+// 表格列排序（sortable="custom"，服务端排序）
 const handleSortChange = ({
   prop,
   order
@@ -135,7 +145,7 @@ const goDetail = (row: OrderListItem) => {
   router.push(`/orders/${row.id}`)
 }
 
-// ---- V1.1 导出工单（5.14） ----
+// ---- 导出工单（5.14，仅店方） ----
 const exportDialogVisible = ref(false)
 const exportMode = ref<'enterprise' | 'repairer'>('enterprise')
 const exportEnterpriseId = ref('')
@@ -144,17 +154,24 @@ const exportDateRange = ref<[string, string] | null>(null)
 const exportFields = ref<string[]>(['order_no', 'time', 'content', 'quantity', 'unit_price', 'amount', 'remark'])
 const exporting = ref(false)
 const enterpriseOptions = ref<EnterpriseListItem[]>([])
-// 维修员(业务员)选项（V1.1 5.15：导出弹窗业务员模式下拉）
+// 维修员(业务员)选项（5.15：导出弹窗业务员模式下拉）
 const repairerOptions = ref<Array<{ id: string; nickname: string; avatar_url: string }>>([])
 
-// 加载企业列表（V1.1：搜索栏企业下拉 / 导出弹窗共用）
+// 加载企业列表（搜索栏企业下拉 / 导出弹窗共用）
 const loadEnterpriseOptions = async () => {
   if (enterpriseOptions.value.length) return
   const res = await adminAPI.getEnterprises({ page: 1, page_size: 100 })
   enterpriseOptions.value = res.data.list
 }
 
-// 加载维修员列表（V1.1 5.15：导出弹窗业务员模式下拉）
+// 加载项目大类选项
+const loadCategoryOptions = async () => {
+  if (categoryOptions.value.length) return
+  const res = await fetchOrderOptions()
+  categoryOptions.value = res.data.categories.map(c => ({ id: c.id, name: c.name }))
+}
+
+// 加载维修员列表（5.15：导出弹窗业务员模式下拉）
 const loadRepairerOptions = async () => {
   if (repairerOptions.value.length) return
   const res = await adminAPI.getRepairers()
@@ -187,9 +204,7 @@ const openExportDialog = async () => {
   exportRepairerId.value = ''
   exportDateRange.value = null
   exportFields.value = ['order_no', 'time', 'content', 'quantity', 'unit_price', 'amount', 'remark']
-  // 加载企业列表供下拉选择（mode=enterprise 时使用）
   await loadEnterpriseOptions()
-  // 加载维修员列表供下拉选择（mode=repairer 时使用）
   await loadRepairerOptions()
   exportDialogVisible.value = true
 }
@@ -250,6 +265,7 @@ const handleExport = async () => {
 onMounted(() => {
   fetchList()
   loadEnterpriseOptions()
+  loadCategoryOptions()
 })
 </script>
 
@@ -266,7 +282,6 @@ onMounted(() => {
       </el-tabs>
 
       <div class="filter-bar">
-        <!-- V1.1：三个独立搜索（企业 / 工单号 / 项目名）+ 紧急程度 + 日期 -->
         <el-select
           v-model="enterpriseId"
           placeholder="按企业搜索"
@@ -282,16 +297,24 @@ onMounted(() => {
             :value="e.id"
           />
         </el-select>
-        <el-input
-          v-model="orderNo"
-          placeholder="工单号"
+        <el-select
+          v-model="categoryId"
+          placeholder="项目大类"
           clearable
+          filterable
           class="filter-input"
-          @keyup.enter="handleSearch"
-        />
+          @change="handleSearch"
+        >
+          <el-option
+            v-for="c in categoryOptions"
+            :key="c.id"
+            :label="c.name"
+            :value="c.id"
+          />
+        </el-select>
         <el-input
-          v-model="projectName"
-          placeholder="项目名称"
+          v-model="keyword"
+          placeholder="工单号 / 项目 / 报修人"
           clearable
           class="filter-input"
           @keyup.enter="handleSearch"
@@ -348,7 +371,12 @@ onMounted(() => {
             </div>
           </template>
         </el-table-column>
-        <el-table-column prop="project_name" label="项目名称" min-width="180" show-overflow-tooltip sortable="custom" />
+        <el-table-column prop="category_name" label="项目" min-width="180" show-overflow-tooltip sortable="custom">
+          <template #default="{ row }">
+            <span v-if="row.property_name">{{ row.category_name }} · {{ row.property_name }}</span>
+            <span v-else>{{ row.category_name }}</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="urgency" label="紧急度" width="120" sortable="custom">
           <template #default="{ row }">
             <span :style="{ color: urgencyMap[row.urgency as Urgency]?.color }">
@@ -476,7 +504,7 @@ onMounted(() => {
 }
 
 .filter-input {
-  width: 180px;
+  width: 170px;
 }
 
 .filter-urgency {

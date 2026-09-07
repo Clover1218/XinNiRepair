@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
@@ -85,15 +86,36 @@ func newV14Env(t *testing.T) *v14TestEnv {
 // seed 准备基础数据 (企业/三种用户/成员关系 + 项目大类引用)
 func (e *v14TestEnv) seed(t *testing.T) {
 	now := time.Now()
-	// 借用迁移种子中的大类/属性, 保证后续引用有效
+	// 优先引用迁移种子中的大类; 若开发库已不含固定种子(用户自定义调整后),
+	// 则自建 flow_ 前缀大类/属性兜底, 确保工单链路可用 (清理时按 flow_% 删除)
 	cat, err := e.projects.FindActiveCategoryByID(e.ctx, "10000000-0000-4000-8000-000000000001")
-	if err != nil || cat == nil {
-		t.Fatalf("seed category missing (run migration 008 first): %v", err)
+	if err != nil {
+		t.Fatalf("seed find category: %v", err)
+	}
+	if cat == nil {
+		cats, cerr := e.projects.ListCategories(e.ctx)
+		if cerr != nil || len(cats) == 0 {
+			t.Fatalf("seed category missing, no active category: %v", cerr)
+		}
+		cat = &cats[0]
 	}
 	e.catID = cat.ID
 	props, err := e.projects.ListProperties(e.ctx, cat.ID)
-	if err != nil || len(props) == 0 {
-		t.Fatalf("seed property missing: %v", err)
+	if err != nil {
+		t.Fatalf("seed list properties: %v", err)
+	}
+	if len(props) == 0 {
+		// 目标大类无属性时补建一个 flow_ 属性 (名称带 flow_ 前缀, 清理会删除该大类则一并删除)
+		prop := &model.ProjectProperty{
+			ID:         uuid.New().String(),
+			CategoryID: cat.ID,
+			Name:       fmt.Sprintf("flow_属性_%d", now.UnixNano()),
+			SortOrder:  1,
+		}
+		if err := e.projects.CreateProperty(e.ctx, prop); err != nil {
+			t.Fatalf("create seed property: %v", err)
+		}
+		props = []model.ProjectProperty{*prop}
 	}
 	e.propID = props[0].ID
 
@@ -132,7 +154,7 @@ func (e *v14TestEnv) seed(t *testing.T) {
 func (e *v14TestEnv) cleanup(t *testing.T) {
 	db := e.db
 	// 用户创建的 flow_ 字典 (先删子表再删大类)
-	_ = db.Exec(`DELETE FROM project_problems WHERE category_id IN (SELECT id FROM project_categories WHERE name LIKE 'flow_%')`).Error
+	_ = db.Exec(`DELETE FROM project_problems WHERE property_id IN (SELECT id FROM project_properties WHERE category_id IN (SELECT id FROM project_categories WHERE name LIKE 'flow_%'))`).Error
 	_ = db.Exec(`DELETE FROM project_properties WHERE category_id IN (SELECT id FROM project_categories WHERE name LIKE 'flow_%')`).Error
 	_ = db.Exec(`DELETE FROM project_categories WHERE name LIKE 'flow_%'`).Error
 	// 工单链路
@@ -345,9 +367,18 @@ func TestV14DictionaryCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create property: %v", err)
 	}
-	prob, err := env.projSvc.CreateProblem(env.ctx, ProblemInput{CategoryID: strPtr2(cat.ID), Name: strPtr2("测试问题"), CommonSolutions: []string{"方案A", "方案B"}})
+	prob, err := env.projSvc.CreateProblem(env.ctx, ProblemInput{PropertyID: strPtr2(prop.ID), Name: strPtr2("测试问题"), CommonSolutions: []string{"方案A", "方案B"}})
 	if err != nil {
 		t.Fatalf("create problem: %v", err)
+	}
+	// 同一属性下重名冲突
+	if _, err := env.projSvc.CreateProblem(env.ctx, ProblemInput{PropertyID: strPtr2(prop.ID), Name: strPtr2("测试问题")}); err == nil {
+		t.Fatal("同属性下重名问题应报错")
+	}
+	// 问题列表按属性筛选
+	probs, err := env.projSvc.ListProblems(env.ctx, prop.ID)
+	if err != nil || len(probs) != 1 {
+		t.Fatalf("list problems by property: %v len=%d", err, len(probs))
 	}
 	// 软删除后不再出现, 但仍可按 id 找回
 	if err := env.projSvc.DeleteCategory(env.ctx, cat.ID); err != nil {
@@ -369,6 +400,14 @@ func TestV14DictionaryCRUD(t *testing.T) {
 	}
 	if p2 != nil {
 		t.Fatal("大类软删除后其属性应不可见")
+	}
+	// 大类软删除后, 经属性级联其下常见问题应不可见
+	p3, err := env.projects.FindActiveProblemByID(env.ctx, prob.ID)
+	if err != nil {
+		t.Fatalf("find problem after delete: %v", err)
+	}
+	if p3 != nil {
+		t.Fatal("大类软删除后其下问题应不可见（经属性级联）")
 	}
 	_ = prob
 }
