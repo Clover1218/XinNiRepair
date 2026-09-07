@@ -1,9 +1,13 @@
-/** 企业在用户维度下的简要信息 */
+/** 全局角色：0=普通用户 / 1=维修业务员(店方) / 2=超级管理员（V1.2 双层模型） */
+export type PlatformRole = 0 | 1 | 2
+
+/** 用户在单位维度下的简要信息（/auth/me、登录响应） */
 export interface EnterpriseBrief {
   enterprise_id: string
   enterprise_name: string
-  role: string
-  status: string
+  /** 兼容旧值 'admin'（等价 reviewer），见接口文档 3.5 */
+  role: 'member' | 'reviewer' | 'admin'
+  status: 'pending' | 'approved' | 'rejected' | 'removed'
 }
 
 export interface UserInfo {
@@ -11,36 +15,59 @@ export interface UserInfo {
   nickname: string
   avatar_url: string
   phone: string
-  /** 全局角色：0=普通用户，1=平台管理员 */
-  role?: number
+  role: PlatformRole
   enterprises: EnterpriseBrief[]
 }
 
 export interface LoginResult {
   access_token: string
-  expires_in: number
+  expires_in?: number
   user: UserInfo | null
   /** true=需先完善资料(新用户), 调 /auth/register 后获取完整登录结果 */
   need_profile?: boolean
 }
 
-/** 工单列表项 */
-export interface OrderListItem {
+/** 工单状态（V1.2） */
+export type OrderStatus =
+  | 'draft'
+  | 'reported'
+  | 'pending_accept'
+  | 'processing'
+  | 'completed'
+  | 'cancelled'
+
+/* ==================== 报修选项（GET /orders/options，三级字典树） ==================== */
+
+export interface ProblemOption {
   id: string
-  order_no: string
-  project_name: string
-  category: string
-  category_label: string
-  description: string
-  enterprise_id?: string
-  enterprise_name?: string
-  urgency: string
-  urgency_label: string
-  status: string
-  status_label: string
-  created_at: string
-  submitted_at: string | null
+  name: string
+  description?: string
+  common_solutions: string[]
 }
+
+export interface PropertyOption {
+  id: string
+  name: string
+  description?: string
+  sort_order?: number
+  problems?: ProblemOption[]
+}
+
+export interface CategoryOption {
+  id: string
+  name: string
+  description?: string
+  sort_order?: number
+  properties: PropertyOption[]
+}
+
+export interface OptionsResult {
+  categories: CategoryOption[]
+  enterprises: { id: string; name: string }[]
+  urgent_levels: { value: string; label: string }[]
+}
+
+/* ==================== 工单 ==================== */
 
 export interface OrderImage {
   id: string
@@ -62,49 +89,75 @@ export interface TimelineItem {
   created_at: string
 }
 
-/** 工单详情（用户端） */
+/** 用户端工单列表项（GET /orders） */
+export interface OrderListItem {
+  id: string
+  order_no: string
+  category_id?: string
+  category_name?: string
+  property_id?: string
+  property_name?: string
+  description: string
+  enterprise_id?: string
+  enterprise_name?: string
+  urgency: string
+  urgency_label?: string
+  status: OrderStatus
+  status_label?: string
+  created_at: string
+  submitted_at: string | null
+  /** 完成工单金额（列表项后端确认后返回；V1.2 需确认 #4） */
+  amount?: number
+  /** 退回原因（被退回草稿；V1.2 需确认 #5） */
+  reject_reason?: string | null
+}
+
+/** 完工对账 metadata */
+export interface OrderMetadata {
+  repair_result?: string
+  repair_method?: string
+  warranty_period?: string
+  repair_duration?: number
+  extra_remark?: string
+}
+
 export interface OrderDetail {
   id: string
   order_no: string
-  project_name: string
-  category: string
-  category_label: string
-  property: string
-  property_label: string
-  description: string
-  urgency: string
-  urgency_label: string
-  room: string
-  contact: string
-  status: string
-  status_label: string
-  reject_reason: string | null
   enterprise_id?: string
   enterprise_name?: string
+  category_id?: string
+  category_name?: string
+  property_id?: string
+  property_name?: string
+  description: string
+  urgency: string
+  urgency_label?: string
+  room: string
+  contact: string
+  status: OrderStatus
+  status_label?: string
+  reject_reason: string | null
   images: OrderImage[]
   receipts: OrderImage[]
   timeline: TimelineItem[]
+  /** 完工对账（completed 后有值） */
+  quantity?: number
+  unit_price?: number
+  amount?: number
+  repair_content?: string
+  metadata?: OrderMetadata | null
+  auditor_name?: string
+  repairer_name?: string
   available_actions: AvailableAction[]
   created_at: string
   submitted_at: string | null
   updated_at: string
 }
 
-export interface ProjectCategory {
-  id: string
-  name: string
-  attributes: unknown[]
-}
+/* ==================== 分页 ==================== */
 
-/** GET /orders/options 返回 */
-export interface OptionsResult {
-  project_categories: ProjectCategory[]
-  properties: { value: string; label: string }[]
-  common_issues: Record<string, string[]>
-  urgent_levels: { value: string; label: string }[]
-  enterprises: { id: string; name: string }[]
-}
-
+/** 扁平分页结构（接口文档 1.2 / 管理端 5.x） */
 export interface PageResult<T> {
   list: T[]
   total: number
@@ -113,9 +166,65 @@ export interface PageResult<T> {
   total_pages: number
 }
 
-/* ==================== 管理员模块 ==================== */
+/** 嵌套 pagination 结构（接口文档 4.6 用户端列表） */
+export interface Pagination { total: number; page: number; page_size: number; total_pages: number }
+export interface PaginationResult<T> { list: T[]; pagination: Pagination }
 
-/** 管理员 - 企业列表项（GET /admin/enterprises） */
+/* ==================== 管理端：工单 ==================== */
+
+/** 管理端可用动作（V1.2：删除 review，新增 audit/reopen/update_finance） */
+export type AvailableActionKey =
+  | 'audit'
+  | 'accept'
+  | 'complete'
+  | 'reject'
+  | 'reopen'
+  | 'update_finance'
+
+export interface AvailableAction {
+  action: AvailableActionKey
+  label: string
+  to_status: OrderStatus | 'draft'
+  require_reason?: boolean
+  reason_min_length?: number
+  confirm_message?: string
+}
+
+/** 管理端工单列表项（GET /admin/orders） */
+export interface AdminOrderListItem {
+  id: string
+  order_no: string
+  reporter: { id: string; nickname: string; avatar_url: string }
+  enterprise_id?: string
+  enterprise_name?: string
+  category_id?: string
+  category_name?: string
+  property_id?: string
+  property_name?: string
+  description: string
+  urgency: string
+  urgency_label?: string
+  status: OrderStatus
+  status_label?: string
+  image_count: number
+  submitted_at: string | null
+  created_at: string
+}
+
+/** 管理端工单详情（GET /admin/orders/{id}） */
+export interface AdminOrderDetail extends OrderDetail {
+  reporter?: { id: string; nickname: string; avatar_url: string }
+  auditor_id?: string
+  repairer_id?: string
+  audited_at?: string | null
+  accepted_at?: string | null
+  completed_at?: string | null
+  available_actions: AvailableAction[]
+}
+
+/* ==================== 企业 / 成员 ==================== */
+
+/** 店方企业列表项（GET /admin/enterprises） */
 export interface AdminEnterpriseItem {
   id: string
   name: string
@@ -126,71 +235,42 @@ export interface AdminEnterpriseItem {
   created_at: string
 }
 
-/** 管理员 - 企业详情（GET /admin/enterprises/{id}） */
-export interface AdminEnterpriseDetail {
+/** 企业详情（GET /enterprises/{id} 或 GET /admin/enterprises/{id}） */
+export interface EnterpriseDetail {
   id: string
   name: string
   invite_code: string
   invite_code_expires_at: string | null
-  member_count: number
-  order_count: number
-  status: string
+  auto_approve?: boolean
+  member_count?: number
+  order_count?: number
+  status?: string
+  /** 当前用户在该单位的身份（member/reviewer），成员端接口返回 */
+  my_role?: string
   created_at: string
 }
 
-/** 管理员 - 成员列表项（GET /admin/enterprises/{id}/members） */
-export interface AdminMemberItem {
+/** 成员列表项（GET /enterprises/{id}/members，V1.2 增加 role） */
+export interface MemberItem {
   membership_id: string
   user_id: string
   nickname: string
   avatar_url: string
   phone: string
-  role: string
+  role: 'member' | 'reviewer' | 'admin'
   role_label: string
-  status: string
+  status: 'pending' | 'approved' | 'rejected' | 'removed'
   status_label: string
   order_count: number
-  joined_at: string
+  joined_at: string | null
 }
 
-/** 管理员 - 工单列表项（GET /admin/orders） */
-export interface AdminOrderListItem {
-  id: string
-  order_no: string
-  reporter: { id: string; nickname: string; avatar_url: string }
-  enterprise_id?: string
-  enterprise_name?: string
-  project_name: string
-  description: string
-  urgency: string
-  urgency_label: string
-  status: string
-  status_label: string
-  image_count: number
-  submitted_at: string | null
-  created_at: string
-}
+/* ==================== 上传 ==================== */
 
-/** 管理员 - 可用动作 */
-export interface AvailableAction {
-  action: 'review' | 'accept' | 'complete' | 'reject'
-  label: string
-  to_status: string
-  require_reason?: boolean
-  reason_min_length?: number
-  require_confirm?: boolean
-  confirm_message?: string
-}
-
-/** 管理员 - 工单详情（用户端详情 + available_actions） */
-export interface AdminOrderDetail extends OrderDetail {
-  enterprise_name?: string
-  available_actions: AvailableAction[]
-}
-
-/** 收据上传返回（POST /admin/orders/{id}/receipts） */
+/** 图片上传返回（故障图/收据/头像） */
 export interface UploadResult {
   id: string
   url: string
-  file_size: number
+  file_size?: number
+  sort_order?: number
 }

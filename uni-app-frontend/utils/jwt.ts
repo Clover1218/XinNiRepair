@@ -1,9 +1,7 @@
-import { useUserStore } from '@/stores/user'
-
 /**
  * base64url 解码为 UTF-8 字符串。
  * 微信小程序环境无原生 atob，这里用 uni 自带能力简化：
- * 通过 Base64.decode 或手动实现。此处用 base64 手工解码并转 UTF-8。
+ * 通过 uni.base64ToArrayBuffer 解码字节再做 UTF-8 转义。
  */
 export function base64UrlDecode(input: string): string {
   // 还原 base64url -> base64
@@ -11,10 +9,8 @@ export function base64UrlDecode(input: string): string {
   while (base64.length % 4 !== 0) {
     base64 += '='
   }
-  // 小程序中 wx.base64ToArrayBuffer 可用，做 UTF-8 解码
   const bytes = uni.base64ToArrayBuffer(base64)
   const view = new Uint8Array(bytes)
-  // 简易 UTF-8 解码
   let str = ''
   for (let i = 0; i < view.length; i++) {
     str += String.fromCharCode(view[i])
@@ -42,15 +38,7 @@ export function decodeToken(token: string): Record<string, unknown> | null {
 }
 
 /**
- * 是否为平台管理员（role === 1）：
- * 优先读取登录/me 接口返回的 user.role（更可靠），
- * 兜底解析本地 JWT payload 的 role 字段。
+ * 角色能力判定已迁移至 utils/auth.ts（V1.2 双层模型）：
+ * isStoreStaff / isSuperAdmin / isUnitReviewer / isReviewerOf 等。
+ * 本模块仅保留 JWT 解码能力。
  */
-export function isPlatformAdmin(): boolean {
-  const user = useUserStore().userInfo
-  if (user && typeof user.role === 'number') {
-    return user.role === 1
-  }
-  const token = uni.getStorageSync('token') as string
-  return decodeToken(token)?.role === 1
-}

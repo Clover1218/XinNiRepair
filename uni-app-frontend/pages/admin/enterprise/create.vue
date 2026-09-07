@@ -31,7 +31,7 @@
 <script lang="ts">
 import { defineComponent } from 'vue'
 import { http } from '@/utils/request'
-import { isPlatformAdmin } from '@/utils/jwt'
+import { isStoreStaff } from '@/utils/auth'
 
 export default defineComponent({
   data() {
@@ -41,7 +41,7 @@ export default defineComponent({
     }
   },
   onShow() {
-    if (!isPlatformAdmin()) {
+    if (!isStoreStaff()) {
       uni.showToast({ title: '无管理权限', icon: 'none' })
       setTimeout(() => uni.navigateBack(), 600)
     }

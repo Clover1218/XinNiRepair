@@ -1,10 +1,8 @@
 import { defineStore } from 'pinia'
-import { http } from '@/utils/request'
-import { useUserStore } from './user'
 import type { EnterpriseBrief } from '@/types'
 
 interface EnterpriseState {
-  /** 当前上下文企业 ID */
+  /** 当前上下文企业 ID（V1.2：纯本地上下文，用于列表默认过滤/首页待办卡） */
   currentEnterpriseId: string
   enterprises: EnterpriseBrief[]
 }
@@ -15,31 +13,31 @@ export const useEnterpriseStore = defineStore('enterprise', {
     enterprises: []
   }),
   actions: {
+    /** 本地上下文切换（V1.2：不再依赖 /auth/switch-enterprise） */
     setCurrent(id: string) {
       this.currentEnterpriseId = id
       uni.setStorageSync('currentEnterpriseId', id)
     },
     /**
      * 从用户信息同步企业列表：
-     * 无当前企业时默认选中第一个已通过的企业
+     * 保持原上下文企业；若已失效/不存在则默认选中第一个已通过(approved)的单位。
      */
     syncFromUserInfo(enterprises: EnterpriseBrief[]) {
       this.enterprises = enterprises || []
-      if (!this.currentEnterpriseId && this.enterprises.length > 0) {
-        const first = this.enterprises.find((e) => e.status === 'approved') || this.enterprises[0]
-        this.setCurrent(first.enterprise_id)
+      const approved = this.enterprises.filter((e) => e.status === 'approved')
+      const valid =
+        this.currentEnterpriseId &&
+        approved.some((e) => e.enterprise_id === this.currentEnterpriseId)
+      if (!valid) {
+        const next = approved[0]
+        if (next) this.setCurrent(next.enterprise_id)
+        else if (this.currentEnterpriseId) this.setCurrent('')
       }
     },
-    /** 切换当前企业：后端重新签发 JWT，前端同步 token */
-    async switchEnterprise(enterpriseId: string) {
-      const userStore = useUserStore()
-      const data = await http.post<{ access_token: string }>('/auth/switch-enterprise', {
-        enterprise_id: enterpriseId
-      })
-      if (data && data.access_token) {
-        userStore.setToken(data.access_token)
-      }
-      this.setCurrent(enterpriseId)
+    /** 当前上下文企业名称 */
+    currentEnterpriseName(): string {
+      const ent = this.enterprises.find((e) => e.enterprise_id === this.currentEnterpriseId)
+      return ent ? ent.enterprise_name : ''
     }
   }
 })

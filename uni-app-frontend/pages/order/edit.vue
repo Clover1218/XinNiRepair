@@ -2,75 +2,78 @@
   <view class="page">
     <!-- 报修信息 -->
     <view class="form-card">
-      <!-- 报修企业 -->
+      <!-- 报修单位 -->
       <picker
         mode="selector"
         :range="enterpriseOptions"
         range-key="name"
+        :value="enterpriseIndex"
         @change="onEnterpriseChange"
       >
         <view class="form-cell">
-          <text class="cell-label">报修企业</text>
+          <text class="cell-label">报修单位</text>
           <view class="cell-value" :class="{ 'is-placeholder': !form.enterprise_id }">
-            {{ form.enterprise_name || '请选择企业' }}
+            {{ enterpriseLabel || '请选择单位' }}
             <text class="cell-arrow">›</text>
           </view>
         </view>
       </picker>
-
-      <!-- 项目名称 -->
-      <view class="form-cell">
-        <text class="cell-label">项目名称</text>
-        <input
-          class="cell-input"
-          v-model="form.project_name"
-          placeholder="请输入报修项目名称"
-          placeholder-class="input-placeholder"
-          maxlength="20"
-        />
-      </view>
 
       <!-- 项目大类 -->
-      <picker mode="selector" :range="categoryOptions" range-key="name" @change="onCategoryChange">
+      <picker
+        mode="selector"
+        :range="categoryOptions"
+        range-key="name"
+        :value="categoryIndex"
+        @change="onCategoryChange"
+      >
         <view class="form-cell">
           <text class="cell-label">项目大类</text>
-          <view class="cell-value" :class="{ 'is-placeholder': !form.category }">
-            {{ categoryLabel }}
+          <view class="cell-value" :class="{ 'is-placeholder': !form.category_id }">
+            {{ categoryLabel || '请选择' }}
             <text class="cell-arrow">›</text>
           </view>
         </view>
       </picker>
 
-      <!-- 常用故障快捷选择 -->
-      <view v-if="commonIssues.length > 0" class="issue-chips">
-        <view
-          v-for="issue in commonIssues"
-          :key="issue"
-          class="issue-chip"
-          :class="{ active: form.description === issue }"
-          @click="selectIssue(issue)"
-        >
-          {{ issue }}
-        </view>
-      </view>
-
-      <!-- 项目属性 -->
-      <picker mode="selector" :range="propertyOptions" range-key="label" @change="onPropertyChange">
+      <!-- 项目属性（联动：仅所选大类下属性） -->
+      <picker
+        mode="selector"
+        :range="propertyOptions"
+        range-key="name"
+        :value="propertyIndex"
+        :disabled="propertyOptions.length === 0"
+        @change="onPropertyChange"
+      >
         <view class="form-cell">
           <text class="cell-label">项目属性</text>
-          <view class="cell-value" :class="{ 'is-placeholder': !form.property }">
-            {{ propertyLabel }}
+          <view class="cell-value" :class="{ 'is-placeholder': !form.property_id }">
+            {{ propertyLabel || (propertyOptions.length === 0 ? '请先选择大类' : '请选择') }}
             <text class="cell-arrow">›</text>
           </view>
         </view>
       </picker>
+
+      <!-- 常见问题快捷预填（联动：仅所选属性下的常见问题） -->
+      <view v-if="problemOptions.length > 0" class="issue-chips">
+        <view class="chips-label">常见问题（点击预填描述）</view>
+        <view
+          v-for="p in problemOptions"
+          :key="p.id"
+          class="issue-chip"
+          :class="{ active: form.description === problemDesc(p) }"
+          @click="onProblemPick(p)"
+        >
+          {{ p.name }}
+        </view>
+      </view>
 
       <!-- 紧急程度 -->
       <picker mode="selector" :range="urgencyOptions" range-key="label" @change="onUrgencyChange">
         <view class="form-cell">
           <text class="cell-label">紧急程度</text>
           <view class="cell-value" :class="{ 'is-placeholder': !form.urgency }">
-            {{ urgencyLabel }}
+            {{ urgencyLabel || '请选择' }}
             <text class="cell-arrow">›</text>
           </view>
         </view>
@@ -89,9 +92,9 @@
         />
       </view>
 
-      <!-- 房间号 -->
+      <!-- 位置 -->
       <view class="form-cell">
-        <text class="cell-label">房间号</text>
+        <text class="cell-label">位置</text>
         <input
           class="cell-input"
           v-model="form.room"
@@ -101,7 +104,7 @@
         />
       </view>
 
-      <!-- 联系人 -->
+      <!-- 联系人及电话 -->
       <view class="form-cell">
         <text class="cell-label">联系人</text>
         <input
@@ -156,11 +159,11 @@
 <script lang="ts">
 import { defineComponent } from 'vue'
 import { http, uploadOrderImage } from '@/utils/request'
-import type { OptionsResult, OrderDetail } from '@/types'
+import type { CategoryOption, OptionsResult, OrderDetail, PropertyOption, ProblemOption } from '@/types'
 
 interface ImageItem {
   url: string
-  /** 上传前的本地临时路径，用于缩略图即时展示（本地文件在真机上必定可渲染） */
+  /** 上传前的本地临时路径，用于缩略图即时展示 */
   localPath?: string
 }
 
@@ -168,21 +171,18 @@ export default defineComponent({
   data() {
     return {
       orderId: '',
-      loading: false,
       submitting: false,
       saving: false,
       options: null as OptionsResult | null,
       enterpriseOptions: [] as { id: string; name: string }[],
-      categoryOptions: [] as { id: string; name: string }[],
-      propertyOptions: [] as { value: string; label: string }[],
+      categoryOptions: [] as CategoryOption[],
+      propertyOptions: [] as PropertyOption[],
+      problemOptions: [] as ProblemOption[],
       urgencyOptions: [] as { value: string; label: string }[],
-      commonIssues: [] as string[],
       form: {
         enterprise_id: '',
-        enterprise_name: '',
-        project_name: '',
-        category: '',
-        property: '',
+        category_id: '',
+        property_id: '',
         description: '',
         urgency: '',
         room: '',
@@ -192,13 +192,26 @@ export default defineComponent({
     }
   },
   computed: {
+    enterpriseIndex(): number {
+      return this.enterpriseOptions.findIndex((o) => o.id === this.form.enterprise_id)
+    },
+    enterpriseLabel(): string {
+      const o = this.enterpriseOptions.find((x) => x.id === this.form.enterprise_id)
+      return o ? o.name : ''
+    },
+    categoryIndex(): number {
+      return this.categoryOptions.findIndex((c) => c.id === this.form.category_id)
+    },
     categoryLabel(): string {
-      const c = this.categoryOptions.find((o) => o.id === this.form.category)
+      const c = this.categoryOptions.find((x) => x.id === this.form.category_id)
       return c ? c.name : ''
     },
+    propertyIndex(): number {
+      return this.propertyOptions.findIndex((p) => p.id === this.form.property_id)
+    },
     propertyLabel(): string {
-      const p = this.propertyOptions.find((o) => o.value === this.form.property)
-      return p ? p.label : ''
+      const p = this.propertyOptions.find((x) => x.id === this.form.property_id)
+      return p ? p.name : ''
     },
     urgencyLabel(): string {
       const u = this.urgencyOptions.find((o) => o.value === this.form.urgency)
@@ -223,55 +236,65 @@ export default defineComponent({
         ])
         this.options = opts
         this.enterpriseOptions = opts.enterprises || []
-        this.categoryOptions = opts.project_categories || []
-        this.propertyOptions = opts.properties || []
+        this.categoryOptions = opts.categories || []
         this.urgencyOptions = opts.urgent_levels || []
         this.applyDetail(detail)
       } catch (e) {
         console.error('初始化失败', e)
       }
     },
+    /** 回填草稿：按 ID 匹配，加载对应大类下的属性/问题 */
     applyDetail(detail: OrderDetail) {
       this.form.enterprise_id = detail.enterprise_id || ''
-      this.form.enterprise_name = detail.enterprise_name || ''
-      this.form.project_name = detail.project_name || ''
-      this.form.category = detail.category || ''
-      this.form.property = detail.property || ''
+      this.form.category_id = detail.category_id || ''
+      this.form.property_id = detail.property_id || ''
       this.form.description = detail.description || ''
       this.form.urgency = detail.urgency || ''
       this.form.room = detail.room || ''
       this.form.contact = detail.contact || ''
       this.imageList = (detail.images || []).map((img) => ({ url: img.url }))
-      this.syncCommonIssues()
-    },
-    syncCommonIssues() {
-      if (!this.options) return
-      this.commonIssues = (this.options.common_issues || {})[this.form.category] || []
+
+      // 恢复属性/问题联动选项
+      if (this.form.category_id) {
+        const cat = this.categoryOptions.find((c) => c.id === this.form.category_id)
+        this.propertyOptions = cat ? cat.properties || [] : []
+        if (this.form.property_id) {
+          const prop = this.propertyOptions.find((p) => p.id === this.form.property_id)
+          this.problemOptions = prop ? prop.problems || [] : []
+        }
+      }
     },
     onEnterpriseChange(e: { detail: { value: number } }) {
       const opt = this.enterpriseOptions[e.detail.value]
-      if (opt) {
-        this.form.enterprise_id = opt.id
-        this.form.enterprise_name = opt.name
-      }
+      if (opt) this.form.enterprise_id = opt.id
     },
+    /** 切换大类：重置属性与问题 */
     onCategoryChange(e: { detail: { value: number } }) {
       const opt = this.categoryOptions[e.detail.value]
-      if (opt) {
-        this.form.category = opt.id
-        this.syncCommonIssues()
-      }
+      if (!opt) return
+      this.form.category_id = opt.id
+      this.form.property_id = ''
+      this.problemOptions = []
+      this.propertyOptions = opt.properties || []
     },
+    /** 切换属性：重置问题列表 */
     onPropertyChange(e: { detail: { value: number } }) {
       const opt = this.propertyOptions[e.detail.value]
-      if (opt) this.form.property = opt.value
+      if (!opt) return
+      this.form.property_id = opt.id
+      this.problemOptions = opt.problems || []
+    },
+    /** 常见问题：预填描述（可继续编辑），不入库 */
+    onProblemPick(p: ProblemOption) {
+      const prefill = this.problemDesc(p)
+      this.form.description = this.form.description === prefill ? '' : prefill
+    },
+    problemDesc(p: ProblemOption): string {
+      return (p.description || p.name || '').trim()
     },
     onUrgencyChange(e: { detail: { value: number } }) {
       const opt = this.urgencyOptions[e.detail.value]
       if (opt) this.form.urgency = opt.value
-    },
-    selectIssue(issue: string) {
-      this.form.description = this.form.description === issue ? '' : issue
     },
     chooseImage() {
       const remain = 9 - this.imageList.length
@@ -363,10 +386,8 @@ export default defineComponent({
         urls: this.imageList.map((i) => i.url)
       })
     },
-    /** 缩略图加载失败（通常为真机未配置图床 downloadFile 合法域名） */
     onImageError(index: number) {
       const img = this.imageList[index]
-      // 本地路径失败时回退到远端 URL
       if (img && img.localPath) {
         img.localPath = undefined
         return
@@ -376,16 +397,15 @@ export default defineComponent({
     removeImage(index: number) {
       this.imageList.splice(index, 1)
     },
-    /** 构造提交参数：images 恒为完整列表，其余字段仅传非空 */
+    /** 构造提交参数：images 恒为完整列表，其余字段按需传 */
     buildPayload(all = false): Record<string, unknown> {
       const f = this.form
       const payload: Record<string, unknown> = {
         images: this.imageList.map((i) => i.url)
       }
       if (all || f.enterprise_id) payload.enterprise_id = f.enterprise_id
-      if (all || f.project_name) payload.project_name = f.project_name
-      if (all || f.category) payload.category = f.category
-      if (all || f.property) payload.property = f.property
+      if (all || f.category_id) payload.category_id = f.category_id
+      if (all || f.property_id) payload.property_id = f.property_id
       if (all || f.description) payload.description = f.description
       if (all || f.urgency) payload.urgency = f.urgency
       if (all || f.room) payload.room = f.room
@@ -417,27 +437,20 @@ export default defineComponent({
     },
     validateForm(): string {
       const f = this.form
-      if (!f.enterprise_id) return '请选择报修企业'
-      if (!f.project_name || f.project_name.length < 1) return '请输入项目名称'
-      if (f.project_name.length > 20) return '项目名称不能超过20字'
-      if (!f.category) return '请选择项目大类'
-      if (!f.property) return '请选择项目属性'
-      if (!f.description || f.description.length < 1) return '请输入报修描述'
+      if (!f.enterprise_id) return '请选择报修单位'
+      if (!f.category_id) return '请选择项目大类'
+      if (!f.property_id) return '请选择项目属性'
+      if (!f.description || f.description.trim().length < 1) return '请输入报修描述'
       if (f.description.length > 500) return '报修描述不能超过500字'
       if (!f.urgency) return '请选择紧急程度'
-      if (!f.room) return '请输入房间号'
-      if (!f.contact) return '请输入联系人及电话'
+      if (!f.room || f.room.trim().length < 1) return '请输入位置（房间号）'
+      if (!f.contact || f.contact.trim().length < 1) return '请输入联系人及电话'
       if (f.contact.length > 40) return '联系人不能超过40字'
-      if (this.imageList.length > 9) return '图片最多9张'
       return ''
     },
-    /** 一次性请求三条订阅消息授权（处理中/退回/完结）
-     *  必须在用户点击动作的同步调用栈内触发 wx.requestSubscribeMessage，
-     *  因此放在 submitOrder 最前面调用；授权拒绝不阻塞提交。
-     */
+    /** 一次性请求三条订阅消息授权（处理中/退回/完结） */
     requestSubscribeAuth(): Promise<void> {
       return new Promise((resolve) => {
-        // wx 在小程序环境可用，shims-vue.d.ts 已声明为 any；H5/非微信环境跳过
         if (typeof wx === 'undefined' || typeof wx.requestSubscribeMessage !== 'function') {
           resolve()
           return
@@ -446,7 +459,7 @@ export default defineComponent({
           tmplIds: [
             'GzsQVCeBG4ObOgoYuYkeZ4VZh711fmH9D3T9taI4TJE', // 工单处理提醒(处理中)
             '3Gw9MOYxZN9sC8ka02RyrZK1y6guc3wE1H2wcWjNy0w', // 工单状态提醒(退回)
-            'zj71qQ57GcxS6zzkqc2a4PI9ufJftolzmB-f0ed4f5I'  // 报修工单完结通知
+            'zj71qQ57GcxS6zzkqc2a4PI9ufJftolzmB-f0ed4f5I' // 报修工单完结通知
           ],
           success: () => resolve(),
           fail: () => resolve()
@@ -463,7 +476,6 @@ export default defineComponent({
       if (this.submitting) return
       this.submitting = true
       try {
-        // 先完成订阅消息授权，确保后端提交后能即时推送"已上报"通知
         await this.requestSubscribeAuth()
         await http.put(`/orders/${this.orderId}`, this.buildPayload(true))
         await http.post(`/orders/${this.orderId}/submit`, {})
@@ -562,12 +574,18 @@ export default defineComponent({
   color: #bbbbbb;
 }
 
+/* 常见问题快捷 chips */
 .issue-chips {
-  display: flex;
-  flex-wrap: wrap;
   padding: 20rpx 0 28rpx;
 
+  .chips-label {
+    font-size: 24rpx;
+    color: #999999;
+    margin-bottom: 16rpx;
+  }
+
   .issue-chip {
+    display: inline-block;
     padding: 10rpx 24rpx;
     margin-right: 16rpx;
     margin-bottom: 16rpx;
@@ -674,7 +692,6 @@ export default defineComponent({
     flex: 1 1 0;
     min-width: 0;
 
-    // wd-button 默认 medium 尺寸内置 min-width: 120px，三按钮真机会溢出重合，需覆盖
     :deep(.wd-button) {
       width: 100%;
       min-width: 0;

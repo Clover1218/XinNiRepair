@@ -22,14 +22,37 @@ export function maskPhone(phone?: string): string {
   return `${phone.slice(0, 3)}****${phone.slice(-4)}`
 }
 
-/** 工单状态中文 */
+/** 金额展示：保留两位小数，空值返回空串 */
+export function formatAmount(v?: number | string | null): string {
+  if (v === null || v === undefined || v === '') return ''
+  const n = Number(v)
+  if (Number.isNaN(n)) return ''
+  return n.toFixed(2)
+}
+
+/** 工单状态中文（与《数据库字段设计文档 V1.4》一致；V1.2 移除 reviewed，新增 pending_accept） */
 export const STATUS_LABELS: Record<string, string> = {
   draft: '草稿',
   reported: '已上报',
-  reviewed: '已阅',
+  pending_accept: '待接单',
   processing: '处理中',
   completed: '已处理',
   cancelled: '已取消'
+}
+
+/** 时间轴/日志动作中文（V1.2：含 audit/reopen/update_finance；review 兼容旧值展示为审核通过） */
+export const ACTION_LABELS: Record<string, string> = {
+  create_draft: '创建草稿',
+  submit: '提交报修',
+  audit: '审核通过',
+  review: '审核通过',
+  accept: '接单维修',
+  complete: '完工',
+  reopen: '重新打开',
+  reject: '退回',
+  cancel: '取消',
+  upload_receipt: '上传收据',
+  update_finance: '修改对账信息'
 }
 
 /** 紧急程度中文 */
@@ -39,9 +62,10 @@ export const URGENCY_LABELS: Record<string, string> = {
   very_urgent: '非常紧急'
 }
 
-/** 成员角色中文 */
+/** 成员角色中文（reviewer=单位审核员；admin 旧值兼容=审核员） */
 export const ROLE_LABELS: Record<string, string> = {
-  admin: '管理员',
+  reviewer: '单位审核员',
+  admin: '单位审核员',
   member: '普通成员'
 }
 
@@ -55,6 +79,11 @@ export const MEMBER_STATUS_LABELS: Record<string, string> = {
 
 export function statusLabel(s?: string): string {
   return (s && STATUS_LABELS[s]) || s || ''
+}
+
+/** 时间轴动作中文（后端已给 action_label 时直接用；此处做本地兜底映射） */
+export function timeAxisActionLabel(action?: string): string {
+  return (action && ACTION_LABELS[action]) || action || ''
 }
 
 export function urgencyLabel(s?: string): string {
@@ -111,7 +140,7 @@ export function statusTagType(s?: string): 'default' | 'primary' | 'success' | '
       return 'default'
     case 'reported':
       return 'warning'
-    case 'reviewed':
+    case 'pending_accept':
       return 'primary'
     case 'processing':
       return 'primary'
@@ -135,5 +164,28 @@ export function urgencyTagType(s?: string): 'default' | 'primary' | 'success' | 
       return 'danger'
     default:
       return 'default'
+  }
+}
+
+/**
+ * 分页响应归一化：兼容两种后端结构
+ *  - 扁平：{ list, total, page, page_size, total_pages }
+ *  - 嵌套：{ list, pagination: { total, page, page_size, total_pages } }
+ */
+export function normalizePage<T = unknown>(raw: unknown): {
+  list: T[]
+  total: number
+  page: number
+  page_size: number
+  total_pages: number
+} {
+  const data = (raw || {}) as Record<string, unknown>
+  const pag = (data.pagination || data) as Record<string, unknown>
+  return {
+    list: ((data.list as T[]) || []) as T[],
+    total: Number(pag.total ?? 0) || 0,
+    page: Number(pag.page ?? 1) || 1,
+    page_size: Number(pag.page_size ?? 20) || 20,
+    total_pages: Number(pag.total_pages ?? 1) || 1
   }
 }

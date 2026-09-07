@@ -1,21 +1,6 @@
-import { BASE_URL,IS_LOCAL } from './config'
+import { BASE_URL } from './config'
+import type { LoginResult } from '@/types'
 
-function readFileAsBase64(filePath: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    uni.getFileSystemManager().readFile({
-      filePath,
-      encoding: 'base64',
-      success: (res) => resolve(res.data as string),
-      fail: reject
-    })
-  })
-}
-
-/** 从文件路径中提取文件名 */
-function basename(filePath: string): string {
-  const parts = filePath.split('/')
-  return parts[parts.length - 1] || 'upload.jpg'
-}
 /** 后端统一响应结构 */
 export interface ApiResponse<T = unknown> {
   code: number
@@ -25,115 +10,159 @@ export interface ApiResponse<T = unknown> {
 }
 
 interface RequestOptions {
-  url: string          // 注意改名为 path（原来叫 url）
+  url: string
   method?: 'GET' | 'POST' | 'PUT' | 'DELETE'
   data?: Record<string, unknown>
 }
 
-// wx.cloud.init({
-// 	    env: 'cloud1-d3gbxtfy227507c7d',
-// 	    traceUser: true,
-// 	})
-// export function request<T = unknown>(options: RequestOptions): Promise<T> {
-//   const token = uni.getStorageSync('token')
-//   return new Promise((resolve, reject) => {
-//     wx.cloud.callContainer({
-//       config: {
-//         env: 'cloud1-d3gbxtfy227507c7d'   // 建议从全局配置读取
-//       },
-//       path: "/api/v1" + options.path,               // 注意这里是 path，不是完整 url
-//       method: options.method || 'GET',
-//       header: {
-//         'Content-Type': 'application/json',
-// 		"X-WX-SERVICE": "tcbanyservice", // 固定为 tcbanyservice
-// 		"X-AnyService-Name": "xnb", // abc 中填入 AnyService 服务标识，从「腾讯云开发平台 - AnyService」获取服务标识
-//         Authorization: token ? `Bearer ${token}` : ''
-//       },
-//       data: options.data,
-//       success: (res) => {
-//         // res 结构不同于 uni.request，直接取 res.data
-//         const body = res.data as ApiResponse<T>
-//         if (res.statusCode === 401) {
-//           // 处理登录过期（同原逻辑）
-//           uni.removeStorageSync('token')
-//           uni.removeStorageSync('currentEnterpriseId')
-//           uni.showToast({ title: '登录已过期，请重新登录', icon: 'none' })
-//           setTimeout(() => uni.reLaunch({ url: '/pages/auth/login' }), 600)
-//           reject(body)
-//           return
-//         }
-//         if (body && body.code === 0) {
-//           resolve(body.data)
-//         } else {
-//           const msg = body?.message || '请求失败'
-//           uni.showToast({ title: msg, icon: 'none' })
-//           reject(body)
-//         }
-//       },
-//       fail: (err) => {
-//         uni.showToast({ title: '网络异常，请稍后重试', icon: 'none' })
-//         reject(err)
-//       }
-//     })
-//   })
-// }
+/** 清理本地登录态（token + 上下文单位） */
+function clearLoginState() {
+  uni.removeStorageSync('token')
+  uni.removeStorageSync('currentEnterpriseId')
+}
 
-// // http 便捷方法不变，只是传入的 url 现在作为 path
-// export const http = {
-//   get: <T = unknown>(path: string, data?: Record<string, unknown>) =>
-//     request<T>({ path, method: 'GET', data }),
-//   post: <T = unknown>(path: string, data?: Record<string, unknown>) =>
-//     request<T>({ path, method: 'POST', data }),
-//   put: <T = unknown>(path: string, data?: Record<string, unknown>) =>
-//     request<T>({ path, method: 'PUT', data }),
-//   delete: <T = unknown>(path: string, data?: Record<string, unknown>) =>
-//     request<T>({ path, method: 'DELETE', data })
-// }
-
-
-// /**
-//  * 统一请求封装：
-//  * - 自动携带 Authorization: Bearer <token>
-//  * - 401 时清除本地登录态并跳转登录页
-//  * - code !== 0 时统一 Toast 错误信息
-//  */
-export function request<T = unknown>(options: RequestOptions): Promise<T> {
-  const token = uni.getStorageSync('token')
+/**
+ * 裸登录请求：直接走 uni.request，不触发本模块的 401 续期逻辑（避免递归）。
+ * 仅用于 ensureLoggedIn / 401 静默续期内部的 /auth/login 调用。
+ */
+export function rawLoginRequest(code: string): Promise<LoginResult> {
   return new Promise((resolve, reject) => {
     uni.request({
-      url: BASE_URL + options.url,
-      method: options.method || 'GET',
-      data: options.data,
-      header: {
-        'Content-Type': 'application/json',
-        Authorization: token ? `Bearer ${token}` : ''
-      },
+      url: `${BASE_URL}/auth/login`,
+      method: 'POST',
+      data: { code },
+      header: { 'Content-Type': 'application/json' },
       success: (res) => {
-        const body = res.data as ApiResponse<T>
-        if (res.statusCode === 401) {
-          uni.removeStorageSync('token')
-          uni.removeStorageSync('currentEnterpriseId')
-          uni.showToast({ title: '登录已过期，请重新登录', icon: 'none' })
-          setTimeout(() => {
-            uni.reLaunch({ url: '/pages/auth/login' })
-          }, 600)
-          reject(body)
-          return
-        }
-        if (body && body.code === 0) {
+        const body = res.data as ApiResponse<LoginResult>
+        if (body && body.code === 0 && body.data) {
           resolve(body.data)
         } else {
-          const msg = (body && body.message) || '请求失败'
-          uni.showToast({ title: msg, icon: 'none' })
-          reject(body)
+          reject(body || new Error('登录失败'))
         }
       },
-      fail: (err) => {
-        uni.showToast({ title: '网络异常，请稍后重试', icon: 'none' })
-        reject(err)
-      }
+      fail: (err) => reject(err)
     })
   })
+}
+
+/** wx.login 获取 code */
+export function wxLoginCode(): Promise<string> {
+  return new Promise((resolve, reject) => {
+    uni.login({ provider: 'weixin', success: (r) => resolve(r.code), fail: reject })
+  })
+}
+
+/**
+ * 静默续期：wx.login 换新 token。
+ * 成功（已注册用户）时写入本地 token 并返回 true；全新用户/失败返回 false。
+ * 不做任何 Toast/跳转，由调用方决定后续行为。
+ */
+let renewalPromise: Promise<boolean> | null = null
+
+export function silentRenewSession(): Promise<boolean> {
+  if (renewalPromise) return renewalPromise
+  renewalPromise = new Promise<boolean>((resolve) => {
+    wxLoginCode()
+      .then((code) => rawLoginRequest(code))
+      .then((data) => {
+        if (data.need_profile || !data.user) {
+          resolve(false)
+          return
+        }
+        uni.setStorageSync('token', data.access_token)
+        resolve(true)
+      })
+      .catch(() => resolve(false))
+      .finally(() => {
+        renewalPromise = null
+      })
+  })
+  return renewalPromise
+}
+
+/**
+ * 统一请求封装：
+ * - 自动携带 Authorization: Bearer <token>
+ * - 401 时先静默续期一次（wx.login 换新 token），成功后重放原请求
+ * - 续期失败才清理登录态并跳转登录页
+ * - code !== 0 时统一 Toast 错误信息
+ */
+export function request<T = unknown>(options: RequestOptions): Promise<T> {
+  const token = uni.getStorageSync('token')
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (token) headers.Authorization = `Bearer ${token}`
+
+  const send = (): Promise<T> =>
+    new Promise<T>((resolve, reject) => {
+      uni.request({
+        url: BASE_URL + options.url,
+        method: options.method || 'GET',
+        data: options.data,
+        header: headers,
+        success: (res) => {
+          const body = res.data as ApiResponse<T>
+          if (res.statusCode === 401) {
+            handleUnauthorized()
+              .then((renewed) => {
+                if (renewed) {
+                  // 用新 token 重放原请求
+                  const retryToken = uni.getStorageSync('token')
+                  const retryHeaders: Record<string, string> = { 'Content-Type': 'application/json' }
+                  if (retryToken) retryHeaders.Authorization = `Bearer ${retryToken}`
+                  uni.request({
+                    url: BASE_URL + options.url,
+                    method: options.method || 'GET',
+                    data: options.data,
+                    header: retryHeaders,
+                    success: (retryRes) => {
+                      const retryBody = retryRes.data as ApiResponse<T>
+                      if (retryBody && retryBody.code === 0) {
+                        resolve(retryBody.data)
+                      } else {
+                        const msg = (retryBody && retryBody.message) || '请求失败'
+                        uni.showToast({ title: msg, icon: 'none' })
+                        reject(retryBody)
+                      }
+                    },
+                    fail: (err) => {
+                      uni.showToast({ title: '网络异常，请稍后重试', icon: 'none' })
+                      reject(err)
+                    }
+                  })
+                } else {
+                  // 续期失败：新用户或网络异常，仅对“已登录态失效”场景做清理
+                  clearLoginState()
+                  uni.showToast({ title: '登录已过期，请重新登录', icon: 'none' })
+                  setTimeout(() => {
+                    uni.reLaunch({ url: '/pages/auth/login' })
+                  }, 600)
+                  reject(body)
+                }
+              })
+              .catch(() => reject(body))
+            return
+          }
+          if (body && body.code === 0) {
+            resolve(body.data)
+          } else {
+            const msg = (body && body.message) || '请求失败'
+            uni.showToast({ title: msg, icon: 'none' })
+            reject(body)
+          }
+        },
+        fail: (err) => {
+          uni.showToast({ title: '网络异常，请稍后重试', icon: 'none' })
+          reject(err)
+        }
+      })
+    })
+
+  return send()
+}
+
+/** 401 统一处理：静默续期一次 */
+function handleUnauthorized(): Promise<boolean> {
+  return silentRenewSession()
 }
 
 /** REST 便捷方法 */
@@ -148,30 +177,21 @@ export const http = {
     request<T>({ url, method: 'DELETE', data })
 }
 
-/**
- * 工单图片上传（POST /orders/{order_id}/images，multipart/form-data）
- * 仅工单状态为 draft 时可上传，单张 ≤5MB，jpg/png/webp
- */
-export function uploadOrderImage(orderId: string, filePath: string): Promise<{
-  id: string
-  url: string
-  sort_order: number
-  file_size: number
-}> {
+/* =============== 上传（multipart/form-data，微信小程序端） =============== */
+
+function uploadFile<T = unknown>(url: string, filePath: string, needToken: boolean): Promise<T> {
   const token = uni.getStorageSync('token')
   return new Promise((resolve, reject) => {
     uni.uploadFile({
-      url: `${BASE_URL}/orders/${orderId}/images`,
+      url: `${BASE_URL}${url}`,
       filePath,
       name: 'file',
-      header: {
-        Authorization: token ? `Bearer ${token}` : ''
-      },
+      header: needToken ? { Authorization: token ? `Bearer ${token}` : '' } : {},
       success: (res) => {
         try {
-          const body = JSON.parse(res.data) as ApiResponse
+          const body = JSON.parse(res.data) as ApiResponse<T>
           if (body.code === 0) {
-            resolve(body.data as never)
+            resolve(body.data)
           } else {
             uni.showToast({ title: body.message || '上传失败', icon: 'none' })
             reject(body)
@@ -189,123 +209,28 @@ export function uploadOrderImage(orderId: string, filePath: string): Promise<{
 }
 
 /**
- * 头像上传（POST /upload/avatar，multipart/form-data）
- * 注册前公开接口，无需 token；单张 ≤2MB，jpg/png/webp
+ * 工单故障图上传（POST /orders/{order_id}/images，multipart/form-data）
+ * 仅工单状态为 draft 时可上传，单张 ≤5MB，jpg/png/webp
  */
-export function uploadAvatar(filePath: string): Promise<{ url: string }> {
-  return new Promise((resolve, reject) => {
-    uni.uploadFile({
-      url: `${BASE_URL}/upload/avatar`,
-      filePath,
-      name: 'file',
-      success: (res) => {
-        try {
-          const body = JSON.parse(res.data) as ApiResponse
-          if (body.code === 0) {
-            resolve(body.data as never)
-          } else {
-            uni.showToast({ title: body.message || '上传失败', icon: 'none' })
-            reject(body)
-          }
-        } catch (e) {
-          reject(e)
-        }
-      },
-      fail: (err) => {
-        uni.showToast({ title: '上传失败，请重试', icon: 'none' })
-        reject(err)
-      }
-    })
-  })
+export function uploadOrderImage(
+  orderId: string,
+  filePath: string
+): Promise<{ id: string; url: string; sort_order: number; file_size: number }> {
+  return uploadFile(`/orders/${orderId}/images`, filePath, true)
 }
+
+/** 头像上传（POST /upload/avatar，multipart/form-data）注册前公开，无需 token */
+export function uploadAvatar(filePath: string): Promise<{ url: string }> {
+  return uploadFile('/upload/avatar', filePath, false)
+}
+
 /**
  * 收据图片上传（POST /admin/orders/{order_id}/receipts，multipart/form-data）
- * 仅管理员可上传，工单状态为 processing，单张 ≤5MB，jpg/png/webp，同工单 ≤3 张
+ * 店方/审核员角色可传；工单状态 processing 或 completed，同工单 ≤3 张
  */
 export function uploadReceipt(
   orderId: string,
   filePath: string
 ): Promise<{ id: string; url: string; file_size: number }> {
-  const token = uni.getStorageSync('token')
-  return new Promise((resolve, reject) => {
-    uni.uploadFile({
-      url: `${BASE_URL}/admin/orders/${orderId}/receipts`,
-      filePath,
-      name: 'file',
-      header: {
-        Authorization: token ? `Bearer ${token}` : ''
-      },
-      success: (res) => {
-        try {
-          const body = JSON.parse(res.data) as ApiResponse
-          if (body.code === 0) {
-            resolve(body.data as never)
-          } else {
-            uni.showToast({ title: body.message || '上传失败', icon: 'none' })
-            reject(body)
-          }
-        } catch (e) {
-          reject(e)
-        }
-      },
-      fail: (err) => {
-        uni.showToast({ title: '上传失败，请重试', icon: 'none' })
-        reject(err)
-      }
-    })
-  })
+  return uploadFile(`/admin/orders/${orderId}/receipts`, filePath, true)
 }
-
-
-
-
-
-
-// /**
-//  * 工单图片上传（POST /orders/{order_id}/images，multipart/form-data）
-//  * 仅工单状态为 draft 时可上传，单张 ≤5MB，jpg/png/webp
-//  */
-// export async function uploadOrderImage(orderId: string, filePath: string): Promise<{
-//   id: string
-//   url: string
-//   sort_order: number
-//   file_size: number
-// }> {
-//   const base64 = await readFileAsBase64(filePath)
-//   return http.post(`/orders/${orderId}/images`, {
-//     file: base64,
-//     filename: basename(filePath)
-//   })
-// }
-
-// /**
-//  * 头像上传（POST /upload/avatar）
-//  * 通过 wx.cloud.callContainer 以 JSON base64 方式上传
-//  * 注册前公开接口，无需 token；单张 ≤2MB，jpg/png/webp
-//  */
-// export async function uploadAvatar(filePath: string): Promise<{ url: string }> {
-//   const base64 = await readFileAsBase64(filePath)
-//   return http.post('/upload/avatar', {
-//     file: base64,
-//     filename: basename(filePath)
-//   })
-// }
-
-// /**
-//  * 收据图片上传（POST /admin/orders/{order_id}/receipts）
-//  * 通过 wx.cloud.callContainer 以 JSON base64 方式上传
-//  * 仅管理员可上传，工单状态为 processing，单张 ≤5MB，jpg/png/webp，同工单 ≤3 张
-//  */
-// export async function uploadReceipt(
-//   orderId: string,
-//   filePath: string
-// ): Promise<{ id: string; url: string; file_size: number }> {
-//   const base64 = await readFileAsBase64(filePath)
-//   return http.post(`/admin/orders/${orderId}/receipts`, {
-//     file: base64,
-//     filename: basename(filePath)
-//   })
-// }
-
-
-

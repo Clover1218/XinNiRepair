@@ -9,7 +9,7 @@
     {
       "path": "pages/order/list",
       "style": {
-        "navigationBarTitleText": "我的报修",
+        "navigationBarTitleText": "工单",
         "enablePullDownRefresh": true
       }
     },
@@ -56,12 +56,6 @@
       }
     },
     {
-      "path": "pages/admin/index",
-      "style": {
-        "navigationBarTitleText": "管理后台"
-      }
-    },
-    {
       "path": "pages/admin/enterprise/list",
       "style": {
         "navigationBarTitleText": "企业管理",
@@ -82,16 +76,16 @@
       }
     },
     {
-      "path": "pages/admin/order/list",
-      "style": {
-        "navigationBarTitleText": "工单管理",
-        "enablePullDownRefresh": true
-      }
-    },
-    {
       "path": "pages/admin/order/detail",
       "style": {
         "navigationBarTitleText": "工单处理"
+      }
+    },
+    {
+      "path": "pages/review/index",
+      "style": {
+        "navigationBarTitleText": "单位审核",
+        "enablePullDownRefresh": true
       }
     }
   ],

@@ -104,8 +104,13 @@ export default defineComponent({
       if (this.phoneMode === 'wechat') return !!this.phoneCode
       return /^1\d{10}$/.test(this.phone)
     },
+    /** 昵称 2-32 字 */
+    nicknameValid(): boolean {
+      const n = this.nickname.trim()
+      return n.length >= 2 && n.length <= 32
+    },
     canSubmit(): boolean {
-      return !!this.nickname.trim() && !!this.avatarUrl && this.phoneValid
+      return this.nicknameValid && !!this.avatarUrl && this.phoneValid
     }
   },
   methods: {
@@ -131,6 +136,15 @@ export default defineComponent({
     /** 提交注册 */
     async handleSubmit() {
       if (this.submitting || !this.canSubmit) return
+      if (!this.nicknameValid) {
+        uni.showToast({ title: '昵称需为 2-32 个字符', icon: 'none' })
+        return
+      }
+      if (!uni.getStorageSync('agreedPrivacy')) {
+        uni.showToast({ title: '请先同意用户协议和隐私政策', icon: 'none' })
+        setTimeout(() => uni.navigateTo({ url: '/pages/auth/login' }), 800)
+        return
+      }
       this.submitting = true
       try {
         const code = await new Promise<string>((resolve, reject) => {
@@ -147,15 +161,28 @@ export default defineComponent({
           // 微信授权优先；否则走手动输入
           ...(this.phoneCode ? { phone_code: this.phoneCode } : { phone: this.phone.trim() })
         })
+        // V1.2 问题1：注册成功即登录（userStore.register 已写 token + 同步企业），直接进入首页
         uni.showToast({ title: '注册成功', icon: 'success' })
         setTimeout(() => {
           uni.switchTab({ url: '/pages/order/list' })
         }, 500)
       } catch (err: any) {
         console.error('注册失败', err)
-        // 微信手机号接口不可用 (404/空响应/权限不足): 清除 code + 自动切手动输入
-        const msg = err?.message || err?.msg || ''
-        if (msg.includes('手机号') || msg.includes('微信接口')) {
+        const code = err?.code || err?.data?.code
+        const msg = err?.message || err?.data?.message || err?.msg || ''
+        // 3000 手机号格式错误/已被绑定：明确提示，引导一键登录
+        if (code === 3000 || (msg && msg.includes('手机号'))) {
+          uni.showToast({
+            title: msg.includes('已注册') || msg.includes('已绑定')
+              ? '该手机号已注册，可尝试一键登录'
+              : msg || '手机号格式不正确',
+            icon: 'none',
+            duration: 2500
+          })
+        } else if (msg.includes('昵称')) {
+          uni.showToast({ title: msg, icon: 'none' })
+        } else if (msg.includes('微信接口') || msg.includes('微信授权')) {
+          // 微信手机号接口不可用 (404/空响应/权限不足): 清除 code + 自动切手动输入
           this.phoneCode = ''
           this.phoneMode = 'manual'
           uni.showToast({ title: '微信手机号接口不可用，请手动输入', icon: 'none', duration: 2500 })

@@ -3,7 +3,13 @@
     <!-- 状态卡片 -->
     <view class="status-card">
       <view class="status-row">
-        <view class="status-project">{{ order.project_name || '未命名工单' }}</view>
+        <view class="status-title">
+          <text v-if="order.category_name">{{ order.category_name }}</text>
+          <template v-if="order.property_name">
+            <text class="cat-sep">·</text>{{ order.property_name }}
+          </template>
+          <text v-if="!order.category_name">报修工单</text>
+        </view>
         <wd-tag :type="statusTagType(order.status)" round>{{ order.status_label }}</wd-tag>
       </view>
       <view v-if="order.order_no" class="order-no">{{ order.order_no }}</view>
@@ -13,35 +19,41 @@
       </view>
     </view>
 
+    <!-- 被退回提示 -->
+    <view v-if="order.reject_reason" class="reject-card">
+      <text class="reject-title">已退回：</text>
+      <text class="reject-text">{{ order.reject_reason }}</text>
+    </view>
+
     <!-- 报修信息 -->
     <view class="info-card">
       <view class="info-row">
+        <text class="info-label">报修单位</text>
+        <text class="info-value">{{ order.enterprise_name || '--' }}</text>
+      </view>
+      <view class="info-row">
         <text class="info-label">项目大类</text>
-        <text class="info-value">{{ order.category_label }}</text>
+        <text class="info-value">{{ order.category_name || '--' }}</text>
       </view>
       <view class="info-row">
         <text class="info-label">项目属性</text>
-        <text class="info-value">{{ order.property_label }}</text>
+        <text class="info-value">{{ order.property_name || '--' }}</text>
       </view>
       <view class="info-row">
         <text class="info-label">紧急程度</text>
         <text class="info-value">{{ order.urgency_label }}</text>
       </view>
       <view class="info-row">
-        <text class="info-label">房间号</text>
+        <text class="info-label">位置</text>
         <text class="info-value">{{ order.room }}</text>
       </view>
       <view class="info-row">
         <text class="info-label">联系人</text>
         <text class="info-value">{{ order.contact }}</text>
       </view>
-      <view v-if="order.reject_reason" class="info-row info-reject">
-        <text class="info-label">退回原因</text>
-        <text class="info-value reject-text">{{ order.reject_reason }}</text>
-      </view>
     </view>
 
-    <!-- 报修描述（独立卡片） -->
+    <!-- 报修描述 -->
     <view v-if="order.description" class="desc-card">
       <view class="desc-title">报修描述</view>
       <view class="desc-content">{{ order.description }}</view>
@@ -62,16 +74,64 @@
       </view>
     </view>
 
+    <!-- 完工对账信息 -->
+    <view v-if="order.status === 'completed'" class="info-card">
+      <view class="card-title">维修结算</view>
+      <view class="info-row" v-if="order.repair_content">
+        <text class="info-label">维修内容</text>
+        <text class="info-value">{{ order.repair_content }}</text>
+      </view>
+      <view class="info-row">
+        <text class="info-label">数量 / 单价</text>
+        <text class="info-value">{{ order.quantity }} × ￥{{ formatAmount(order.unit_price) }}</text>
+      </view>
+      <view class="info-row">
+        <text class="info-label">金额</text>
+        <text class="info-value amount">￥{{ formatAmount(order.amount) }}</text>
+      </view>
+      <template v-if="order.metadata">
+        <view class="info-row" v-if="order.metadata.repair_result">
+          <text class="info-label">维修结果</text>
+          <text class="info-value">{{ order.metadata.repair_result }}</text>
+        </view>
+        <view class="info-row" v-if="order.metadata.repair_method">
+          <text class="info-label">维修方式</text>
+          <text class="info-value">{{ order.metadata.repair_method }}</text>
+        </view>
+        <view class="info-row" v-if="order.metadata.warranty_period">
+          <text class="info-label">保修期</text>
+          <text class="info-value">{{ order.metadata.warranty_period }}</text>
+        </view>
+        <view class="info-row" v-if="order.metadata.repair_duration !== undefined && order.metadata.repair_duration !== null">
+          <text class="info-label">维修时长</text>
+          <text class="info-value">{{ order.metadata.repair_duration }} 分钟</text>
+        </view>
+        <view class="info-row" v-if="order.metadata.extra_remark">
+          <text class="info-label">额外备注</text>
+          <text class="info-value">{{ order.metadata.extra_remark }}</text>
+        </view>
+      </template>
+      <view class="info-row" v-if="order.auditor_name">
+        <text class="info-label">审核人</text>
+        <text class="info-value">{{ order.auditor_name }}</text>
+      </view>
+      <view class="info-row" v-if="order.repairer_name">
+        <text class="info-label">维修员</text>
+        <text class="info-value">{{ order.repairer_name }}</text>
+      </view>
+    </view>
+
     <!-- 收据 -->
     <view v-if="order.receipts && order.receipts.length > 0" class="img-card">
       <view class="card-title">收据凭证</view>
       <view class="img-grid">
         <image
-          v-for="img in order.receipts"
+          v-for="(img, index) in order.receipts"
           :key="img.id"
           class="img-item"
           :src="img.url"
           mode="aspectFill"
+          @click="previewReceipt(index)"
         ></image>
       </view>
     </view>
@@ -99,11 +159,8 @@
         <view class="footer-btn">
           <wd-button type="primary" round block @click="goEdit">编辑</wd-button>
         </view>
-        <view class="footer-btn">
-          <wd-button plain round block @click="cancelOrder">取消工单</wd-button>
-        </view>
       </template>
-      <template v-else-if="order.status === 'reported' || order.status === 'reviewed'">
+      <template v-else-if="order.status === 'reported' || order.status === 'pending_accept'">
         <view class="footer-btn">
           <wd-button type="warning" plain round block @click="cancelOrder">取消工单</wd-button>
         </view>
@@ -115,12 +172,13 @@
 <script lang="ts">
 import { defineComponent } from 'vue'
 import { http } from '@/utils/request'
-import { formatDateTime, statusTagType } from '@/utils/format'
+import { formatAmount, formatDateTime, statusTagType } from '@/utils/format'
 import type { OrderDetail } from '@/types'
 
 export default defineComponent({
   setup() {
     return {
+      formatAmount,
       formatDateTime,
       statusTagType
     }
@@ -156,6 +214,13 @@ export default defineComponent({
       uni.previewImage({
         current: this.order.images[index].url,
         urls: this.order.images.map((i) => i.url)
+      })
+    },
+    previewReceipt(index: number) {
+      if (!this.order) return
+      uni.previewImage({
+        current: this.order.receipts[index].url,
+        urls: this.order.receipts.map((i) => i.url)
       })
     },
     goEdit() {
@@ -204,15 +269,24 @@ export default defineComponent({
     align-items: center;
     justify-content: space-between;
 
-    .status-project {
+    .status-title {
       flex: 1;
+      min-width: 0;
       margin-right: 20rpx;
+      display: flex;
+      align-items: center;
       font-size: 36rpx;
       font-weight: 600;
       color: #1a1a1a;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+
+      .cat-sep {
+        margin: 0 8rpx;
+        color: #cccccc;
+        font-weight: 400;
+      }
     }
   }
 
@@ -229,6 +303,25 @@ export default defineComponent({
   }
 }
 
+.reject-card {
+  background-color: #fff7e6;
+  border: 2rpx solid #ffd591;
+  border-radius: 20rpx;
+  padding: 20rpx 28rpx;
+  margin-top: 20rpx;
+  font-size: 26rpx;
+  line-height: 1.5;
+
+  .reject-title {
+    color: #ad6800;
+    font-weight: 600;
+  }
+
+  .reject-text {
+    color: #ad6800;
+  }
+}
+
 .info-card,
 .img-card,
 .timeline-card,
@@ -239,7 +332,6 @@ export default defineComponent({
   margin-top: 20rpx;
 }
 
-/* 报修描述（独立卡片） */
 .desc-card {
   padding-bottom: 28rpx;
 
@@ -279,19 +371,10 @@ export default defineComponent({
     font-size: 28rpx;
     color: #333333;
     text-align: right;
-  }
 
-  &.info-desc {
-    .info-desc-text {
-      text-align: left;
-      line-height: 1.6;
-      color: #333333;
-    }
-  }
-
-  &.info-reject {
-    .reject-text {
+    &.amount {
       color: #fa5151;
+      font-weight: 600;
     }
   }
 }

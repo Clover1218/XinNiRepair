@@ -1,13 +1,13 @@
 <template>
   <view class="page">
-    <!-- 未登录: 展示未登录卡片 + 登录按钮 -->
+    <!-- 未登录：展示未登录卡片 + 登录按钮 -->
     <view v-if="!isLoggedIn" class="not-logged-in">
       <wd-avatar
         class="user-avatar"
         text="登"
         shape="round"
         size="large"
-        bg-color="#cccccc"
+        bg-color="#4d80f0"
         color="#ffffff"
       ></wd-avatar>
       <view class="not-logged-info">
@@ -17,68 +17,84 @@
       <wd-button type="primary" round size="small" @click="goLogin">去登录</wd-button>
     </view>
 
-    <!-- 已登录: 正常展示 -->
     <template v-else>
-    <!-- 用户信息卡片 -->
-    <view class="user-card">
-      <wd-avatar
-        class="user-avatar"
-        :src="avatarUrl"
-        :text="avatarText"
-        shape="round"
-        size="large"
-        bg-color="#4d80f0"
-        color="#ffffff"
-      ></wd-avatar>
-      <view class="user-info">
-        <view class="user-name">{{ userInfo?.nickname || '微信用户' }}</view>
-        <view class="user-phone">{{ maskPhone(userInfo?.phone) || '未绑定手机号' }}</view>
-      </view>
-    </view>
-
-    <!-- 管理员入口（仅平台管理员 role===1 显示） -->
-    <view v-if="isAdmin" class="admin-entry" @click="goAdmin">
-      <view class="admin-entry-icon">⚙</view>
-      <view class="admin-entry-text">
-        <view class="admin-entry-title">管理后台</view>
-        <view class="admin-entry-sub">企业管理 · 工单管理</view>
-      </view>
-      <text class="admin-entry-arrow">›</text>
-    </view>
-
-    <!-- 企业列表 -->
-    <view class="ent-title">
-      <text>我的企业</text>
-      <text class="ent-add" @click="goJoin">+ 添加</text>
-    </view>
-        <!-- :class="{ current: ent.enterprise_id === currentEnterpriseId }" -->
-    <view class="ent-list">
-      <view
-        v-for="ent in enterprises"
-        :key="ent.enterprise_id"
-        class="ent-card"
-
-        @click="onSwitchEnterprise(ent)"
-      >
-        <view class="ent-name-wrap">
-          <text class="ent-name">{{ ent.enterprise_name }}</text>
-<!--          <text v-if="ent.enterprise_id === currentEnterpriseId" class="ent-check">✓</text> -->
-        </view>
-        <view class="ent-meta">
-          <text class="ent-role">{{ roleLabel(ent.role) }}</text>
-          <text class="ent-status" :class="ent.status">{{ memberStatusLabel(ent.status) }}</text>
+      <!-- 用户信息卡片 -->
+      <view class="user-card">
+        <wd-avatar
+          class="user-avatar"
+          :src="avatarUrl"
+          :text="avatarText"
+          shape="round"
+          size="large"
+          bg-color="#4d80f0"
+          color="#ffffff"
+        ></wd-avatar>
+        <view class="user-info">
+          <view class="user-name">
+            {{ userInfo?.nickname || '微信用户' }}
+            <text class="role-badge" :class="`role-${platformRoleValue}`">{{ platformRoleText }}</text>
+          </view>
+          <view class="user-phone">{{ maskPhone(userInfo?.phone) || '未绑定手机号' }}</view>
         </view>
       </view>
 
-      <view v-if="enterprises.length === 0" class="ent-empty">
-        <text>还没有加入任何企业</text>
+      <!-- 入口卡：单位审核员 -->
+      <view v-if="reviewerEnts.length > 0 && !storeStaffFlag" class="entry-card" @click="goReview">
+        <view class="entry-icon reviewer">⚖</view>
+        <view class="entry-text">
+          <view class="entry-title">单位审核</view>
+          <view class="entry-sub">
+            {{ reviewerSubtitle }}
+          </view>
+        </view>
+        <text class="entry-arrow">›</text>
       </view>
-    </view>
 
-    <!-- 退出登录 -->
-    <view class="logout-wrap">
-      <wd-button block plain round @click="onLogout">退出登录</wd-button>
-    </view>
+      <!-- 入口卡：店方（维修业务员/超管） -->
+      <view v-if="storeStaffFlag" class="entry-card" @click="goEnterprise">
+        <view class="entry-icon staff">🏢</view>
+        <view class="entry-text">
+          <view class="entry-title">企业管理</view>
+          <view class="entry-sub">企业列表 · 成员管理 · 工单处理</view>
+        </view>
+        <text class="entry-arrow">›</text>
+      </view>
+
+      <!-- 我的企业 -->
+      <view class="ent-title">
+        <text>我的企业</text>
+        <text class="ent-add" @click="goJoin">+ 添加</text>
+      </view>
+      <view class="ent-list">
+        <view
+          v-for="ent in enterprises"
+          :key="ent.enterprise_id"
+          class="ent-card"
+          :class="{ current: ent.enterprise_id === currentEnterpriseId }"
+          @click="onSwitchEnterprise(ent)"
+        >
+          <view class="ent-name-wrap">
+            <text class="ent-name">{{ ent.enterprise_name }}</text>
+            <text v-if="ent.enterprise_id === currentEnterpriseId" class="ent-check">✓</text>
+            <text v-if="ent.role === 'reviewer' || ent.role === 'admin'" class="ent-badge reviewer">
+              审核员
+            </text>
+          </view>
+          <view class="ent-meta">
+            <text class="ent-role">{{ roleLabel(ent.role) }}</text>
+            <text class="ent-status" :class="ent.status">{{ memberStatusLabel(ent.status) }}</text>
+          </view>
+        </view>
+
+        <view v-if="enterprises.length === 0" class="ent-empty">
+          <text>还没有加入任何企业</text>
+        </view>
+      </view>
+
+      <!-- 退出登录 -->
+      <view class="logout-wrap">
+        <wd-button block plain round @click="onLogout">退出登录</wd-button>
+      </view>
     </template>
   </view>
 </template>
@@ -87,8 +103,15 @@
 import { defineComponent } from 'vue'
 import { useUserStore } from '@/stores/user'
 import { useEnterpriseStore } from '@/stores/enterprise'
-import { isPlatformAdmin } from '@/utils/jwt'
+import { isStoreStaff, reviewerEnterprises } from '@/utils/auth'
 import { maskPhone, roleLabel, memberStatusLabel } from '@/utils/format'
+import type { EnterpriseBrief, PlatformRole } from '@/types'
+
+const ROLE_TEXT: Record<number, string> = {
+  0: '普通用户',
+  1: '维修业务员',
+  2: '超级管理员'
+}
 
 export default defineComponent({
   setup() {
@@ -102,8 +125,9 @@ export default defineComponent({
   },
   data() {
     return {
-      isAdmin: false,
-      isLoggedIn: false
+      isLoggedIn: false,
+      storeStaffFlag: false,
+      reviewerList: [] as { enterprise_id: string; enterprise_name: string }[]
     }
   },
   computed: {
@@ -121,50 +145,66 @@ export default defineComponent({
     },
     avatarText() {
       return (this.userInfo?.nickname || '用').slice(0, 1)
+    },
+    platformRoleValue(): PlatformRole {
+      return (this.userInfo?.role ?? 0) as PlatformRole
+    },
+    platformRoleText(): string {
+      return ROLE_TEXT[this.platformRoleValue] || '普通用户'
+    },
+    reviewerEnts(): { enterprise_id: string; enterprise_name: string }[] {
+      return this.reviewerList
+    },
+    reviewerSubtitle(): string {
+      const names = this.reviewerList.map((e) => e.enterprise_name)
+      if (names.length === 0) return ''
+      return names.length === 1
+        ? names[0]
+        : `${names[0]} 等 ${names.length} 个单位`
     }
   },
   onShow() {
-    // 按微信官方要求: 不强制登录, 未登录时展示未登录卡片
-    this.isLoggedIn = !!uni.getStorageSync('token')
-    if (!this.isLoggedIn) return
-    this.loadData()
-    this.isAdmin = isPlatformAdmin()
+    this.init()
   },
   methods: {
-    /** 跳转登录页 */
+    async init() {
+      if (!this.userStore.token) {
+        const ok = await this.userStore.ensureLoggedIn()
+        if (!ok) {
+          this.isLoggedIn = false
+          return
+        }
+      }
+      this.isLoggedIn = true
+      try {
+        await this.userStore.fetchUserInfo()
+      } catch (e) {
+        // 401 已由请求层处理
+      }
+      this.storeStaffFlag = isStoreStaff()
+      this.reviewerList = reviewerEnterprises()
+    },
     goLogin() {
       uni.navigateTo({ url: '/pages/auth/login' })
     },
-    async loadData() {
-      try {
-        await this.userStore.fetchUserInfo()
-        // 拉取用户信息后重新判定（登录响应 user.role 可能已更新）
-        this.isAdmin = isPlatformAdmin()
-      } catch (e) {
-        console.error('获取用户信息失败', e)
-      }
+    goReview() {
+      uni.navigateTo({ url: '/pages/review/index' })
     },
-    goAdmin() {
-      uni.navigateTo({ url: '/pages/admin/index' })
-    },
-    async onSwitchEnterprise(ent: { enterprise_id: string; status: string }) {
-      if (ent.enterprise_id === this.currentEnterpriseId) return
-      if (ent.status !== 'approved') {
-        uni.showToast({ title: '该企业暂不可用', icon: 'none' })
-        return
-      }
-      uni.showLoading({ title: '切换中...' })
-      try {
-        await this.enterpriseStore.switchEnterprise(ent.enterprise_id)
-        uni.hideLoading()
-        uni.showToast({ title: '切换成功', icon: 'success' })
-      } catch (e) {
-        uni.hideLoading()
-        console.error('切换企业失败', e)
-      }
+    goEnterprise() {
+      uni.navigateTo({ url: '/pages/admin/enterprise/list' })
     },
     goJoin() {
       uni.navigateTo({ url: '/pages/enterprise/join' })
+    },
+    /** V1.2：切换企业 = 纯本地上下文切换（approved 才可切换） */
+    onSwitchEnterprise(ent: EnterpriseBrief) {
+      if (ent.status !== 'approved') {
+        uni.showToast({ title: '该企业申请尚未通过，暂不可切换', icon: 'none' })
+        return
+      }
+      if (ent.enterprise_id === this.currentEnterpriseId) return
+      this.enterpriseStore.setCurrent(ent.enterprise_id)
+      uni.showToast({ title: `已切换到「${ent.enterprise_name}」`, icon: 'none' })
     },
     async onLogout() {
       const res = await uni.showModal({ title: '提示', content: '确定退出登录吗？' })
@@ -225,11 +265,35 @@ export default defineComponent({
   }
 
   .user-info {
+    flex: 1;
+    min-width: 0;
     margin-left: 28rpx;
 
     .user-name {
+      display: flex;
+      align-items: center;
       font-size: 36rpx;
       font-weight: 600;
+
+      .role-badge {
+        margin-left: 16rpx;
+        flex-shrink: 0;
+        font-size: 20rpx;
+        font-weight: 400;
+        padding: 4rpx 14rpx;
+        border-radius: 999rpx;
+        background-color: rgba(255, 255, 255, 0.22);
+
+        &.role-1 {
+          background-color: rgba(255, 193, 7, 0.9);
+          color: #4a3200;
+        }
+
+        &.role-2 {
+          background-color: rgba(255, 82, 82, 0.9);
+          color: #ffffff;
+        }
+      }
     }
 
     .user-phone {
@@ -237,6 +301,60 @@ export default defineComponent({
       font-size: 26rpx;
       opacity: 0.85;
     }
+  }
+}
+
+/* 入口卡 */
+.entry-card {
+  display: flex;
+  align-items: center;
+  background-color: #ffffff;
+  border-radius: 20rpx;
+  padding: 28rpx 32rpx;
+  margin-top: 20rpx;
+
+  .entry-icon {
+    width: 72rpx;
+    height: 72rpx;
+    border-radius: 16rpx;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 36rpx;
+    flex-shrink: 0;
+
+    &.reviewer {
+      background: rgba(255, 193, 7, 0.14);
+    }
+
+    &.staff {
+      background: rgba(77, 128, 240, 0.12);
+    }
+  }
+
+  .entry-text {
+    flex: 1;
+    margin-left: 24rpx;
+
+    .entry-title {
+      font-size: 30rpx;
+      font-weight: 600;
+      color: #1a1a1a;
+    }
+
+    .entry-sub {
+      margin-top: 6rpx;
+      font-size: 24rpx;
+      color: #999999;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+  }
+
+  .entry-arrow {
+    font-size: 36rpx;
+    color: #cccccc;
   }
 }
 
@@ -253,51 +371,6 @@ export default defineComponent({
     font-size: 26rpx;
     font-weight: 400;
     color: #4d80f0;
-  }
-}
-
-.admin-entry {
-  display: flex;
-  align-items: center;
-  background-color: #ffffff;
-  border-radius: 20rpx;
-  padding: 28rpx 32rpx;
-  margin-top: 20rpx;
-  border: 2rpx solid rgba(77, 128, 240, 0.15);
-
-  .admin-entry-icon {
-    width: 72rpx;
-    height: 72rpx;
-    border-radius: 16rpx;
-    background: linear-gradient(135deg, #4d80f0 0%, #6ea1ff 100%);
-    color: #ffffff;
-    font-size: 36rpx;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-  }
-
-  .admin-entry-text {
-    flex: 1;
-    margin-left: 24rpx;
-
-    .admin-entry-title {
-      font-size: 30rpx;
-      font-weight: 600;
-      color: #1a1a1a;
-    }
-
-    .admin-entry-sub {
-      margin-top: 6rpx;
-      font-size: 24rpx;
-      color: #999999;
-    }
-  }
-
-  .admin-entry-arrow {
-    font-size: 36rpx;
-    color: #cccccc;
   }
 }
 
@@ -329,6 +402,18 @@ export default defineComponent({
         color: #4d80f0;
         font-size: 28rpx;
         font-weight: 700;
+      }
+
+      .ent-badge {
+        margin-left: 12rpx;
+        font-size: 20rpx;
+        padding: 2rpx 12rpx;
+        border-radius: 999rpx;
+
+        &.reviewer {
+          color: #b26a00;
+          background-color: rgba(255, 193, 7, 0.16);
+        }
       }
     }
 

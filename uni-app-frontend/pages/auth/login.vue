@@ -42,11 +42,12 @@ export default defineComponent({
   data() {
     return {
       loading: false,
-      agreed: false
+      // V1.2：协议勾选只在“注册那一刻”要求；老用户本地已有标记，默认视为同意
+      agreed: uni.getStorageSync('agreedPrivacy') === '1'
     }
   },
   onLoad() {
-    // 已登录用户直接进入工单列表
+    // 本地已有 token：直接进入首页（token 有效性由首页 onShow/请求层 401 静默续期兜底）
     const token = uni.getStorageSync('token')
     if (token) {
       uni.switchTab({ url: '/pages/order/list' })
@@ -79,8 +80,10 @@ export default defineComponent({
           })
         })
         const { needProfile } = await this.userStore.login(code)
+        // 登录/注册成功即视为已同意协议，写入本地（老用户后续静默登录不再强制勾选）
+        uni.setStorageSync('agreedPrivacy', '1')
         if (needProfile) {
-          // 新用户：先完善资料（头像/昵称/手机号）
+          // 新用户：先完善资料（头像/昵称/手机号），注册成功即登录进入首页
           uni.redirectTo({ url: '/pages/auth/profile' })
           return
         }

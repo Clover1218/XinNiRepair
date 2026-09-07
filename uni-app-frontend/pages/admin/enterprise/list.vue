@@ -57,7 +57,7 @@
 <script lang="ts">
 import { defineComponent } from 'vue'
 import { http } from '@/utils/request'
-import { isPlatformAdmin } from '@/utils/jwt'
+import { isStoreStaff } from '@/utils/auth'
 import { formatDate, enterpriseStatusLabel, enterpriseStatusTagType } from '@/utils/format'
 import type { AdminEnterpriseItem, PageResult } from '@/types'
 
@@ -81,7 +81,7 @@ export default defineComponent({
     }
   },
   onShow() {
-    if (!isPlatformAdmin()) {
+    if (!isStoreStaff()) {
       uni.showToast({ title: '无管理权限', icon: 'none' })
       setTimeout(() => uni.navigateBack(), 600)
       return
