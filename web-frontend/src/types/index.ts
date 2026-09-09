@@ -37,6 +37,7 @@ export type OrderStatus =
   | 'processing'
   | 'completed'
   | 'cancelled'
+  | 'rejected'
 
 /** 紧急程度 */
 export type Urgency = 'normal' | 'urgent' | 'very_urgent'
@@ -88,6 +89,16 @@ export interface OrderListItem {
   image_count: number
   submitted_at: string
   created_at: string
+  /** V1.4 列表展示：维修操作内容 / 金额（未完工为空/0） */
+  repair_content?: string
+  amount?: number
+}
+
+/** 报修人筛选下拉选项（GET /admin/orders/reporters，来源于历史工单报修人） */
+export interface ReporterOption {
+  id: string
+  nickname: string
+  avatar_url: string | null
 }
 
 /** 维修附加元数据（完工/对账使用） */
@@ -274,7 +285,7 @@ export interface CategoryOption {
 export interface ProblemOption {
   id: string
   name: string
-  common_solutions?: string[]
+  description: string
 }
 
 /** /orders/options 响应 */
@@ -307,7 +318,6 @@ export interface DictionaryProblem {
   property_id: string
   name: string
   description: string
-  common_solutions: string[]
   sort_order: number
 }
 
@@ -321,4 +331,122 @@ export interface PropertyOption {
   id: string
   name: string
   problems?: ProblemOption[]
+}
+
+/* ===== 工单汇总统计（5.17，V1.3 · 对应小程序 C20~C22 统计面板） ===== */
+
+/** 状态分布项 */
+export interface OrderStatusStat {
+  status: string
+  label: string
+  count: number
+}
+
+/** 项目大类分布项 */
+export interface OrderCategoryStat {
+  category_id: string | null
+  category_name: string
+  count: number
+}
+
+/** 报修人排行项 */
+export interface OrderReporterStat {
+  user_id: string
+  nickname: string
+  avatar_url: string | null
+  count: number
+}
+
+/** 今日概况（不受时间范围影响，按服务器本地日） */
+export interface OrderStatsToday {
+  pending_review: number
+  submitted_today: number
+  audited_today: number
+  rejected_today: number
+}
+
+/** 生效时间范围 */
+export interface OrderStatsRange {
+  start: string | null
+  end: string | null
+}
+
+/** 工单汇总统计响应 */
+export interface OrderStats {
+  today: OrderStatsToday
+  total: number
+  range: OrderStatsRange
+  by_status: OrderStatusStat[]
+  by_category: OrderCategoryStat[]
+  top_reporters: OrderReporterStat[]
+  updated_at: string
+}
+
+/* ===== 独立统计页：企业对比 / 维修员业绩（5.18 / 5.19，仅店方/超管） ===== */
+
+/** 企业维度分组聚合项 */
+export interface EnterpriseStatsRow {
+  enterprise_id: string
+  enterprise_name: string
+  total: number
+  by_status: OrderStatusStat[]
+}
+
+/** 企业维度分组聚合响应（5.18 GET /admin/orders/stats/by-enterprise） */
+export interface EnterpriseStats {
+  range: OrderStatsRange
+  list: EnterpriseStatsRow[]
+  updated_at: string
+}
+
+/** 维修员业绩聚合项 */
+export interface RepairerStatsRow {
+  repairer_id: string
+  repairer_name: string
+  /** 接单/处理量（待接单/处理中/已完工） */
+  assigned: number
+  /** 完工量（completed_at 非空） */
+  completed: number
+}
+
+/** 维修员业绩聚合响应（5.19 GET /admin/orders/stats/by-repairer） */
+export interface RepairerStats {
+  range: OrderStatsRange
+  list: RepairerStatsRow[]
+  updated_at: string
+}
+
+/* ===== 统计页二期「纵向双区卡」（5.20 / 5.21） ===== */
+
+/** 区间运营指标响应（5.20 GET /admin/orders/stats/metrics） */
+export interface OrderStatsMetrics {
+  /** 当前待审核存量（reported，不计时间） */
+  pending_review: number
+  /** 区间上报 */
+  submitted: number
+  /** 区间审核通过 */
+  audited: number
+  /** 区间退回 */
+  rejected: number
+  range: OrderStatsRange
+  updated_at: string
+}
+
+/** 维修员区间汇总项（5.21） */
+export interface RepairerSummaryRow {
+  repairer_id: string
+  repairer_name: string
+  /** 区间接单（accepted_at∈窗口） */
+  accepted: number
+  /** 区间完工（completed_at∈窗口） */
+  completed: number
+}
+
+/** 维修员区间汇总响应（5.21 GET /admin/orders/stats/repairer-summary） */
+export interface RepairerSummary {
+  /** 全局待接单存量（不受所选业务员影响） */
+  global_pending_accept: number
+  list: RepairerSummaryRow[]
+  range: OrderStatsRange
+  updated_at: string
 }

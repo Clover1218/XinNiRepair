@@ -1,10 +1,19 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { adminAPI, fetchOrderOptions, type OrderListParams } from '@/api/admin'
 import { useUserStore } from '@/stores/user'
-import type { EnterpriseListItem, OrderListItem, OrderStatus, Urgency } from '@/types'
+import { useOrderListQueryStore } from '@/stores/orderListQuery'
+import type {
+  CategoryOption,
+  EnterpriseListItem,
+  OrderListItem,
+  OrderStatus,
+  ReporterOption,
+  Urgency
+} from '@/types'
 import { formatDateTime } from '@/utils/format'
 
 const router = useRouter()
@@ -32,7 +41,8 @@ const statusTagType: Record<OrderStatus, string> = {
   pending_accept: 'warning',
   processing: 'primary',
   completed: 'success',
-  cancelled: 'info'
+  cancelled: 'info',
+  rejected: 'danger'
 }
 
 // 紧急程度标识
@@ -42,24 +52,42 @@ const urgencyMap: Record<Urgency, { label: string; color: string; dots: number }
   very_urgent: { label: '非常紧急', color: '#f56c6c', dots: 3 }
 }
 
-const activeStatus = ref('')
-const enterpriseId = ref('')
-const categoryId = ref('')
-const keyword = ref('')
-const urgency = ref('')
-const dateRange = ref<[string, string] | null>(null)
-// 排序状态（默认按提交时间倒序）
-const sortBy = ref('submitted_at')
-const sortOrder = ref<'asc' | 'desc'>('desc')
+// 筛选/分页/排序会话态（存 Pinia，返回本页不重置）
+const queryStore = useOrderListQueryStore()
+const {
+  activeStatus,
+  enterpriseId,
+  categoryId,
+  propertyId,
+  reporterId,
+  keyword,
+  urgency,
+  dateRange,
+  sortBy,
+  sortOrder,
+  page,
+  pageSize
+} = storeToRefs(queryStore)
+
+const reporterName = ref(queryStore.reporterName)
 
 const loading = ref(false)
 const list = ref<OrderListItem[]>([])
 const total = ref(0)
-const page = ref(1)
-const pageSize = ref(20)
 
-// 项目大类选项（数据源 /orders/options 4.1）
-const categoryOptions = ref<Array<{ id: string; name: string }>>([])
+// 项目大类选项（完整保留嵌套属性，供"项目属性"筛选联动）
+const categoryOptions = ref<CategoryOption[]>([])
+/** 当前大类下的项目属性选项 */
+const propertyOptions = computed(() => {
+  if (!categoryId.value) return []
+  const c = categoryOptions.value.find(x => x.id === categoryId.value)
+  return (c?.properties || []).map(p => ({ id: p.id, name: p.name }))
+})
+
+// 报修人筛选（远程搜索，来源 /admin/orders/reporters）
+const reporterOptions = ref<ReporterOption[]>([])
+const reporterSearching = ref(false)
+let reporterTimer: ReturnType<typeof setTimeout> | undefined
 
 const fetchList = async () => {
   loading.value = true
@@ -73,6 +101,8 @@ const fetchList = async () => {
     if (activeStatus.value) params.status = activeStatus.value
     if (enterpriseId.value) params.enterprise_id = enterpriseId.value
     if (categoryId.value) params.category_id = categoryId.value
+    if (propertyId.value) params.property_id = propertyId.value
+    if (reporterId.value) params.reporter_id = reporterId.value
     if (keyword.value.trim()) params.keyword = keyword.value.trim()
     if (urgency.value) params.urgency = urgency.value
     if (dateRange.value) {
@@ -92,16 +122,24 @@ const handleSearch = () => {
   fetchList()
 }
 
+/** 企业变化：报修人候选随企业域变化，清空已选报修人 */
+const handleEnterpriseChange = () => {
+  reporterId.value = ''
+  reporterName.value = ''
+  reporterOptions.value = []
+  handleSearch()
+}
+
+/** 大类变化：清空已选属性再查 */
+const handleCategoryChange = () => {
+  propertyId.value = ''
+  handleSearch()
+}
+
 const handleReset = () => {
-  enterpriseId.value = ''
-  categoryId.value = ''
-  keyword.value = ''
-  urgency.value = ''
-  dateRange.value = null
-  activeStatus.value = ''
-  sortBy.value = 'submitted_at'
-  sortOrder.value = 'desc'
-  page.value = 1
+  queryStore.reset()
+  reporterName.value = ''
+  reporterOptions.value = []
   fetchList()
 }
 
@@ -164,11 +202,34 @@ const loadEnterpriseOptions = async () => {
   enterpriseOptions.value = res.data.list
 }
 
-// 加载项目大类选项
+// 加载项目大类选项（保留嵌套属性，供项目属性筛选联动）
 const loadCategoryOptions = async () => {
   if (categoryOptions.value.length) return
   const res = await fetchOrderOptions()
-  categoryOptions.value = res.data.categories.map(c => ({ id: c.id, name: c.name }))
+  categoryOptions.value = res.data.categories
+}
+
+// 报修人筛选：远程按昵称关键字搜索候选（企业域随当前企业筛选）
+const onReporterRemote = (q: string) => {
+  if (reporterTimer) clearTimeout(reporterTimer)
+  reporterTimer = setTimeout(async () => {
+    reporterSearching.value = true
+    try {
+      const res = await adminAPI.getReporters({
+        ...(enterpriseId.value ? { enterprise_id: enterpriseId.value } : {}),
+        ...(q?.trim() ? { keyword: q.trim() } : {})
+      })
+      reporterOptions.value = res.data.list
+    } finally {
+      reporterSearching.value = false
+    }
+  }, 300)
+}
+
+const handleReporterChange = (val: string) => {
+  const hit = reporterOptions.value.find(o => o.id === val)
+  reporterName.value = hit?.nickname || ''
+  handleSearch()
 }
 
 // 加载维修员列表（5.15：导出弹窗业务员模式下拉）
@@ -263,6 +324,12 @@ const handleExport = async () => {
 }
 
 onMounted(() => {
+  // 从会话态恢复"报修人"选中项的回显（远程选项列表已随页面卸载清空）
+  const rid = queryStore.reporterId
+  const rname = queryStore.reporterName
+  if (rid && rname && !reporterOptions.value.some(o => o.id === rid)) {
+    reporterOptions.value = [{ id: rid, nickname: rname, avatar_url: null }]
+  }
   fetchList()
   loadEnterpriseOptions()
   loadCategoryOptions()
@@ -288,7 +355,7 @@ onMounted(() => {
           clearable
           filterable
           class="filter-enterprise"
-          @change="handleSearch"
+          @change="handleEnterpriseChange"
         >
           <el-option
             v-for="e in enterpriseOptions"
@@ -303,7 +370,7 @@ onMounted(() => {
           clearable
           filterable
           class="filter-input"
-          @change="handleSearch"
+          @change="handleCategoryChange"
         >
           <el-option
             v-for="c in categoryOptions"
@@ -312,9 +379,43 @@ onMounted(() => {
             :value="c.id"
           />
         </el-select>
+        <el-select
+          v-model="propertyId"
+          placeholder="问题类型（属性）"
+          clearable
+          filterable
+          :disabled="!categoryId"
+          class="filter-input"
+          @change="handleSearch"
+        >
+          <el-option
+            v-for="p in propertyOptions"
+            :key="p.id"
+            :label="p.name"
+            :value="p.id"
+          />
+        </el-select>
+        <el-select
+          v-model="reporterId"
+          placeholder="报修人"
+          clearable
+          filterable
+          remote
+          :remote-method="onReporterRemote"
+          :loading="reporterSearching"
+          class="filter-input"
+          @change="handleReporterChange"
+        >
+          <el-option
+            v-for="r in reporterOptions"
+            :key="r.id"
+            :label="r.nickname"
+            :value="r.id"
+          />
+        </el-select>
         <el-input
           v-model="keyword"
-          placeholder="工单号 / 项目 / 报修人"
+          placeholder="工单号"
           clearable
           class="filter-input"
           @keyup.enter="handleSearch"
@@ -356,6 +457,7 @@ onMounted(() => {
         v-loading="loading"
         :data="list"
         stripe
+        :default-sort="queryStore.defaultSort"
         @row-click="goDetail"
         @sort-change="handleSortChange"
       >
@@ -402,6 +504,18 @@ onMounted(() => {
         <el-table-column prop="submitted_at" label="提交时间" width="160" sortable="custom">
           <template #default="{ row }">
             {{ formatDateTime(row.submitted_at) }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="repair_content" label="维修操作内容" min-width="200" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span v-if="row.repair_content">{{ row.repair_content }}</span>
+            <span v-else class="cell-muted">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="amount" label="金额" width="110" align="right">
+          <template #default="{ row }">
+            <span v-if="row.amount">{{ `¥${Number(row.amount).toFixed(2)}` }}</span>
+            <span v-else class="cell-muted">—</span>
           </template>
         </el-table-column>
         <el-table-column label="操作" width="90" fixed="right">
@@ -552,6 +666,10 @@ onMounted(() => {
   display: flex;
   justify-content: flex-end;
   margin-top: 16px;
+}
+
+.cell-muted {
+  color: #c0c4cc;
 }
 
 :deep(.el-table__row) {

@@ -91,7 +91,7 @@ type ExportRequest struct {
 }
 
 // Export 导出工单 Excel (5.14)
-func (s *OrderExportService) Export(ctx context.Context, req ExportRequest) (*ExportResult, error) {
+func (s *OrderExportService) Export(ctx context.Context, op Operator, req ExportRequest) (*ExportResult, error) {
 	// 模式校验
 	switch req.Mode {
 	case ExportModeEnterprise:
@@ -104,6 +104,12 @@ func (s *OrderExportService) Export(ctx context.Context, req ExportRequest) (*Ex
 		}
 	default:
 		return nil, apperrors.ErrInvalidParam.WithMessage("mode 取值: enterprise/repairer")
+	}
+
+	// 越权防护: 维修业务员(非超管)导出「业务员汇总」时强制限定为本人,
+	// 防止通过 repairer_id 参数越权导出他人工单/对账数据。
+	if op.IsPlainRepairer() && req.Mode == ExportModeRepairer {
+		req.RepairerID = op.UserID
 	}
 
 	// 状态默认 completed (文档: 默认只导出已完成的工单)

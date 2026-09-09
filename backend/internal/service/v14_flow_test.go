@@ -194,8 +194,8 @@ func (e *v14TestEnv) newOrderViaReport(t *testing.T, description string) (*model
 	if res.Status != string(model.OrderReported) {
 		t.Fatalf("submit status = %s, want reported", res.Status)
 	}
-	if res.OrderNo == nil || !strings.HasPrefix(*res.OrderNo, "WO") {
-		t.Fatalf("order_no should be WO-prefixed, got %v", res.OrderNo)
+	if res.OrderNo == nil || !strings.HasPrefix(*res.OrderNo, "XNB-") {
+		t.Fatalf("order_no should be XNB-prefixed, got %v", res.OrderNo)
 	}
 	order, err := e.orders.FindByID(e.ctx, draft.OrderID)
 	if err != nil || order == nil {
@@ -367,7 +367,7 @@ func TestV14DictionaryCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create property: %v", err)
 	}
-	prob, err := env.projSvc.CreateProblem(env.ctx, ProblemInput{PropertyID: strPtr2(prop.ID), Name: strPtr2("测试问题"), CommonSolutions: []string{"方案A", "方案B"}})
+	prob, err := env.projSvc.CreateProblem(env.ctx, ProblemInput{PropertyID: strPtr2(prop.ID), Name: strPtr2("测试问题")})
 	if err != nil {
 		t.Fatalf("create problem: %v", err)
 	}

@@ -270,15 +270,14 @@ func (ProjectProperty) TableName() string { return "project_properties" }
 // ProjectProblem 常见问题 (隶属项目属性, 一对多; 仅用于快捷填充报修描述, 不落工单表)
 // V1.4 修订: 由隶属大类改为直接隶属项目属性
 type ProjectProblem struct {
-	ID              string         `gorm:"primaryKey;type:uuid"`
-	PropertyID      string         `gorm:"type:uuid;not null;index:idx_project_problems_property"`
-	Name            string         `gorm:"type:varchar(100);not null"`
-	Description     string         `gorm:"type:varchar(200);not null;default:''"`
-	CommonSolutions datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'"` // ["更换屏幕","检查排线"]
-	SortOrder       int            `gorm:"type:smallint;not null;default:0"`
-	DeletedAt       *time.Time     `gorm:"type:timestamptz"`
-	CreatedAt       time.Time      `gorm:"autoCreateTime"`
-	UpdatedAt       time.Time      `gorm:"autoUpdateTime"`
+	ID          string     `gorm:"primaryKey;type:uuid"`
+	PropertyID  string     `gorm:"type:uuid;not null;index:idx_project_problems_property"`
+	Name        string     `gorm:"type:varchar(100);not null"`
+	Description string     `gorm:"type:varchar(200);not null;default:''"`
+	SortOrder   int        `gorm:"type:smallint;not null;default:0"`
+	DeletedAt   *time.Time `gorm:"type:timestamptz"`
+	CreatedAt   time.Time  `gorm:"autoCreateTime"`
+	UpdatedAt   time.Time  `gorm:"autoUpdateTime"`
 
 	Property ProjectProperty `gorm:"foreignKey:PropertyID"`
 }
@@ -295,7 +294,7 @@ type RepairOrder struct {
 	ID string `gorm:"primaryKey;type:uuid"`
 
 	// ── 身份/归属 ──
-	OrderNo      *string `gorm:"type:varchar(20);"`                     // 工单号 WO{YYYYMMDD}{4位序号}, 提交上报时生成; 草稿为空
+	OrderNo      *string `gorm:"type:varchar(20);"`                     // 工单号 XNB-{YYYYMMDD}-{3位序号}, 提交上报时生成; 草稿为空
 	EnterpriseID *string `gorm:"type:uuid;index:idx_orders_enterprise"` // 所属单位; 草稿阶段可为空, 提交时必填
 	ReporterID   string  `gorm:"type:uuid;not null;index:idx_orders_reporter"`
 

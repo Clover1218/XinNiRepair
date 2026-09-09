@@ -251,14 +251,21 @@ func registerRoutes(r *gin.Engine, db *repository.DB, authH *handler.AuthHandler
 			staff := admin.Group("")
 			staff.Use(middleware.RequirePlatformAdmin())
 			{
-				staff.GET("/repairers", adminH.Repairers)                         // 维修员列表 (5.15)
-				staff.GET("/orders/export", adminH.ExportOrders)                  // 导出工单记录 (5.14)
-				staff.GET("/enterprises", adminH.ListEnterprises)                 // 企业列表 (5.8)
-				staff.GET("/enterprises/:enterprise_id", adminH.EnterpriseDetail) // 企业详情 (5.9)
+				staff.GET("/repairers", adminH.Repairers)                            // 维修员列表 (5.15)
+				staff.GET("/orders/export", adminH.ExportOrders)                     // 导出工单记录 (5.14)
+				staff.GET("/orders/stats/by-enterprise", adminH.OrderStatsByEnterprise)   // 企业维度分组聚合 (5.18)
+				staff.GET("/orders/stats/by-repairer", adminH.OrderStatsByRepairer)      // 维修员维度聚合 (5.19)
+				staff.GET("/orders/stats/repairer-summary", adminH.StatsRepairerSummary)       // 维修员区间汇总 (5.21)
+				staff.GET("/orders/stats/repairer-overview", adminH.StatsRepairerOverview)     // 维修员个人汇总 (5.22; 小程序处理工单统计卡)
+				staff.GET("/enterprises", adminH.ListEnterprises)                              // 企业列表 (5.8)
+				staff.GET("/enterprises/:enterprise_id", adminH.EnterpriseDetail)    // 企业详情 (5.9)
 			}
 
 			// ── 工单处理: 店方角色或单位审核员(限本单位), 服务内按 Operator 校验 ──
-			admin.GET("/orders", adminH.ListOrders) // 工单列表 (5.1)
+			admin.GET("/orders", adminH.ListOrders)       // 工单列表 (5.1)
+			admin.GET("/orders/stats", adminH.OrderStats) // 工单汇总统计 (5.17, V1.3 C20；须先于 :order_id 注册)
+			admin.GET("/orders/stats/metrics", adminH.StatsMetrics)      // 区间运营指标 (5.20；店方全域/审核员限本单位)
+			admin.GET("/orders/reporters", adminH.OrderReporters) // 报修人候选 (5.1 筛选配套)
 			admin.GET("/orders/:order_id", adminH.OrderDetail)
 			admin.POST("/orders/:order_id/audit", adminH.Audit)                  // 审核通过 (5.3)
 			admin.POST("/orders/:order_id/review", adminH.Audit)                 // 兼容旧版 /review (行为同 audit)

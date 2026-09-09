@@ -179,14 +179,12 @@ const form = ref<{
   propertyId: string
   name: string
   description: string
-  commonSolutions: string[]
 }>({
   id: '',
   categoryId: '',
   propertyId: '',
   name: '',
-  description: '',
-  commonSolutions: []
+  description: ''
 })
 
 const kindName = (k: Kind) =>
@@ -206,8 +204,7 @@ const openAdd = (kind: Kind) => {
     categoryId: selectedCategoryId.value,
     propertyId: kind === 'problem' ? selectedPropertyId.value : selectedPropertyId.value,
     name: '',
-    description: '',
-    commonSolutions: []
+    description: ''
   }
   dialogVisible.value = true
 }
@@ -219,8 +216,7 @@ const openEditCategory = (row: DictionaryCategoryTree) => {
     categoryId: row.id,
     propertyId: '',
     name: row.name,
-    description: row.description,
-    commonSolutions: []
+    description: row.description
   }
   dialogVisible.value = true
 }
@@ -232,8 +228,7 @@ const openEditProperty = (row: DictionaryProperty) => {
     categoryId: selectedCategoryId.value,
     propertyId: row.id,
     name: row.name,
-    description: row.description,
-    commonSolutions: []
+    description: row.description
   }
   dialogVisible.value = true
 }
@@ -245,8 +240,7 @@ const openEditProblem = (row: DictionaryProblem) => {
     categoryId: selectedCategoryId.value,
     propertyId: row.property_id || selectedPropertyId.value,
     name: row.name,
-    description: row.description,
-    commonSolutions: [...(row.common_solutions ?? [])]
+    description: row.description
   }
   dialogVisible.value = true
 }
@@ -304,7 +298,6 @@ const handleSubmit = async () => {
       const payload = {
         ...base,
         property_id: propertyId,
-        common_solutions: form.value.commonSolutions,
         ...(form.value.id ? {} : { sort_order: nextSort(list) })
       }
       if (form.value.id) await adminAPI.updateProblem(form.value.id, payload)
@@ -470,16 +463,6 @@ onBeforeUnmount(destroySortables)
                     <span class="item-name">{{ q.name }}</span>
                   </div>
                   <div v-if="q.description" class="item-desc">{{ q.description }}</div>
-                  <div v-if="q.common_solutions?.length" class="item-tags">
-                    <el-tag
-                      v-for="tag in q.common_solutions"
-                      :key="tag"
-                      size="small"
-                      type="info"
-                      effect="plain"
-                      class="tag"
-                    >{{ tag }}</el-tag>
-                  </div>
                 </div>
                 <div class="item-ops" @click.stop>
                   <el-button link type="primary" size="small" @click="openEditProblem(q)">编辑</el-button>
@@ -536,25 +519,6 @@ onBeforeUnmount(destroySortables)
             show-word-limit
             placeholder="选填"
           />
-        </el-form-item>
-        <el-form-item v-if="dialogKind === 'problem'" label="常见解决建议（回车添加，可多条）">
-          <el-select
-            v-model="form.commonSolutions"
-            multiple
-            filterable
-            allow-create
-            default-first-option
-            :reserve-keyword="false"
-            placeholder="输入建议后回车添加"
-            class="full-width"
-          >
-            <el-option
-              v-for="tag in form.commonSolutions"
-              :key="tag"
-              :label="tag"
-              :value="tag"
-            />
-          </el-select>
         </el-form-item>
       </el-form>
       <template #footer>

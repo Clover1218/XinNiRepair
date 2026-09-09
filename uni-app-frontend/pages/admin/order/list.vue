@@ -13,6 +13,36 @@
     </view>
 
     <template v-else>
+      <!-- 顶部统计卡（5.22 维修员个人汇总：累计主行 + 今日副行，可折叠） -->
+      <view class="stats-card">
+        <view class="stats-head" @click="toggleOverview">
+          <text class="stats-title">我的处理概况</text>
+          <text class="stats-toggle">{{ overviewCollapsed ? '展开 ▾' : '收起 ▴' }}</text>
+        </view>
+
+        <view v-if="overviewCollapsed" class="stats-collapsed">
+          <text class="sc-item">可接单 {{ overview ? overview.pending_accept : '--' }}</text>
+          <text class="sc-dot">·</text>
+          <text class="sc-item">我的接单 {{ overview ? overview.my_accepted : '--' }}</text>
+          <text class="sc-dot">·</text>
+          <text class="sc-item">已完工 {{ overview ? overview.my_completed : '--' }}</text>
+        </view>
+
+        <template v-else>
+          <view class="stats-grid">
+            <view v-for="m in overviewMetrics" :key="m.key" class="stats-box">
+              <text class="stats-key">{{ m.key }}</text>
+              <text class="stats-val" :style="{ color: m.color }">{{ m.value }}</text>
+            </view>
+          </view>
+          <view class="stats-today">
+            <text class="st-item">今日接单 {{ overview ? overview.today_accepted : '--' }}</text>
+            <text class="st-item">今日完工 {{ overview ? overview.today_completed : '--' }}</text>
+            <text class="st-item">完工率 {{ overviewCompletionRate }}</text>
+          </view>
+        </template>
+      </view>
+
       <!-- 企业筛选 Header + 状态分组 Tab -->
       <order-filter-bar
         :enterprises="enterpriseOptions"
@@ -35,7 +65,7 @@
             <order-action-bar
               :order-id="item.id"
               :actions="item.available_actions"
-              @done="loadList(true)"
+              @done="onActionDone"
             ></order-action-bar>
           </template>
         </order-card>
@@ -59,7 +89,7 @@ import { http } from '@/utils/request'
 import { PAGE_SIZE } from '@/utils/config'
 import { normalizePage, REPAIR_TABS } from '@/utils/format'
 import { isStoreStaff } from '@/utils/auth'
-import type { AdminOrderListItem } from '@/types'
+import type { AdminOrderListItem, RepairerOverview } from '@/types'
 import { useUserStore } from '@/stores/user'
 
 /**
@@ -85,13 +115,33 @@ export default defineComponent({
       page: 1,
       totalPages: 1,
       loading: false,
-      finished: false
+      finished: false,
+      /* ── 顶部统计卡（5.22 维修员个人汇总：累计 + 今日双行） ── */
+      overview: null as RepairerOverview | null,
+      overviewCollapsed: false,
+      overviewLoading: false
     }
   },
   computed: {
     currentEnterpriseId(): string {
       const opt = this.enterpriseOptions[this.enterpriseIndex]
       return opt ? opt.id : ''
+    },
+    /** 统计卡主行：累计口径（可接单/我的接单/处理中/已完工） */
+    overviewMetrics(): { key: string; value: number | string; color: string }[] {
+      const o = this.overview
+      return [
+        { key: '可接单', value: o ? o.pending_accept : '--', color: '#4d80f0' },
+        { key: '我的接单', value: o ? o.my_accepted : '--', color: '#1a1a1a' },
+        { key: '处理中', value: o ? o.my_processing : '--', color: '#ff9f0a' },
+        { key: '已完工', value: o ? o.my_completed : '--', color: '#07c160' }
+      ]
+    },
+    /** 完工率 = 累计完工 / 累计接单 */
+    overviewCompletionRate(): string {
+      const o = this.overview
+      if (!o || !o.my_accepted) return '--'
+      return `${Math.round((o.my_completed / o.my_accepted) * 100)}%`
     }
   },
   onShow() {
@@ -128,6 +178,30 @@ export default defineComponent({
       this.hasPermission = true
       await this.buildEnterpriseOptions()
       this.loadList(true)
+      this.loadOverview()
+    },
+    /** 顶部统计卡数据（5.22）：不传 repairer_id 即统计本人；随当前企业筛选 */
+    async loadOverview() {
+      this.overviewLoading = true
+      try {
+        const params: Record<string, unknown> = {}
+        if (this.currentEnterpriseId) params.enterprise_id = this.currentEnterpriseId
+        const data = await http.get<RepairerOverview>('/admin/orders/stats/repairer-overview', params)
+        this.overview = data
+      } catch (e) {
+        console.error('加载处理统计失败', e)
+        this.overview = null
+      } finally {
+        this.overviewLoading = false
+      }
+    },
+    toggleOverview() {
+      this.overviewCollapsed = !this.overviewCollapsed
+    },
+    /** 卡片动作执行成功后：列表与统计同步刷新 */
+    onActionDone() {
+      this.loadList(true)
+      this.loadOverview()
     },
     async buildEnterpriseOptions() {
       const opts: { id: string; name: string }[] = [{ id: '', name: '全部企业' }]
@@ -144,6 +218,7 @@ export default defineComponent({
     onEnterpriseChange(index: number) {
       this.enterpriseIndex = index
       this.loadList(true)
+      this.loadOverview()
     },
     onTabChange(value: string) {
       this.activeTab = value
@@ -195,6 +270,83 @@ export default defineComponent({
 
 .order-list {
   padding: 20rpx 24rpx;
+}
+
+/* ── 顶部统计卡（5.22 维修员个人汇总） ── */
+.stats-card {
+  margin: 20rpx 24rpx 0;
+  padding: 24rpx 28rpx;
+  border-radius: 20rpx;
+  background-color: #ffffff;
+}
+
+.stats-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.stats-title {
+  font-size: 30rpx;
+  font-weight: 600;
+  color: #1a1a1a;
+}
+
+.stats-toggle {
+  font-size: 24rpx;
+  color: #8a8f99;
+}
+
+.stats-grid {
+  display: flex;
+  margin-top: 20rpx;
+}
+
+.stats-box {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.stats-key {
+  font-size: 24rpx;
+  color: #8a8f99;
+}
+
+.stats-val {
+  margin-top: 8rpx;
+  font-size: 40rpx;
+  font-weight: 600;
+  line-height: 1.1;
+}
+
+.stats-today {
+  display: flex;
+  margin-top: 20rpx;
+  padding-top: 18rpx;
+  border-top: 2rpx solid #f0f1f3;
+}
+
+.st-item {
+  flex: 1;
+  font-size: 24rpx;
+  color: #606266;
+}
+
+.stats-collapsed {
+  display: flex;
+  align-items: center;
+  margin-top: 12rpx;
+}
+
+.sc-item {
+  font-size: 26rpx;
+  color: #303133;
+}
+
+.sc-dot {
+  margin: 0 12rpx;
+  color: #c0c4cc;
 }
 
 .empty-wrap {

@@ -24,6 +24,7 @@ const menus = computed<Array<{ path: string; title: string; icon: string }>>(() 
   if (userStore.isStoreStaff) {
     items.push(
       { path: '/orders', title: '工单管理', icon: 'Tickets' },
+      { path: '/stats', title: '统计', icon: 'DataAnalysis' },
       { path: '/enterprises', title: '企业管理', icon: 'OfficeBuilding' }
     )
     if (userStore.isSuperAdmin) {
@@ -43,6 +44,8 @@ const menus = computed<Array<{ path: string; title: string; icon: string }>>(() 
         icon: 'OfficeBuilding'
       })
     }
+    // 统计（限本单位，隐藏企业对比/维修员业绩）
+    items.push({ path: '/stats', title: '统计', icon: 'DataAnalysis' })
   }
   return items
 })

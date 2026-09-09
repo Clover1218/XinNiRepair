@@ -81,8 +81,9 @@ export interface StatusGroupTab {
   status: string
 }
 
-/** 审核工单页：待审核 / 处理中 / 结束 */
+/** 审核工单页：统计（C20/C21 起置首且页面默认，无 status 过滤串） / 待审核 / 处理中 / 结束 */
 export const REVIEW_TABS: StatusGroupTab[] = [
+  { value: 'stats', label: '统计', status: '' },
   { value: 'pending', label: '待审核', status: 'reported' },
   { value: 'processing', label: '处理中', status: 'pending_accept,processing' },
   { value: 'finished', label: '结束', status: 'completed,cancelled' }

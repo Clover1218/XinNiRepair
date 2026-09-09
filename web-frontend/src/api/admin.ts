@@ -7,12 +7,18 @@ import type {
   EnterpriseDetail,
   EnterpriseListItem,
   EnterpriseMineDetail,
+  EnterpriseStats,
   MemberItem,
   OrderDetail,
   OrderListItem,
   OrderMetadata,
   OrderOptions,
+  OrderStats,
+  OrderStatsMetrics,
   PageResult,
+  RepairerStats,
+  RepairerSummary,
+  ReporterOption,
   UserDetail,
   UserListItem
 } from '@/types'
@@ -27,6 +33,8 @@ export interface OrderListParams {
   enterprise_id?: string
   /** 项目大类筛选（V1.4） */
   category_id?: string
+  /** 项目属性/问题类型筛选（V1.4，需属于所选大类） */
+  property_id?: string
   date_from?: string
   date_to?: string
   reporter_id?: string
@@ -54,9 +62,33 @@ export const adminAPI = {
   getOrders: (params: OrderListParams) =>
     client.get<PageResult<OrderListItem>>('/admin/orders', { params }),
 
+  // 5.1 配套：报修人筛选下拉候选（按企业域+昵称模糊；来源于历史工单报修人）
+  getReporters: (params: { enterprise_id?: string; keyword?: string }) =>
+    client.get<{ list: ReporterOption[] }>('/admin/orders/reporters', { params }),
+
   // 5.2 工单详情（管理后台）
   getOrderDetail: (orderId: string) =>
     client.get<OrderDetail>(`/admin/orders/${orderId}`),
+
+  // 5.17 工单汇总统计（含今日概况；店方可全域/审核员限本单位）
+  getOrderStats: (params: { enterprise_id?: string; start?: string; end?: string }) =>
+    client.get<OrderStats>('/admin/orders/stats', { params }),
+
+  // 5.18 企业维度分组聚合（仅店方/超管；供「统计」页企业对比）
+  getOrderStatsByEnterprise: (params: { enterprise_id?: string; start?: string; end?: string }) =>
+    client.get<EnterpriseStats>('/admin/orders/stats/by-enterprise', { params }),
+
+  // 5.19 维修员维度聚合（仅店方/超管；供「统计」页维修员业绩）
+  getOrderStatsByRepairer: (params: { enterprise_id?: string; start?: string; end?: string }) =>
+    client.get<RepairerStats>('/admin/orders/stats/by-repairer', { params }),
+
+  // 5.20 区间运营指标（店方全域/审核员限本单位；企业数据卡指标行）
+  getOrderStatsMetrics: (params: { enterprise_id?: string; start?: string; end?: string }) =>
+    client.get<OrderStatsMetrics>('/admin/orders/stats/metrics', { params }),
+
+  // 5.21 维修员区间汇总（仅店方/超管；业务员统计卡：全局待接单 + 按接单/完工时间戳）
+  getOrderStatsRepairerSummary: (params: { repairer_id?: string; start?: string; end?: string }) =>
+    client.get<RepairerSummary>('/admin/orders/stats/repairer-summary', { params }),
 
   // 5.3 审核通过（reported → pending_accept；店方或本单位审核员）
   auditOrder: (orderId: string, remark?: string) =>
@@ -175,7 +207,6 @@ export const adminAPI = {
     property_id: string
     name: string
     description?: string
-    common_solutions?: string[]
     sort_order?: number
   }) => client.post<DictionaryProblem>('/admin/problems', data),
 
@@ -184,7 +215,6 @@ export const adminAPI = {
     data: Partial<{
       name: string
       description: string
-      common_solutions: string[]
       sort_order: number
     }>
   ) => client.put<DictionaryProblem>(`/admin/problems/${problemId}`, data),

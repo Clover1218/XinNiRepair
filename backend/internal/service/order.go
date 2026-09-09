@@ -3,7 +3,7 @@
 // 按《后端接口设计文档 v1.1》/《数据库字段设计文档 V1.4》对齐:
 //   - 4.1 options 返回项目字典树 (project_categories → properties/problems, 来自数据库)
 //   - 4.3 更新草稿 (category_id/property_id + 名称快照自动回填; 常见问题仅预填描述不落单)
-//   - 4.4 提交上报 (严格校验; 提交时生成工单号 WO{YYYYMMDD}{4位序号}, 通知本单位审核员/维修业务员)
+//   - 4.4 提交上报 (严格校验; 提交时生成工单号 XNB-{YYYYMMDD}-{3位序号}, 通知本单位审核员/维修业务员)
 //   - 4.8 取消仅限 draft/reported/pending_accept
 package service
 
@@ -91,10 +91,9 @@ type PropertyOption struct {
 
 // ProblemOption 常见问题选项 (4.1, 选中后预填描述)
 type ProblemOption struct {
-	ID              string   `json:"id"`
-	Name            string   `json:"name"`
-	Description     string   `json:"description"`
-	CommonSolutions []string `json:"common_solutions"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
 }
 
 // ValueLabel 键值对选项
@@ -139,7 +138,7 @@ type OrderDraftResult struct {
 // SubmitResult 提交上报响应 (4.4)
 type SubmitResult struct {
 	ID          string    `json:"id"`
-	OrderNo     *string   `json:"order_no"` // 提交时生成 WO{YYYYMMDD}{4位序号}
+	OrderNo     *string   `json:"order_no"` // 提交时生成 XNB-{YYYYMMDD}-{3位序号}
 	Status      string    `json:"status"`
 	SubmittedAt time.Time `json:"submitted_at"`
 }
@@ -316,10 +315,9 @@ func (s *OrderService) Options(ctx context.Context, userID string) (*OrderOption
 			problems := make([]ProblemOption, 0, len(p.Problems))
 			for _, q := range p.Problems {
 				problems = append(problems, ProblemOption{
-					ID:              q.ID,
-					Name:            q.Name,
-					Description:     q.Description,
-					CommonSolutions: unmarshalSolutions(q.CommonSolutions),
+					ID:          q.ID,
+					Name:        q.Name,
+					Description: q.Description,
 				})
 			}
 			props = append(props, PropertyOption{ID: p.ID, Name: p.Name, Problems: problems})
@@ -504,7 +502,7 @@ func (s *OrderService) Update(ctx context.Context, userID, orderID string, in Up
 // Submit 提交上报 (4.4)
 //
 // 严格校验必填项完整性与字典有效性后置为 reported; 提交时生成工单号
-// WO{YYYYMMDD}{4位序号} 并写入 submitted_at; 时间轴 submit。
+// XNB-{YYYYMMDD}-{3位序号} 并写入 submitted_at; 时间轴 submit。
 func (s *OrderService) Submit(ctx context.Context, userID, orderID string) (*SubmitResult, error) {
 	order, err := s.loadOwnedEditable(ctx, userID, orderID)
 	if err != nil {

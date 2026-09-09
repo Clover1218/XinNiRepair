@@ -190,6 +190,7 @@ onMounted(() => {
       </div>
     </el-card>
 
+    <!-- 统计入口已独立为侧边栏【统计】页 /stats（V1.3，审核员限本单位） -->
     <el-card v-if="activeEnterpriseId" shadow="never">
       <el-tabs :model-value="activeStatus" @tab-change="switchTab">
         <el-tab-pane

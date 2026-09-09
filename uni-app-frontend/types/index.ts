@@ -43,7 +43,6 @@ export interface ProblemOption {
   id: string
   name: string
   description?: string
-  common_solutions: string[]
 }
 
 export interface PropertyOption {
@@ -230,6 +229,23 @@ export interface AdminOrderListItem {
   available_actions?: AvailableAction[]
 }
 
+/** 维修员个人汇总（5.22 GET /admin/orders/stats/repairer-overview；处理工单页顶部统计卡） */
+export interface RepairerOverview {
+  /** 可接单存量（待接单；随企业筛选） */
+  pending_accept: number
+  /** 我的累计接单 */
+  my_accepted: number
+  /** 处理中（接单人为我） */
+  my_processing: number
+  /** 累计完工 */
+  my_completed: number
+  /** 今日接单 */
+  today_accepted: number
+  /** 今日完工 */
+  today_completed: number
+  updated_at: string
+}
+
 /** 管理端工单详情（GET /admin/orders/{id}） */
 export interface AdminOrderDetail extends OrderDetail {
   reporter?: { id: string; nickname: string; avatar_url: string }
@@ -293,3 +309,53 @@ export interface UploadResult {
   file_size?: number
   sort_order?: number
 }
+
+/* ==================== 工单汇总统计（GET /admin/orders/stats，V1.3 C20） ==================== */
+
+/** 状态分布项 */
+export interface OrderStatusStat {
+  status: string
+  label: string
+  count: number
+}
+
+/** 项目大类分布项 */
+export interface OrderCategoryStat {
+  category_id: string | null
+  category_name: string
+  count: number
+}
+
+/** 报修人排行项（按提交账号昵称） */
+export interface OrderReporterStat {
+  user_id: string
+  nickname: string
+  avatar_url: string | null
+  count: number
+}
+
+/** 今日概况（独立于时间范围；服务器本地日 0点~次日0点） */
+export interface OrderStatsToday {
+  pending_review: number
+  submitted_today: number
+  audited_today: number
+  rejected_today: number
+}
+
+/** 实际生效时间范围（start/end 为 null 表示不限） */
+export interface OrderStatsRange {
+  start: string | null
+  end: string | null
+}
+
+/** 工单汇总统计响应 */
+export interface OrderStats {
+  today: OrderStatsToday
+  total: number
+  range: OrderStatsRange
+  by_status: OrderStatusStat[]
+  by_category: OrderCategoryStat[]
+  top_reporters: OrderReporterStat[]
+  updated_at: string
+}
+

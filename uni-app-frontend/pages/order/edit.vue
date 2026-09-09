@@ -68,7 +68,7 @@
         :show-confirm-bar="false"
       />
 
-      <!-- 常见问题：点击以“追加”方式写入描述，不整体替换 -->
+      <!-- 常见问题：点击以“追加”方式写入问题名称，不整体替换 -->
       <view v-if="problemOptions.length > 0" class="issue-chips">
         <view
           v-for="p in problemOptions"
@@ -170,6 +170,19 @@
   <!-- 空 page-container：仅用于拦截左上角“<”返回手势，不包裹内容（避免 show=false 时主页面变空白） -->
   <page-container :show="containerShow" :overlay="false" @beforeleave="onContainerLeave"></page-container>
   <!-- #endif -->
+
+  <!-- 返回拦截：三按钮（保存 / 不保存 / 取消留页）。禁用遮罩关闭，仅按钮可关，避免误触丢失草稿 -->
+  <wd-popup v-model="showExitDialog" position="center" round :close-on-click-modal="false" custom-style="width: 86%;">
+    <view class="exit-popup">
+      <view class="exit-title">是否保存草稿</view>
+      <view class="exit-tip">当前草稿尚未保存，退出前可选择保存或丢弃。</view>
+      <view class="exit-actions">
+        <wd-button plain size="small" @click="onExitCancel">取消</wd-button>
+        <wd-button type="error" plain size="small" @click="onExitDiscard">不保存</wd-button>
+        <wd-button type="primary" size="small" :loading="saving" @click="onExitSave">保存</wd-button>
+      </view>
+    </view>
+  </wd-popup>
 </template>
 
 <script lang="ts">
@@ -198,8 +211,12 @@ export default defineComponent({
       containerShow: true,
       /** 加载完成后的表单快照，用于脏检查 */
       snapshot: null as null | { form: Record<string, unknown>; images: string[] },
-      /** 加载到的草稿是否为“空白草稿”（仅看用户手填核心内容，忽略企业/紧急程度等默认值或自动选择） */
-      wasEmptyOnLoad: false,
+      /** 草稿是否已“保存”过：重新打开已有内容的草稿=true；本会话点过“保存草稿”后=true；新建空草稿未保存=false */
+      hasSaved: false,
+      /** 返回拦截三按钮弹窗（保存 / 不保存 / 取消留页）显隐 */
+      showExitDialog: false,
+      /** 初始化未完成时用户已按返回（已拦截待命），加载完成后补弹询问 */
+      backPending: false,
       options: null as OptionsResult | null,
       enterpriseOptions: [] as { id: string; name: string }[],
       categoryOptions: [] as CategoryOption[],
@@ -279,9 +296,9 @@ export default defineComponent({
     // #ifdef MP-WEIXIN
     return false
     // #endif
-    // 退出流程中或草稿尚未加载完成时，不拦截，走默认返回
-    if (this.exiting || !this.orderId || !this.options) return false
-    this.promptExit()
+    // 退出流程中放行
+    if (this.exiting) return false
+    this.decideExit()
     return true
   },
   methods: {
@@ -299,8 +316,8 @@ export default defineComponent({
         this.generalProblems = ((opts as unknown as Record<string, unknown>).general_problems ||
           []) as ProblemOption[]
         this.applyDetail(detail)
-        // 基于后端原始草稿判断是否为空白草稿（在自动选企业之前，避免自动选择干扰判定）
-        this.wasEmptyOnLoad = this.isBlankDraft(detail)
+        // 基于后端原始草稿判断：已有内容的草稿视为“已保存”（重新打开时无须再问）；新建空草稿=false（在自动选企业之前，避免自动选择干扰判定）
+        this.hasSaved = !this.isBlankDraft(detail)
         // 仅一个可选单位时自动选中
         if (!this.form.enterprise_id && this.enterpriseOptions.length === 1) {
           this.form.enterprise_id = this.enterpriseOptions[0].id
@@ -308,8 +325,17 @@ export default defineComponent({
         // 快照/基线在自动选企业之后拍摄：自动选择不计入“用户改动”，避免单企业账号误判为已编辑
         this.captureSnapshot()
         this.loaded = true
+        // 初始化期间用户已按过返回（被拦截待命）：加载完成后补一次去留决策
+        if (this.backPending && !this.exiting) {
+          this.backPending = false
+          this.decideExit()
+        }
       } catch (e) {
         console.error('初始化失败', e)
+        // 加载失败：标记为“已保存”，返回时静默退出，避免对残缺表单误存/误删
+        this.loaded = true
+        this.hasSaved = true
+        this.backPending = false
       }
     },
     /** 回填草稿：contact 单字段按“尾部手机号”拆分为联系人/电话 */
@@ -347,9 +373,9 @@ export default defineComponent({
       if (!opt) return
       this.form.property_id = opt.id
     },
-    /** 常见问题：以“追加”方式写入描述（不整体替换，用户可继续编辑） */
+    /** 常见问题：以“追加”方式写入问题名称本身（不整体替换，用户可继续编辑） */
     onProblemPick(p: ProblemOption) {
-      const text = ((p.description || p.name || '') as string).trim()
+      const text = (p.name || '').trim()
       if (!text) return
       const cur = this.form.description.trim()
       this.form.description = cur ? `${cur} ${text}` : text
@@ -485,6 +511,9 @@ export default defineComponent({
       try {
         await http.put(`/orders/${this.orderId}`, this.buildPayload(false))
         uni.showToast({ title: '已保存草稿', icon: 'success' })
+        // 标记为已保存，并以当前内容重置快照基线（之后无改动则不再询问）
+        this.hasSaved = true
+        this.captureSnapshot()
         // 返回键场景下：保存后退出
         if (exitAfter === true) this.doExit()
       } catch (e) {
@@ -513,10 +542,17 @@ export default defineComponent({
         return false
       }
     },
-    /** 统一退出：标记 exiting 后返回上一页（再次触发返回拦截时放行，避免死循环） */
+    /** 统一退出：解除返回拦截后返回上一页（避免 navigateBack 被 page-container 拦下） */
     doExit() {
       this.exiting = true
+      this.containerShow = false
       setTimeout(() => uni.navigateBack(), 500)
+    },
+    /** 重新武装 page-container：先收起(已 false)再延迟一帧恢复，避免同帧 show 翻转不被微信识别导致后续返回不再拦截 */
+    rearmContainer() {
+      setTimeout(() => {
+        if (!this.exiting) this.containerShow = true
+      }, 80)
     },
     /** 加载完成后拍摄表单快照，供脏检查使用 */
     captureSnapshot() {
@@ -550,47 +586,57 @@ export default defineComponent({
       )
     },
     /**
-     * 返回拦截统一入口。
-     * - 未改动且加载时即为空白草稿 → 直接自动删除草稿并退出（不留孤儿空草稿，不弹窗）。
-     * - 未改动但已填好内容 → 直接保留退出（不弹窗）。
-     * - 有改动 → 弹窗询问：保存=走保存逻辑并退出；不保存=走删除逻辑并退出。
-     * - 弹窗中点遮罩关闭 → 保持停留（微信端需恢复 page-container 以继续拦截）。
+     * 返回去留决策（H5/App onBackPress 与小程序 @beforeleave 共用）。
+     * 规则（以“是否已保存”为核心）：
+     * - 已保存且未改动（含重新打开的已填草稿、或本会话点过“保存草稿”）→ 直接退出，不询问。
+     * - 初始化未完成 → 拦截但不弹（避免与 init 回填竞态），记 backPending，加载完成后自动补决策。
+     * - 其余（新建空草稿未保存 / 已填未保存 / 保存后又改了内容）→ 弹三按钮询问：
+     *   保存=走保存逻辑并退出；不保存=走删除逻辑并退出；取消=留在页面。
      */
-    async promptExit() {
-      // 未改动且为空白草稿：直接删除，无需询问
-      if (!this.isDirty() && this.wasEmptyOnLoad) {
-        await this.deleteDraft(true)
+    decideExit() {
+      // 初始化未完成：不静默退出、也不弹（表单尚未回填），待命后由 init 补弹
+      if (!this.loaded) {
+        this.backPending = true
+        this.rearmContainer()
         return
       }
-      // 未改动（已填好的草稿） → 保留草稿直接退出
-      if (!this.isDirty()) {
+      // 弹窗已打开：仅拦截本次返回手势（重武装），不重复弹窗，避免直接离开丢草稿
+      if (this.showExitDialog) {
+        this.rearmContainer()
+        return
+      }
+      // 已保存且未改动：直接退出，不询问
+      if (this.hasSaved && !this.isDirty()) {
         this.doExit()
         return
       }
-      const res = await uni.showModal({
-        title: '提示',
-        content: '是否保存该工单草稿？',
-        confirmText: '保存',
-        cancelText: '不保存'
-      })
-      if (res.confirm) {
-        await this.saveDraft(true)
-      } else if (res.cancel) {
-        await this.deleteDraft(true)
-      } else {
-        this.containerShow = true
-      }
+      this.showExitDialog = true
+      this.rearmContainer()
+    },
+    /** 返回弹窗：保存并退出（先解除拦截再执行，避免保存期间被返回打断） */
+    async onExitSave() {
+      this.showExitDialog = false
+      this.containerShow = false
+      await this.saveDraft(true)
+    },
+    /** 返回弹窗：不保存（删除草稿）并退出 */
+    async onExitDiscard() {
+      this.showExitDialog = false
+      this.containerShow = false
+      await this.deleteDraft(true)
+    },
+    /** 返回弹窗：取消，留在页面（恢复 page-container 拦截） */
+    onExitCancel() {
+      this.showExitDialog = false
+      this.containerShow = true
     },
     /** 微信小程序：左上角“<”返回键触发（page-container @beforeleave） */
     onContainerLeave() {
-      // 先消耗一次返回事件（微信要求：beforeleave 内须将 show 置 false）
+      // 无论去留都先收起容器，消费本次返回手势（微信要求 beforeleave 内将 show 置 false）
       this.containerShow = false
-      // 主动退出（提交/保存/删除后返回）或加载未完成：不再拦截
-      if (this.exiting || !this.loaded) {
-        this.doExit()
-        return
-      }
-      this.promptExit()
+      // 已在退出流程（保存/不保存/提交/删除后）：放行，等 navigateBack
+      if (this.exiting) return
+      this.decideExit()
     },
     validateForm(): string {
       const f = this.form
@@ -639,6 +685,7 @@ export default defineComponent({
         uni.showToast({ title: '提交成功', icon: 'success' })
         // V1.3：提交后返回我的工单列表（onShow 自动刷新）
         this.exiting = true
+        this.containerShow = false
         setTimeout(() => uni.navigateBack(), 600)
       } catch (e) {
         console.error('提交失败', e)
@@ -850,6 +897,39 @@ export default defineComponent({
 
     :deep(.wd-button) {
       width: 100%;
+      min-width: 0;
+    }
+  }
+}
+
+/* 返回拦截三按钮弹窗 */
+.exit-popup {
+  padding: 40rpx 32rpx 32rpx;
+  width: 100%;
+  box-sizing: border-box;
+
+  .exit-title {
+    font-size: 34rpx;
+    font-weight: 600;
+    color: #1a1a1a;
+    text-align: center;
+  }
+
+  .exit-tip {
+    margin-top: 16rpx;
+    font-size: 26rpx;
+    color: #8a8f99;
+    text-align: center;
+    line-height: 1.6;
+  }
+
+  .exit-actions {
+    display: flex;
+    gap: 20rpx;
+    margin-top: 40rpx;
+
+    :deep(.wd-button) {
+      flex: 1 1 0;
       min-width: 0;
     }
   }

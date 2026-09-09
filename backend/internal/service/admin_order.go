@@ -63,6 +63,9 @@ type AdminOrderItem struct {
 	Room    string      `json:"room"`
 	Contact string      `json:"contact"`
 	Images  []ImageItem `json:"images"`
+	// V1.4: 列表展示维修操作内容与金额（完工/对账字段；未完工为空/0）
+	RepairContent string  `json:"repair_content"`
+	Amount        float64 `json:"amount"`
 	// 列表卡片按权限就地操作所需的可执行动作（与详情页一致，按状态生成）
 	AvailableActions []AdminAction `json:"available_actions"`
 }
@@ -217,6 +220,11 @@ func (s *AdminOrderService) ListOrders(ctx context.Context, op Operator, f repos
 		}
 	}
 
+	// 维修业务员（非超管）查看「处理中」时只能看到自己接的工单（repairer_id = 自己）
+	if op.IsPlainRepairer() && statusSliceContains(f.Status, string(model.OrderProcessing)) {
+		f.RepairerID = op.UserID
+	}
+
 	orders, total, err := s.orders.ListForAdmin(ctx, f, (page-1)*pageSize, pageSize)
 	if err != nil {
 		return nil, s.dbErr("list orders for admin failed", err)
@@ -239,27 +247,29 @@ func (s *AdminOrderService) ListOrders(ctx context.Context, op Operator, f repos
 	list := make([]AdminOrderItem, 0, len(orders))
 	for _, o := range orders {
 		list = append(list, AdminOrderItem{
-			ID:             o.ID,
-			OrderNo:        o.OrderNo,
-			Reporter:       AdminReporter{ID: o.Reporter.ID, Nickname: o.Reporter.Nickname, AvatarURL: o.Reporter.AvatarUrl},
-			EnterpriseID:   enterpriseIDStr(o.EnterpriseID),
-			EnterpriseName: o.Enterprise.Name,
-			CategoryID:     nstr(o.CategoryID),
-			CategoryName:   o.CategoryName,
-			PropertyID:     nstr(o.PropertyID),
-			PropertyName:   o.PropertyName,
-			Description:    o.Description,
-			Urgency:        o.Urgency,
-			UrgencyLabel:   urgencyLabels[o.Urgency],
-			Status:         o.Status,
-			StatusLabel:    statusLabels[o.Status],
-			ImageCount:     imgCounts[o.ID],
-			SubmittedAt:    o.SubmittedAt,
-			CreatedAt:      o.CreatedAt,
-			Room:           o.Room,
-			Contact:        o.Contact,
-			Images:         buildImageItems(imgList[o.ID]),
-			AvailableActions: adminAvailableActions(o.Status),
+			ID:               o.ID,
+			OrderNo:          o.OrderNo,
+			Reporter:         AdminReporter{ID: o.Reporter.ID, Nickname: o.Reporter.Nickname, AvatarURL: o.Reporter.AvatarUrl},
+			EnterpriseID:     enterpriseIDStr(o.EnterpriseID),
+			EnterpriseName:   o.Enterprise.Name,
+			CategoryID:       nstr(o.CategoryID),
+			CategoryName:     o.CategoryName,
+			PropertyID:       nstr(o.PropertyID),
+			PropertyName:     o.PropertyName,
+			Description:      o.Description,
+			Urgency:          o.Urgency,
+			UrgencyLabel:     urgencyLabels[o.Urgency],
+			Status:           o.Status,
+			StatusLabel:      statusLabels[o.Status],
+			ImageCount:       imgCounts[o.ID],
+			SubmittedAt:      o.SubmittedAt,
+			CreatedAt:        o.CreatedAt,
+			Room:             o.Room,
+			Contact:          o.Contact,
+			Images:           buildImageItems(imgList[o.ID]),
+			RepairContent:    o.RepairContent,
+			Amount:           o.Amount,
+			AvailableActions: filterOwnerActions(op, o.RepairerID, adminAvailableActions(o.Status)),
 		})
 	}
 
@@ -273,6 +283,398 @@ func (s *AdminOrderService) ListOrders(ctx context.Context, op Operator, f repos
 		Page:       page,
 		PageSize:   pageSize,
 		TotalPages: totalPages,
+	}, nil
+}
+
+// ── 5.17 本单位工单汇总统计 (V1.3 C20) ──
+
+// StatsRequest 汇总统计查询参数 (5.17)
+type StatsRequest struct {
+	EnterpriseID string
+	Start        *time.Time // 含；nil=不限
+	End          *time.Time // 不含（开区间）；nil=至今
+}
+
+// StatusStat 状态分布项
+type StatusStat struct {
+	Status string `json:"status"`
+	Label  string `json:"label"`
+	Count  int64  `json:"count"`
+}
+
+// CategoryStat 项目大类分布项
+type CategoryStat struct {
+	CategoryID   string `json:"category_id"`
+	CategoryName string `json:"category_name"`
+	Count        int64  `json:"count"`
+}
+
+// ReporterStat 报修人排行项（按提交账号昵称；C21 起含真实头像）
+type ReporterStat struct {
+	UserID    string `json:"user_id"`
+	Nickname  string `json:"nickname"`
+	AvatarURL string `json:"avatar_url"`
+	Count     int64  `json:"count"`
+}
+
+// OrderToday 今日概况（5.17 data.today，独立于 start/end）
+type OrderToday struct {
+	PendingReview  int64 `json:"pending_review"`
+	SubmittedToday int64 `json:"submitted_today"`
+	AuditedToday   int64 `json:"audited_today"`
+	RejectedToday  int64 `json:"rejected_today"`
+}
+
+// StatsRange 实际生效的时间范围
+type StatsRange struct {
+	Start *time.Time `json:"start"`
+	End   *time.Time `json:"end"`
+}
+
+// ReporterOptionView 报修人下拉选项（5.1 列表筛选配套）
+type ReporterOptionView struct {
+	UserID    string `json:"id"`
+	Nickname  string `json:"nickname"`
+	AvatarURL string `json:"avatar_url"`
+}
+
+// ReporterOptionsResponse 报修人候选响应
+type ReporterOptionsResponse struct {
+	List []ReporterOptionView `json:"list"`
+}
+
+// ListReporterOptions 报修人候选（按企业域 + 昵称关键字；审核员须限定本单位）。
+func (s *AdminOrderService) ListReporterOptions(ctx context.Context, op Operator, enterpriseID, keyword string) (*ReporterOptionsResponse, error) {
+	if !op.IsStoreStaff() {
+		if enterpriseID == "" {
+			return nil, apperrors.ErrWrongEnterprise.WithMessage("单位审核员需指定 enterprise_id 查询本单位报修人")
+		}
+		if err := s.access.CanManageEnterprise(ctx, enterpriseID, op.UserID, op.Role); err != nil {
+			return nil, err
+		}
+	}
+	rows, err := s.orders.ReporterOptions(ctx, enterpriseID, keyword, 200)
+	if err != nil {
+		return nil, s.dbErr("list reporter options failed", err)
+	}
+	list := make([]ReporterOptionView, 0, len(rows))
+	for _, r := range rows {
+		list = append(list, ReporterOptionView{UserID: r.UserID, Nickname: r.Nickname, AvatarURL: r.AvatarURL})
+	}
+	return &ReporterOptionsResponse{List: list}, nil
+}
+
+// OrderStats 工单汇总统计响应 (5.17)
+type OrderStats struct {
+	Today        OrderToday     `json:"today"`
+	Total        int64          `json:"total"`
+	Range        StatsRange     `json:"range"`
+	ByStatus     []StatusStat   `json:"by_status"`
+	ByCategory   []CategoryStat `json:"by_category"`
+	TopReporters []ReporterStat `json:"top_reporters"`
+	UpdatedAt    time.Time      `json:"updated_at"`
+}
+
+// EnterpriseStatsRow 企业维度分组聚合项 (5.18)
+type EnterpriseStatsRow struct {
+	EnterpriseID   string       `json:"enterprise_id"`
+	EnterpriseName string       `json:"enterprise_name"`
+	Total          int64        `json:"total"`
+	ByStatus       []StatusStat `json:"by_status"` // 六态补零（与 5.17 一致）
+}
+
+// EnterpriseStats 企业维度分组聚合响应 (5.18)
+type EnterpriseStats struct {
+	Range     StatsRange           `json:"range"`
+	List      []EnterpriseStatsRow `json:"list"`
+	UpdatedAt time.Time            `json:"updated_at"`
+}
+
+// RepairerStatsRow 维修员业绩聚合项 (5.19)
+type RepairerStatsRow struct {
+	RepairerID   string `json:"repairer_id"`
+	RepairerName string `json:"repairer_name"`
+	Assigned     int64  `json:"assigned"`  // 接单/处理量：待接单/处理中/已完工（repairer_id 非空）
+	Completed    int64  `json:"completed"` // 完工量：completed_at 非空
+}
+
+// RepairerStats 维修员业绩聚合响应 (5.19)
+type RepairerStats struct {
+	Range     StatsRange         `json:"range"`
+	List      []RepairerStatsRow `json:"list"`
+	UpdatedAt time.Time          `json:"updated_at"`
+}
+
+// OrderMetrics 区间运营指标响应 (5.20)
+type OrderMetrics struct {
+	PendingReview int64      `json:"pending_review"` // 当前待审核存量（reported，不计时间）
+	Submitted     int64      `json:"submitted"`      // 区间上报
+	Audited       int64      `json:"audited"`        // 区间审核通过
+	Rejected      int64      `json:"rejected"`       // 区间退回
+	Range         StatsRange `json:"range"`
+	UpdatedAt     time.Time  `json:"updated_at"`
+}
+
+// RepairerSummaryRowView 维修员区间汇总项 (5.21)
+type RepairerSummaryRowView struct {
+	RepairerID   string `json:"repairer_id"`
+	RepairerName string `json:"repairer_name"`
+	Accepted     int64  `json:"accepted"`  // 区间接单（accepted_at∈窗口）
+	Completed    int64  `json:"completed"` // 区间完工（completed_at∈窗口）
+}
+
+// RepairerSummary 维修员区间汇总响应 (5.21)
+type RepairerSummary struct {
+	GlobalPendingAccept int64                    `json:"global_pending_accept"` // 全局待接单存量（不受所选业务员影响）
+	List                []RepairerSummaryRowView `json:"list"`
+	Range               StatsRange               `json:"range"`
+	UpdatedAt           time.Time                `json:"updated_at"`
+}
+
+// RepairerOverview 维修员个人汇总响应 (5.22，小程序「处理工单」统计卡：累计 + 今日)
+type RepairerOverview struct {
+	PendingAccept  int64     `json:"pending_accept"`  // 可接单存量
+	MyAccepted     int64     `json:"my_accepted"`     // 我的累计接单
+	MyProcessing   int64     `json:"my_processing"`   // 处理中
+	MyCompleted    int64     `json:"my_completed"`    // 累计完工
+	TodayAccepted  int64     `json:"today_accepted"`  // 今日接单
+	TodayCompleted int64     `json:"today_completed"` // 今日完工
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+// statsStatusOrder 状态分布固定展示顺序（零填充用）
+var statsStatusOrder = []string{
+	string(model.OrderReported),
+	string(model.OrderPendingAccept),
+	string(model.OrderProcessing),
+	string(model.OrderCompleted),
+	string(model.OrderCancelled),
+	string(model.OrderRejected),
+}
+
+// Stats 工单汇总统计 (5.17)。
+//
+// 鉴权: 店方角色 (role>=1) 可不传 enterprise_id（全部可见单位）或指定单单位;
+// 单位审核员 (role=0 + membership.role=1) 必须传 enterprise_id 且为其担任审核员的单位。
+func (s *AdminOrderService) Stats(ctx context.Context, op Operator, req StatsRequest) (*OrderStats, error) {
+	if req.Start != nil && req.End != nil && req.End.Before(*req.Start) {
+		return nil, apperrors.ErrInvalidParam.WithMessage("end 不能早于 start")
+	}
+	if !op.IsStoreStaff() {
+		if req.EnterpriseID == "" {
+			return nil, apperrors.ErrWrongEnterprise.WithMessage("单位审核员需指定 enterprise_id 并仅可统计本单位工单")
+		}
+		if err := s.access.CanManageEnterprise(ctx, req.EnterpriseID, op.UserID, op.Role); err != nil {
+			return nil, err
+		}
+	}
+
+	agg, err := s.orders.StatsForAdmin(ctx, req.EnterpriseID, req.Start, req.End)
+	if err != nil {
+		return nil, s.dbErr("stats for admin failed", err)
+	}
+
+	countByStatus := make(map[string]int64, len(agg.ByStatus))
+	for _, st := range agg.ByStatus {
+		countByStatus[st.Status] = st.Count
+	}
+	byStatus := make([]StatusStat, 0, len(statsStatusOrder))
+	for _, code := range statsStatusOrder {
+		byStatus = append(byStatus, StatusStat{Status: code, Label: statusLabels[code], Count: countByStatus[code]})
+	}
+
+	byCategory := make([]CategoryStat, 0, len(agg.ByCategory))
+	for _, c := range agg.ByCategory {
+		byCategory = append(byCategory, CategoryStat{CategoryID: c.CategoryID, CategoryName: c.CategoryName, Count: c.Count})
+	}
+
+	topReporters := make([]ReporterStat, 0, len(agg.TopReporters))
+	for _, r := range agg.TopReporters {
+		topReporters = append(topReporters, ReporterStat{UserID: r.UserID, Nickname: r.Nickname, AvatarURL: r.AvatarURL, Count: r.Count})
+	}
+
+	// 今日概况（独立于 start/end，按服务器本地日 0 点 ~ 次日 0 点）
+	now := time.Now()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	dayEnd := dayStart.Add(24 * time.Hour)
+	todayAgg, err := s.orders.StatsToday(ctx, req.EnterpriseID, dayStart, dayEnd)
+	if err != nil {
+		return nil, s.dbErr("stats today failed", err)
+	}
+
+	return &OrderStats{
+		Today: OrderToday{
+			PendingReview:  todayAgg.PendingReview,
+			SubmittedToday: todayAgg.SubmittedToday,
+			AuditedToday:   todayAgg.AuditedToday,
+			RejectedToday:  todayAgg.RejectedToday,
+		},
+		Total:        agg.Total,
+		Range:        StatsRange{Start: req.Start, End: req.End},
+		ByStatus:     byStatus,
+		ByCategory:   byCategory,
+		TopReporters: topReporters,
+		UpdatedAt:    now,
+	}, nil
+}
+
+// validateStatsRange 校验统计时间区间合法性
+func validateStatsRange(req StatsRequest) error {
+	if req.Start != nil && req.End != nil && req.End.Before(*req.Start) {
+		return apperrors.ErrInvalidParam.WithMessage("end 不能早于 start")
+	}
+	return nil
+}
+
+// StatsByEnterprise 企业维度分组聚合 (5.18)。仅店方/超管（单位审核员不可见）。
+// StatsMetrics 5.20 区间运营指标。鉴权同 5.17：店方可全域或指定企业；单位审核员必带本单位。
+func (s *AdminOrderService) StatsMetrics(ctx context.Context, op Operator, req StatsRequest) (*OrderMetrics, error) {
+	if err := validateStatsRange(req); err != nil {
+		return nil, err
+	}
+	if !op.IsStoreStaff() {
+		if req.EnterpriseID == "" {
+			return nil, apperrors.ErrWrongEnterprise.WithMessage("单位审核员需指定 enterprise_id 并仅可统计本单位工单")
+		}
+		if err := s.access.CanManageEnterprise(ctx, req.EnterpriseID, op.UserID, op.Role); err != nil {
+			return nil, err
+		}
+	}
+	agg, err := s.orders.StatsMetrics(ctx, req.EnterpriseID, req.Start, req.End)
+	if err != nil {
+		return nil, s.dbErr("stats metrics failed", err)
+	}
+	return &OrderMetrics{
+		PendingReview: agg.PendingReview,
+		Submitted:     agg.Submitted,
+		Audited:       agg.Audited,
+		Rejected:      agg.Rejected,
+		Range:         StatsRange{Start: req.Start, End: req.End},
+		UpdatedAt:     time.Now(),
+	}, nil
+}
+
+// StatsRepairerSummary 5.21 维修员区间汇总。仅店方/超管。
+func (s *AdminOrderService) StatsRepairerSummary(ctx context.Context, op Operator, repairerID string, req StatsRequest) (*RepairerSummary, error) {
+	if !op.IsStoreStaff() {
+		return nil, apperrors.ErrForbidden.WithMessage("业务员统计仅维修业务员/超级管理员可见")
+	}
+	// 越权防护: 维修业务员(非超管)仅可查看本人区间汇总, 忽略传入的 repairer_id
+	if op.IsPlainRepairer() {
+		repairerID = op.UserID
+	}
+	if err := validateStatsRange(req); err != nil {
+		return nil, err
+	}
+	agg, err := s.orders.StatsRepairerSummary(ctx, repairerID, req.Start, req.End)
+	if err != nil {
+		return nil, s.dbErr("stats repairer summary failed", err)
+	}
+	list := make([]RepairerSummaryRowView, 0, len(agg.Rows))
+	for _, row := range agg.Rows {
+		list = append(list, RepairerSummaryRowView{
+			RepairerID:   row.RepairerID,
+			RepairerName: row.RepairerName,
+			Accepted:     row.Accepted,
+			Completed:    row.Completed,
+		})
+	}
+	return &RepairerSummary{
+		GlobalPendingAccept: agg.GlobalPendingAccept,
+		List:                list,
+		Range:               StatsRange{Start: req.Start, End: req.End},
+		UpdatedAt:           time.Now(),
+	}, nil
+}
+
+// StatsRepairerOverview 5.22 维修员个人汇总（小程序「处理工单」统计卡：累计 + 今日双行）。
+// 仅店方/超管；repairerID 为空时统计当前操作者本人；enterpriseID 空串=全部企业域。
+func (s *AdminOrderService) StatsRepairerOverview(ctx context.Context, op Operator, repairerID, enterpriseID string) (*RepairerOverview, error) {
+	if !op.IsStoreStaff() {
+		return nil, apperrors.ErrForbidden.WithMessage("仅维修业务员/超级管理员可查看处理统计")
+	}
+	// 越权防护: 维修业务员(非超管)仅可查看本人汇总, 忽略传入的 repairer_id
+	if op.IsPlainRepairer() || repairerID == "" {
+		repairerID = op.UserID
+	}
+	now := time.Now()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	dayEnd := dayStart.Add(24 * time.Hour)
+	agg, err := s.orders.StatsRepairerOverview(ctx, repairerID, enterpriseID, dayStart, dayEnd)
+	if err != nil {
+		return nil, s.dbErr("stats repairer overview failed", err)
+	}
+	return &RepairerOverview{
+		PendingAccept:  agg.PendingAccept,
+		MyAccepted:     agg.MyAccepted,
+		MyProcessing:   agg.MyProcessing,
+		MyCompleted:    agg.MyCompleted,
+		TodayAccepted:  agg.TodayAccepted,
+		TodayCompleted: agg.TodayCompleted,
+		UpdatedAt:      now,
+	}, nil
+}
+
+func (s *AdminOrderService) StatsByEnterprise(ctx context.Context, op Operator, req StatsRequest) (*EnterpriseStats, error) {
+	if !op.IsStoreStaff() {
+		return nil, apperrors.ErrForbidden.WithMessage("企业对比仅维修业务员/超级管理员可见")
+	}
+	if err := validateStatsRange(req); err != nil {
+		return nil, err
+	}
+	rows, err := s.orders.StatsByEnterprise(ctx, req.EnterpriseID, req.Start, req.End)
+	if err != nil {
+		return nil, s.dbErr("stats by enterprise failed", err)
+	}
+	list := make([]EnterpriseStatsRow, 0, len(rows))
+	for _, row := range rows {
+		countByStatus := make(map[string]int64, len(row.ByStatus))
+		for _, st := range row.ByStatus {
+			countByStatus[st.Status] = st.Count
+		}
+		byStatus := make([]StatusStat, 0, len(statsStatusOrder))
+		for _, code := range statsStatusOrder {
+			byStatus = append(byStatus, StatusStat{Status: code, Label: statusLabels[code], Count: countByStatus[code]})
+		}
+		list = append(list, EnterpriseStatsRow{
+			EnterpriseID:   row.EnterpriseID,
+			EnterpriseName: row.EnterpriseName,
+			Total:          row.Total,
+			ByStatus:       byStatus,
+		})
+	}
+	return &EnterpriseStats{
+		Range:     StatsRange{Start: req.Start, End: req.End},
+		List:      list,
+		UpdatedAt: time.Now(),
+	}, nil
+}
+
+// StatsByRepairer 维修员维度聚合 (5.19)。仅店方/超管（单位审核员不可见）。
+func (s *AdminOrderService) StatsByRepairer(ctx context.Context, op Operator, req StatsRequest) (*RepairerStats, error) {
+	if !op.IsStoreStaff() {
+		return nil, apperrors.ErrForbidden.WithMessage("维修员业绩仅维修业务员/超级管理员可见")
+	}
+	if err := validateStatsRange(req); err != nil {
+		return nil, err
+	}
+	rows, err := s.orders.StatsByRepairer(ctx, req.EnterpriseID, req.Start, req.End)
+	if err != nil {
+		return nil, s.dbErr("stats by repairer failed", err)
+	}
+	list := make([]RepairerStatsRow, 0, len(rows))
+	for _, row := range rows {
+		list = append(list, RepairerStatsRow{
+			RepairerID:   row.RepairerID,
+			RepairerName: row.RepairerName,
+			Assigned:     row.Assigned,
+			Completed:    row.Completed,
+		})
+	}
+	return &RepairerStats{
+		Range:     StatsRange{Start: req.Start, End: req.End},
+		List:      list,
+		UpdatedAt: time.Now(),
 	}, nil
 }
 
@@ -331,7 +733,7 @@ func (s *AdminOrderService) Detail(ctx context.Context, op Operator, orderID str
 		Images:           buildImageItems(images),
 		Receipts:         buildImageItems(receipts),
 		Timeline:         buildAdminTimelineItems(timelines),
-		AvailableActions: adminAvailableActions(order.Status),
+		AvailableActions: filterOwnerActions(op, order.RepairerID, adminAvailableActions(order.Status)),
 		CreatedAt:        order.CreatedAt,
 		SubmittedAt:      order.SubmittedAt,
 		AuditedAt:        order.AuditedAt,
@@ -436,6 +838,10 @@ func (s *AdminOrderService) Reject(ctx context.Context, op Operator, orderID, re
 		if err := s.access.StaffOnly(op); err != nil {
 			return apperrors.ErrNotAdmin.WithMessage("仅维修业务员/超级管理员可退回待接单或处理中的工单")
 		}
+		// 归属校验：接单后的工单仅接单人本人或超级管理员可退回
+		if err := ensureOrderOwner(op, order); err != nil {
+			return err
+		}
 	default:
 		return apperrors.ErrOrderCannotEdit.WithMessage("仅 reported/pending_accept/processing 状态的工单可退回")
 	}
@@ -510,6 +916,10 @@ func (s *AdminOrderService) Complete(ctx context.Context, op Operator, orderID, 
 	if order.Status != string(model.OrderProcessing) {
 		return apperrors.ErrOrderCannotEdit.WithMessage("仅 processing 状态的工单可完工")
 	}
+	// 归属校验：仅接单人本人或超级管理员可完工
+	if err := ensureOrderOwner(op, order); err != nil {
+		return err
+	}
 
 	now := time.Now()
 	from := order.Status
@@ -550,6 +960,10 @@ func (s *AdminOrderService) UpdateFinance(ctx context.Context, op Operator, orde
 	}
 	if order.Status != string(model.OrderCompleted) {
 		return apperrors.ErrOrderCannotEdit.WithMessage("仅 completed 状态的工单可修改对账信息")
+	}
+	// 归属校验：仅接单人本人或超级管理员可修改对账
+	if err := ensureOrderOwner(op, order); err != nil {
+		return err
 	}
 	if in.Quantity == nil && in.UnitPrice == nil && in.RepairContent == nil && in.Metadata == nil {
 		return apperrors.ErrInvalidParam.WithMessage("至少需要传入一个字段")
@@ -606,6 +1020,10 @@ func (s *AdminOrderService) Reopen(ctx context.Context, op Operator, orderID, re
 	if order.Status != string(model.OrderCompleted) {
 		return apperrors.ErrOrderCannotEdit.WithMessage("仅 completed 状态的工单可重新打开")
 	}
+	// 归属校验：仅接单人本人或超级管理员可重新打开
+	if err := ensureOrderOwner(op, order); err != nil {
+		return err
+	}
 
 	from := order.Status
 	order.Status = string(model.OrderProcessing)
@@ -640,6 +1058,10 @@ func (s *AdminOrderService) UploadReceipt(ctx context.Context, op Operator, orde
 	case string(model.OrderProcessing), string(model.OrderCompleted):
 	default:
 		return nil, apperrors.ErrOrderCannotEdit.WithMessage("仅 processing/completed 状态的工单可上传收据")
+	}
+	// 归属校验：仅接单人本人或超级管理员可上传该工单收据
+	if err := ensureOrderOwner(op, order); err != nil {
+		return nil, err
 	}
 
 	if size <= 0 || size > maxImageSize {
@@ -828,22 +1250,69 @@ func (s *AdminOrderService) appendAdminTimeline(ctx context.Context, order *mode
 }
 
 // adminAvailableActions 按状态返回管理端可执行动作 (5.2)
+// ownerOnlyActions 仅接单人本人（或超级管理员）可执行的动作；
+// 维修业务员（role=1，非超管）面对"他人接单"的工单时，这些动作从 available_actions 中移除，避免前端展示不可用按钮。
+var ownerOnlyActions = map[string]bool{
+	string(model.ActionComplete):      true,
+	string(model.ActionUpdateFinance): true,
+	string(model.ActionReopen):        true,
+	string(model.ActionUploadReceipt): true,
+	string(model.ActionReject):        true,
+}
+
+// statusSliceContains 状态筛选列表是否包含指定状态
+func statusSliceContains(list []string, target string) bool {
+	for _, s := range list {
+		if s == target {
+			return true
+		}
+	}
+	return false
+}
+
+// filterOwnerActions 维修业务员（非超管）对他人接单的工单不展示"接单后动作"
+func filterOwnerActions(op Operator, repairerID *string, actions []AdminAction) []AdminAction {
+	if !op.IsPlainRepairer() || repairerID == nil || *repairerID == op.UserID {
+		return actions
+	}
+	out := make([]AdminAction, 0, len(actions))
+	for _, a := range actions {
+		if ownerOnlyActions[a.Action] {
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// ensureOrderOwner 校验接单人归属：超级管理员不受限；
+// 已接单（repairer_id 非空）的工单，维修业务员仅可操作自己接的单（未接单时无归属，不拦截）。
+func ensureOrderOwner(op Operator, order *model.RepairOrder) error {
+	if op.IsSuperAdmin() || order.RepairerID == nil {
+		return nil
+	}
+	if *order.RepairerID != op.UserID {
+		return apperrors.ErrForbidden.WithMessage("仅接单的维修业务员本人或超级管理员可操作该工单")
+	}
+	return nil
+}
+
 func adminAvailableActions(status string) []AdminAction {
 	switch model.OrderStatus(status) {
 	case model.OrderReported:
 		return []AdminAction{
-		{Action: string(model.ActionAudit), Label: "审核通过", ToStatus: string(model.OrderPendingAccept), ConfirmMessage: "审核通过后工单进入待接单并上报维修业务员，确认？"},
-		{Action: string(model.ActionReject), Label: "退回", ToStatus: string(model.OrderRejected), RequireReason: true, ReasonMinLength: 10, ConfirmMessage: "退回后工单进入「已退回」，报修人可修改重新提交，确认退回？"},
+			{Action: string(model.ActionAudit), Label: "审核通过", ToStatus: string(model.OrderPendingAccept), ConfirmMessage: "审核通过后工单进入待接单并上报维修业务员，确认？"},
+			{Action: string(model.ActionReject), Label: "退回", ToStatus: string(model.OrderRejected), RequireReason: true, ReasonMinLength: 10, ConfirmMessage: "退回后工单进入「已退回」，报修人可修改重新提交，确认退回？"},
 		}
 	case model.OrderPendingAccept:
 		return []AdminAction{
-		{Action: string(model.ActionAccept), Label: "接单维修", ToStatus: string(model.OrderProcessing), ConfirmMessage: "确认接单维修该工单？"},
-		{Action: string(model.ActionReject), Label: "退回", ToStatus: string(model.OrderRejected), RequireReason: true, ReasonMinLength: 10, ConfirmMessage: "退回后工单进入「已退回」，报修人可修改重新提交，确认退回？"},
+			{Action: string(model.ActionAccept), Label: "接单维修", ToStatus: string(model.OrderProcessing), ConfirmMessage: "确认接单维修该工单？"},
+			{Action: string(model.ActionReject), Label: "退回", ToStatus: string(model.OrderRejected), RequireReason: true, ReasonMinLength: 10, ConfirmMessage: "退回后工单进入「已退回」，报修人可修改重新提交，确认退回？"},
 		}
 	case model.OrderProcessing:
 		return []AdminAction{
-		{Action: string(model.ActionComplete), Label: "完工", ToStatus: string(model.OrderCompleted), ConfirmMessage: "确认完工该工单？"},
-		{Action: string(model.ActionReject), Label: "退回", ToStatus: string(model.OrderRejected), RequireReason: true, ReasonMinLength: 10, ConfirmMessage: "退回后工单进入「已退回」，报修人可修改重新提交，确认退回？"},
+			{Action: string(model.ActionComplete), Label: "完工", ToStatus: string(model.OrderCompleted), ConfirmMessage: "确认完工该工单？"},
+			{Action: string(model.ActionReject), Label: "退回", ToStatus: string(model.OrderRejected), RequireReason: true, ReasonMinLength: 10, ConfirmMessage: "退回后工单进入「已退回」，报修人可修改重新提交，确认退回？"},
 		}
 	case model.OrderCompleted:
 		return []AdminAction{

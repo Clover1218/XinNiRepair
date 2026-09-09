@@ -65,6 +65,7 @@ func (h *AdminHandler) ListOrders(c *gin.Context) {
 		Keyword:      c.Query("keyword"),
 		EnterpriseID: c.Query("enterprise_id"), // 企业精确筛选 (单位审核员必传且限定本单位)
 		CategoryID:   c.Query("category_id"),   // 项目大类精确筛选
+		PropertyID:   c.Query("property_id"),   // 项目属性(问题类型)精确筛选
 		DateFrom:     dateFrom,
 		DateTo:       dateTo,
 		ReporterID:   c.Query("reporter_id"),
@@ -78,6 +79,145 @@ func (h *AdminHandler) ListOrders(c *gin.Context) {
 		return
 	}
 	response.OK(c, result)
+}
+
+// statsWindowParams 解析统计类接口的 enterprise_id/start/end；
+// end 为纯日期 YYYY-MM-DD 时视为"该日整天（含当天）"：转次日 00:00 作为开区间上界。
+func statsWindowParams(c *gin.Context) (service.StatsRequest, error) {
+	start, err := parseTimeParam(c.Query("start"))
+	if err != nil {
+		return service.StatsRequest{}, err
+	}
+	end, err := parseTimeParam(c.Query("end"))
+	if err != nil {
+		return service.StatsRequest{}, err
+	}
+	if raw := c.Query("end"); end != nil && len(raw) == len("2006-01-02") {
+		t := end.Add(24 * time.Hour)
+		end = &t
+	}
+	return service.StatsRequest{
+		EnterpriseID: c.Query("enterprise_id"),
+		Start:        start,
+		End:          end,
+	}, nil
+}
+
+// OrderStats 工单汇总统计 (GET /admin/orders/stats, 5.17)
+func (h *AdminHandler) OrderStats(c *gin.Context) {
+	req, err := statsWindowParams(c)
+	if err != nil {
+		h.logger.Warn("OrderStats Admin: invalid params", zap.Error(err))
+		response.FailError(c, err)
+		return
+	}
+	result, err := h.orders.Stats(c.Request.Context(), opOf(c), req)
+	if err != nil {
+		h.logger.Error("OrderStats Admin: service error", zap.Error(err), zap.String("user_id", c.GetString("user_id")))
+		response.FailError(c, err)
+		return
+	}
+	response.OK(c, result)
+}
+
+// OrderStatsByEnterprise 企业维度分组聚合 (GET /admin/orders/stats/by-enterprise, 5.18; 仅店方/超管)
+func (h *AdminHandler) OrderStatsByEnterprise(c *gin.Context) {
+	req, err := statsWindowParams(c)
+	if err != nil {
+		h.logger.Warn("OrderStatsByEnterprise Admin: invalid params", zap.Error(err))
+		response.FailError(c, err)
+		return
+	}
+	result, err := h.orders.StatsByEnterprise(c.Request.Context(), opOf(c), req)
+	if err != nil {
+		h.logger.Error("OrderStatsByEnterprise Admin: service error", zap.Error(err), zap.String("user_id", c.GetString("user_id")))
+		response.FailError(c, err)
+		return
+	}
+	response.OK(c, result)
+}
+
+// OrderStatsByRepairer 维修员维度聚合 (GET /admin/orders/stats/by-repairer, 5.19; 仅店方/超管)
+func (h *AdminHandler) OrderStatsByRepairer(c *gin.Context) {
+	req, err := statsWindowParams(c)
+	if err != nil {
+		h.logger.Warn("OrderStatsByRepairer Admin: invalid params", zap.Error(err))
+		response.FailError(c, err)
+		return
+	}
+	result, err := h.orders.StatsByRepairer(c.Request.Context(), opOf(c), req)
+	if err != nil {
+		h.logger.Error("OrderStatsByRepairer Admin: service error", zap.Error(err), zap.String("user_id", c.GetString("user_id")))
+		response.FailError(c, err)
+		return
+	}
+	response.OK(c, result)
+}
+
+// StatsRepairerOverview 维修员个人汇总 (GET /admin/orders/stats/repairer-overview, 5.22; 小程序处理工单统计卡)
+func (h *AdminHandler) StatsRepairerOverview(c *gin.Context) {
+	result, err := h.orders.StatsRepairerOverview(
+		c.Request.Context(),
+		opOf(c),
+		c.Query("repairer_id"),
+		c.Query("enterprise_id"),
+	)
+	if err != nil {
+		h.logger.Error("StatsRepairerOverview Admin: service error", zap.Error(err), zap.String("user_id", c.GetString("user_id")))
+		response.FailError(c, err)
+		return
+	}
+	response.OK(c, result)
+}
+
+// StatsMetrics 区间运营指标 (GET /admin/orders/stats/metrics, 5.20；店方全域/审核员限本单位)
+func (h *AdminHandler) StatsMetrics(c *gin.Context) {
+	req, err := statsWindowParams(c)
+	if err != nil {
+		h.logger.Warn("StatsMetrics Admin: invalid params", zap.Error(err))
+		response.FailError(c, err)
+		return
+	}
+	result, err := h.orders.StatsMetrics(c.Request.Context(), opOf(c), req)
+	if err != nil {
+		h.logger.Error("StatsMetrics Admin: service error", zap.Error(err), zap.String("user_id", c.GetString("user_id")))
+		response.FailError(c, err)
+		return
+	}
+	response.OK(c, result)
+}
+
+// StatsRepairerSummary 维修员区间汇总 (GET /admin/orders/stats/repairer-summary, 5.21; 仅店方/超管)
+func (h *AdminHandler) StatsRepairerSummary(c *gin.Context) {
+	req, err := statsWindowParams(c)
+	if err != nil {
+		h.logger.Warn("StatsRepairerSummary Admin: invalid params", zap.Error(err))
+		response.FailError(c, err)
+		return
+	}
+	result, err := h.orders.StatsRepairerSummary(c.Request.Context(), opOf(c), c.Query("repairer_id"), req)
+	if err != nil {
+		h.logger.Error("StatsRepairerSummary Admin: service error", zap.Error(err), zap.String("user_id", c.GetString("user_id")))
+		response.FailError(c, err)
+		return
+	}
+	response.OK(c, result)
+}
+
+// OrderReporters 报修人候选 (GET /admin/orders/reporters, 5.1 筛选配套)
+func (h *AdminHandler) OrderReporters(c *gin.Context) {
+	res, err := h.orders.ListReporterOptions(
+		c.Request.Context(),
+		opOf(c),
+		c.Query("enterprise_id"),
+		c.Query("keyword"),
+	)
+	if err != nil {
+		h.logger.Error("OrderReporters Admin: service error", zap.Error(err), zap.String("user_id", c.GetString("user_id")))
+		response.FailError(c, err)
+		return
+	}
+	response.OK(c, res)
 }
 
 // OrderDetail 工单详情 (GET /admin/orders/:order_id, 5.2)
@@ -357,7 +497,7 @@ func (h *AdminHandler) ExportOrders(c *gin.Context) {
 		Fields:       fields,
 		Status:       c.Query("status"),
 	}
-	result, err := h.export.Export(c.Request.Context(), req)
+	result, err := h.export.Export(c.Request.Context(), opOf(c), req)
 	if err != nil {
 		h.logger.Error("ExportOrders Admin: service error", zap.Error(err), zap.String("user_id", c.GetString("user_id")))
 		response.FailError(c, err)

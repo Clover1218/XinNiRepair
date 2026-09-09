@@ -421,7 +421,7 @@ onMounted(fetchDetail)
         </div>
 
         <el-alert
-          v-if="detail.reject_reason"
+          v-if="detail.status === 'rejected' && detail.reject_reason"
           type="warning"
           :closable="false"
           show-icon

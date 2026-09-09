@@ -10,14 +10,12 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
-	"gorm.io/datatypes"
 
 	apperrors "xin-ni-repair/internal/errors"
 	"xin-ni-repair/internal/model"
@@ -40,12 +38,11 @@ type PropertyView struct {
 
 // ProblemView 常见问题视图 (V1.4: 直接隶属项目属性)
 type ProblemView struct {
-	ID              string   `json:"id"`
-	PropertyID      string   `json:"property_id"`
-	Name            string   `json:"name"`
-	Description     string   `json:"description"`
-	CommonSolutions []string `json:"common_solutions"`
-	SortOrder       int      `json:"sort_order"`
+	ID          string `json:"id"`
+	PropertyID  string `json:"property_id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	SortOrder   int    `json:"sort_order"`
 }
 
 // CategoryView 项目大类视图 (含属性子项; 常见问题随属性返回, 不再直属大类)
@@ -78,11 +75,10 @@ type PropertyInput struct {
 
 // ProblemInput 常见问题增改入参 (V1.4: 隶属属性)
 type ProblemInput struct {
-	PropertyID      *string  `json:"property_id"`
-	Name            *string  `json:"name"`
-	Description     *string  `json:"description"`
-	CommonSolutions []string `json:"common_solutions"`
-	SortOrder       *int     `json:"sort_order"`
+	PropertyID  *string `json:"property_id"`
+	Name        *string `json:"name"`
+	Description *string `json:"description"`
+	SortOrder   *int    `json:"sort_order"`
 }
 
 // ProjectService 项目字典业务逻辑
@@ -354,17 +350,12 @@ func (s *ProjectService) CreateProblem(ctx context.Context, in ProblemInput) (*P
 		return nil, apperrors.ErrInvalidParam.WithMessage("该项目属性下常见问题已存在: " + name)
 	}
 
-	solutions, err := marshalSolutions(in.CommonSolutions)
-	if err != nil {
-		return nil, err
-	}
 	p := &model.ProjectProblem{
-		ID:              uuid.New().String(),
-		PropertyID:      propertyID,
-		Name:            name,
-		Description:     desc,
-		CommonSolutions: solutions,
-		SortOrder:       ptrInt(in.SortOrder),
+		ID:          uuid.New().String(),
+		PropertyID:  propertyID,
+		Name:        name,
+		Description: desc,
+		SortOrder:   ptrInt(in.SortOrder),
 	}
 	if err := s.projects.CreateProblem(ctx, p); err != nil {
 		return nil, s.dbErr("create problem failed", err)
@@ -419,13 +410,6 @@ func (s *ProjectService) UpdateProblem(ctx context.Context, id string, in Proble
 			return nil, err
 		}
 		p.Description = desc
-	}
-	if in.CommonSolutions != nil {
-		solutions, err := marshalSolutions(in.CommonSolutions)
-		if err != nil {
-			return nil, err
-		}
-		p.CommonSolutions = solutions
 	}
 	if in.SortOrder != nil {
 		p.SortOrder = *in.SortOrder
@@ -537,41 +521,12 @@ func toProblemViews(list []model.ProjectProblem) []ProblemView {
 
 func toProblemView(p model.ProjectProblem) ProblemView {
 	return ProblemView{
-		ID:              p.ID,
-		PropertyID:      p.PropertyID,
-		Name:            p.Name,
-		Description:     p.Description,
-		CommonSolutions: unmarshalSolutions(p.CommonSolutions),
-		SortOrder:       p.SortOrder,
+		ID:          p.ID,
+		PropertyID:  p.PropertyID,
+		Name:        p.Name,
+		Description: p.Description,
+		SortOrder:   p.SortOrder,
 	}
-}
-
-// marshalSolutions 序列化常见解决建议 (去空白, 去空项)
-func marshalSolutions(list []string) (datatypes.JSON, error) {
-	clean := make([]string, 0, len(list))
-	for _, v := range list {
-		v = strings.TrimSpace(v)
-		if v != "" {
-			clean = append(clean, v)
-		}
-	}
-	raw, err := json.Marshal(clean)
-	if err != nil {
-		return nil, apperrors.ErrInvalidParam.WithMessage("common_solutions 格式错误")
-	}
-	return datatypes.JSON(raw), nil
-}
-
-// unmarshalSolutions 解析 JSONB 常见解决建议
-func unmarshalSolutions(raw datatypes.JSON) []string {
-	var list []string
-	if len(raw) > 0 {
-		_ = json.Unmarshal(raw, &list)
-	}
-	if list == nil {
-		list = []string{}
-	}
-	return list
 }
 
 // validateProjectName 项目字典名称校验 (必填 + 长度)

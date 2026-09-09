@@ -29,6 +29,16 @@ func (op Operator) IsStoreStaff() bool {
 	return op.Role >= model.PlatformRoleRepairer
 }
 
+// IsSuperAdmin 是否为超级管理员（可跨接单人操作他人已接工单）
+func (op Operator) IsSuperAdmin() bool {
+	return op.Role >= model.PlatformRoleSuper
+}
+
+// IsPlainRepairer 是否为维修业务员（非超管；仅可查看/操作自己接的工单）
+func (op Operator) IsPlainRepairer() bool {
+	return op.IsStoreStaff() && !op.IsSuperAdmin()
+}
+
 // AccessService 访问控制服务
 type AccessService struct {
 	mems *repository.MembershipRepository

@@ -35,6 +35,13 @@ const routes = [
         meta: { title: '单位审核', permissions: ['reviewer'] }
       },
       {
+        path: 'stats',
+        name: 'Stats',
+        component: () => import('@/views/stats/index.vue'),
+        // 独立统计页（V1.3 第十三章）：三类角色均可进入；审核员限本单位、隐藏企业对比/维修员业绩
+        meta: { title: '统计', permissions: ['store', 'reviewer'] }
+      },
+      {
         path: 'enterprises',
         name: 'EnterpriseList',
         component: () => import('@/views/enterprises/list.vue'),
