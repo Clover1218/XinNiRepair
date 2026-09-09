@@ -10,13 +10,28 @@
           </template>
           <text v-if="!detail.category_name">工单处理</text>
         </view>
-        <wd-tag :type="statusTagType(detail.status)" round>{{ detail.status_label }}</wd-tag>
+        <text class="status-text" :style="{ color: statusColor(detail.status) }">{{ detail.status_label }}</text>
       </view>
       <view v-if="detail.order_no" class="order-no">{{ detail.order_no }}</view>
       <view class="status-sub">
         提交于 {{ formatDateTime(detail.submitted_at || detail.created_at) }}
         <text v-if="detail.accepted_at"> · 接单于 {{ formatDateTime(detail.accepted_at) }}</text>
         <text v-if="detail.completed_at"> · 完工于 {{ formatDateTime(detail.completed_at) }}</text>
+      </view>
+    </view>
+
+    <!-- 报修人（提交账户） -->
+    <view class="reporter-card">
+      <image
+        v-if="detail.reporter && detail.reporter.avatar_url"
+        class="reporter-avatar"
+        :src="detail.reporter.avatar_url"
+        mode="aspectFill"
+      ></image>
+      <view v-else class="reporter-avatar reporter-avatar--default">{{ reporterInitial }}</view>
+      <view class="reporter-info">
+        <view class="reporter-name">{{ detail.reporter && detail.reporter.nickname ? detail.reporter.nickname : '未知用户' }}</view>
+        <view class="reporter-tag">报修人</view>
       </view>
     </view>
 
@@ -31,10 +46,6 @@
       <view class="info-row">
         <text class="info-label">单位</text>
         <text class="info-value">{{ detail.enterprise_name || '--' }}</text>
-      </view>
-      <view class="info-row">
-        <text class="info-label">报修人</text>
-        <text class="info-value">{{ reporterName }}</text>
       </view>
       <view class="info-row">
         <text class="info-label">项目大类</text>
@@ -169,9 +180,12 @@
     <wd-popup v-model="showRejectPopup" position="center" round custom-style="width: 86%;">
       <view class="popup-body">
         <view class="popup-title">退回工单</view>
+        <view class="popup-label">
+          退回原因<text class="popup-label-req">（必填，10-200字）</text>
+        </view>
         <wd-textarea
           v-model="rejectReason"
-          placeholder="请输入退回原因（10-200字符）"
+          placeholder="请填写退回原因"
           :maxlength="200"
           show-word-limit
           auto-height
@@ -293,11 +307,11 @@
             </view>
           </view>
           <view class="form-cell form-cell-column">
-            <text class="cell-label">额外备注</text>
+            <text class="cell-label">额外备注（选填）</text>
             <textarea
               class="cell-textarea"
               v-model="meta.extraRemark"
-              placeholder="选填"
+              placeholder=""
               placeholder-class="input-placeholder"
               maxlength="200"
               auto-height
@@ -327,7 +341,7 @@
                 class="cell-input"
                 v-model="finance.quantity"
                 type="number"
-                placeholder="不修改请留空"
+                placeholder=""
                 placeholder-class="input-placeholder"
               />
             </view>
@@ -337,7 +351,7 @@
                 class="cell-input"
                 v-model="finance.unitPrice"
                 type="digit"
-                placeholder="不修改请留空"
+                placeholder=""
                 placeholder-class="input-placeholder"
               />
             </view>
@@ -347,7 +361,7 @@
             <textarea
               class="cell-textarea"
               v-model="finance.repairContent"
-              placeholder="不修改请留空"
+              placeholder=""
               placeholder-class="input-placeholder"
               maxlength="200"
               auto-height
@@ -379,7 +393,7 @@
               <input
                 class="cell-input"
                 v-model="meta.warrantyPeriod"
-                placeholder="不修改请留空"
+                placeholder=""
                 placeholder-class="input-placeholder"
               />
             </view>
@@ -389,7 +403,7 @@
                 class="cell-input"
                 v-model="meta.repairDuration"
                 type="number"
-                placeholder="不修改请留空"
+                placeholder=""
                 placeholder-class="input-placeholder"
               />
             </view>
@@ -399,7 +413,7 @@
             <textarea
               class="cell-textarea"
               v-model="meta.extraRemark"
-              placeholder="不修改请留空"
+              placeholder=""
               placeholder-class="input-placeholder"
               maxlength="200"
               auto-height
@@ -415,6 +429,29 @@
         </view>
       </view>
     </wd-popup>
+
+    <!-- 通用确认弹窗：审核通过 / 接单维修 / 重新打开 -->
+    <wd-popup v-model="showSimplePopup" position="center" round custom-style="width: 86%;">
+      <view class="popup-body">
+        <view class="popup-title">{{ simpleAction?.label }}</view>
+        <view class="popup-tip">{{ simpleAction?.confirm_message || '请确认执行该操作。' }}</view>
+        <view class="popup-label">备注（选填，≤{{ simpleMaxLen }}字）</view>
+        <wd-textarea
+          v-model="simpleRemark"
+          placeholder="请输入备注（可选）"
+          :maxlength="simpleMaxLen"
+          show-word-limit
+          auto-height
+          custom-style="min-height: 140rpx; padding: 20rpx; background: #f5f6f8; border-radius: 12rpx;"
+        />
+        <view class="popup-actions">
+          <wd-button plain round size="small" @click="showSimplePopup = false">取消</wd-button>
+          <wd-button :type="simpleBtnType" round size="small" :loading="submitting" @click="confirmSimpleAction">
+            确认{{ simpleAction?.label }}
+          </wd-button>
+        </view>
+      </view>
+    </wd-popup>
   </view>
 </template>
 
@@ -426,6 +463,7 @@ import {
   formatAmount,
   formatDateTime,
   statusTagType,
+  statusColor,
   timeAxisActionLabel
 } from '@/utils/format'
 import type { AdminOrderDetail, AvailableAction, OrderImage } from '@/types'
@@ -441,6 +479,7 @@ export default defineComponent({
       formatAmount,
       formatDateTime,
       statusTagType,
+      statusColor,
       timeAxisActionLabel
     }
   },
@@ -454,6 +493,12 @@ export default defineComponent({
       rejectReason: '',
       showCompletePopup: false,
       showFinancePopup: false,
+      // 通用确认弹窗（审核通过 / 接单维修 / 重新打开）
+      showSimplePopup: false,
+      simpleAction: null as AvailableAction | null,
+      simpleRemark: '',
+      simpleMaxLen: 100,
+      simpleBtnType: 'primary' as 'primary' | 'warning' | 'danger' | 'success',
       completeRemark: '',
       receiptList: [] as ReceiptItem[],
       // 完工/对账：数量/单价/维修内容
@@ -482,9 +527,9 @@ export default defineComponent({
       // 单位审核员（role=0）：仅保留 audit/reject
       return actions.filter((a) => a.action === 'audit' || a.action === 'reject')
     },
-    reporterName(): string {
-      const d = this.detail as AdminOrderDetail
-      return d?.reporter?.nickname || '--'
+    reporterInitial(): string {
+      const r = this.detail?.reporter
+      return r && r.nickname ? r.nickname.charAt(0) : '?'
     }
   },
   onLoad(options: Record<string, string>) {
@@ -542,45 +587,49 @@ export default defineComponent({
         this.openFinance()
         return
       }
-      // audit / accept / reopen：确认 Modal（可带备注）
-      this.promptSimpleAction(act)
+      // audit / accept / reopen：通用确认弹窗（可带备注）
+      this.openSimplePopup(act)
     },
-    /** 通用确认：audit/accept/reopen（备注可选，不同动作长度上限不同） */
-    promptSimpleAction(act: AvailableAction) {
-      const maxLen = act.action === 'reopen' ? 200 : 100
-      const ph = act.action === 'reopen'
-        ? `备注（可选，≤${maxLen}字）`
-        : `备注（可选，≤${maxLen}字），可留空`
-      const that = this
-      uni.showModal({
-        title: act.label,
-        content: act.confirm_message || `确认执行「${act.label}」？`,
-        editable: true,
-        placeholderText: ph,
-        success: async (res) => {
-          if (!res.confirm) return
-          const remark = ((res.content || '') as string).trim()
-          if (remark.length > maxLen) {
-            uni.showToast({ title: `备注不能超过${maxLen}字`, icon: 'none' })
-            return
-          }
-          const body = remark ? { remark } : {}
-          const urls: Record<string, string> = {
-            audit: `/admin/orders/${that.orderId}/audit`,
-            accept: `/admin/orders/${that.orderId}/accept`,
-            reopen: `/admin/orders/${that.orderId}/reopen`
-          }
-          const url = urls[act.action]
-          if (!url) return
-          try {
-            await http.post(url, body)
-            uni.showToast({ title: '操作成功', icon: 'success' })
-            that.loadDetail()
-          } catch (e) {
-            console.error('操作失败', e)
-          }
-        }
-      })
+    /* ========= 通用确认弹窗：audit / accept / reopen ========= */
+    /** 打开通用确认弹窗（备注可选，不同动作长度上限不同） */
+    openSimplePopup(act: AvailableAction) {
+      this.simpleAction = act
+      this.simpleRemark = ''
+      this.simpleMaxLen = act.action === 'reopen' ? 200 : 100
+      this.simpleBtnType = this.actionBtnType(act.action)
+      this.showSimplePopup = true
+    },
+    /** 提交通用确认弹窗（备注留空则不带 remark 字段） */
+    async confirmSimpleAction() {
+      const act = this.simpleAction
+      if (!act || this.submitting) return
+      const remark = this.simpleRemark.trim()
+      if (remark.length > this.simpleMaxLen) {
+        uni.showToast({ title: `备注不能超过${this.simpleMaxLen}字`, icon: 'none' })
+        return
+      }
+      const urls: Record<string, string> = {
+        audit: `/admin/orders/${this.orderId}/audit`,
+        accept: `/admin/orders/${this.orderId}/accept`,
+        reopen: `/admin/orders/${this.orderId}/reopen`
+      }
+      const url = urls[act.action]
+      if (!url) {
+        uni.showToast({ title: '暂不支持该操作', icon: 'none' })
+        return
+      }
+      this.submitting = true
+      try {
+        const body = remark ? { remark } : {}
+        await http.post(url, body)
+        uni.showToast({ title: '操作成功', icon: 'success' })
+        this.showSimplePopup = false
+        this.loadDetail()
+      } catch (e) {
+        console.error('操作失败', e)
+      } finally {
+        this.submitting = false
+      }
     },
     async confirmReject() {
       const reason = this.rejectReason.trim()
@@ -835,6 +884,13 @@ export default defineComponent({
         font-weight: 400;
       }
     }
+
+    /* 状态：纯文字 + 颜色（替代胶囊标签） */
+    .status-text {
+      flex-shrink: 0;
+      font-size: 28rpx;
+      font-weight: 600;
+    }
   }
 
   .order-no {
@@ -847,6 +903,50 @@ export default defineComponent({
     margin-top: 8rpx;
     font-size: 24rpx;
     color: #999999;
+  }
+}
+
+.reporter-card {
+  display: flex;
+  align-items: center;
+  background-color: #ffffff;
+  border-radius: 20rpx;
+  padding: 24rpx 28rpx;
+  margin-top: 20rpx;
+
+  .reporter-avatar {
+    width: 84rpx;
+    height: 84rpx;
+    border-radius: 50%;
+    margin-right: 20rpx;
+    flex-shrink: 0;
+    background-color: #4d80f0;
+
+    &--default {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #ffffff;
+      font-size: 36rpx;
+      font-weight: 600;
+    }
+  }
+
+  .reporter-info {
+    flex: 1;
+    min-width: 0;
+
+    .reporter-name {
+      font-size: 30rpx;
+      font-weight: 600;
+      color: #1a1a1a;
+    }
+
+    .reporter-tag {
+      margin-top: 6rpx;
+      font-size: 24rpx;
+      color: #999999;
+    }
   }
 }
 
@@ -1007,6 +1107,16 @@ export default defineComponent({
     color: #1a1a1a;
     text-align: center;
     margin-bottom: 28rpx;
+  }
+
+  .popup-label {
+    font-size: 26rpx;
+    color: #333333;
+    margin-bottom: 12rpx;
+
+    .popup-label-req {
+      color: #fa5151;
+    }
   }
 
   .popup-actions {

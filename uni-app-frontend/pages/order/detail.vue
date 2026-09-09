@@ -10,7 +10,7 @@
           </template>
           <text v-if="!order.category_name">报修工单</text>
         </view>
-        <wd-tag :type="statusTagType(order.status)" round>{{ order.status_label }}</wd-tag>
+        <text class="status-text" :style="{ color: statusColor(order.status) }">{{ order.status_label }}</text>
       </view>
       <view v-if="order.order_no" class="order-no">{{ order.order_no }}</view>
       <view class="status-sub">
@@ -19,8 +19,23 @@
       </view>
     </view>
 
-    <!-- 被退回提示 -->
-    <view v-if="order.reject_reason" class="reject-card">
+    <!-- 报修人（提交账户） -->
+    <view class="reporter-card">
+      <image
+        v-if="order.reporter && order.reporter.avatar_url"
+        class="reporter-avatar"
+        :src="order.reporter.avatar_url"
+        mode="aspectFill"
+      ></image>
+      <view v-else class="reporter-avatar reporter-avatar--default">{{ reporterInitial }}</view>
+      <view class="reporter-info">
+        <view class="reporter-name">{{ order.reporter && order.reporter.nickname ? order.reporter.nickname : '未知用户' }}</view>
+        <view class="reporter-tag">报修人</view>
+      </view>
+    </view>
+
+    <!-- 被退回提示：仅当前状态为“已退回”时展示（重提并走完正常流程后不再显示） -->
+    <view v-if="order.status === 'rejected' && order.reject_reason" class="reject-card">
       <text class="reject-title">已退回：</text>
       <text class="reject-text">{{ order.reject_reason }}</text>
     </view>
@@ -155,7 +170,7 @@
 
     <!-- 底部操作 -->
     <view class="footer">
-      <template v-if="order.status === 'draft'">
+      <template v-if="order.status === 'draft' || order.status === 'rejected'">
         <view class="footer-btn">
           <wd-button type="primary" round block @click="goEdit">编辑</wd-button>
         </view>
@@ -166,13 +181,37 @@
         </view>
       </template>
     </view>
+
+    <!-- 取消工单弹窗：与 order-action-bar 的退回弹窗统一（wd-popup + wd-textarea） -->
+    <wd-popup v-model="showCancelPopup" position="center" round custom-style="width: 86%;">
+      <view class="popup-body">
+        <view class="popup-title">取消工单</view>
+        <view class="popup-label">
+          取消原因<text class="popup-label-req">（必填，≤200字）</text>
+        </view>
+        <wd-textarea
+          v-model="cancelReason"
+          placeholder="请填写取消原因"
+          :maxlength="200"
+          show-word-limit
+          auto-height
+          custom-style="min-height: 160rpx; padding: 20rpx; background: #f5f6f8; border-radius: 12rpx;"
+        />
+        <view class="popup-actions">
+          <wd-button plain :custom-style="actBtnStyle" size="small" @click="showCancelPopup = false">取消</wd-button>
+          <wd-button type="danger" :custom-style="actBtnStyle" size="small" :loading="cancelSubmitting" @click="confirmCancel">
+            确认取消
+          </wd-button>
+        </view>
+      </view>
+    </wd-popup>
   </view>
 </template>
 
 <script lang="ts">
 import { defineComponent } from 'vue'
 import { http } from '@/utils/request'
-import { formatAmount, formatDateTime, statusTagType } from '@/utils/format'
+import { formatAmount, formatDateTime, statusTagType, statusColor } from '@/utils/format'
 import type { OrderDetail } from '@/types'
 
 export default defineComponent({
@@ -180,13 +219,26 @@ export default defineComponent({
     return {
       formatAmount,
       formatDateTime,
-      statusTagType
+      statusTagType,
+      statusColor
+    }
+  },
+  computed: {
+    reporterInitial(): string {
+      const name = this.order && this.order.reporter ? this.order.reporter.nickname : ''
+      return name ? name.charAt(0) : '?'
     }
   },
   data() {
     return {
       orderId: '',
-      order: null as OrderDetail | null
+      order: null as OrderDetail | null,
+      /** 取消工单弹窗 */
+      showCancelPopup: false,
+      cancelReason: '',
+      cancelSubmitting: false,
+      /** 弹窗按钮内联样式：圆角矩形 + 实心白字 */
+      actBtnStyle: 'margin-left: 12rpx; border-radius: 12rpx'
     }
   },
   onLoad(options: Record<string, string>) {
@@ -226,26 +278,29 @@ export default defineComponent({
     goEdit() {
       uni.navigateTo({ url: `/pages/order/edit?id=${this.orderId}` })
     },
-    /** 取消工单：填写原因后调用 cancel 接口 */
-    async cancelOrder() {
-      const res = await uni.showModal({
-        title: '取消工单',
-        content: '请填写取消原因',
-        editable: true,
-        placeholderText: '如：问题已自行解决'
-      })
-      if (!res.confirm) return
-      const reason = (res.content || '').trim()
+    /** 取消工单：打开原因弹窗（与 order-action-bar 退回弹窗统一） */
+    cancelOrder() {
+      this.cancelReason = ''
+      this.showCancelPopup = true
+    },
+    /** 确认取消工单 */
+    async confirmCancel() {
+      const reason = this.cancelReason.trim()
       if (!reason) {
         uni.showToast({ title: '请填写取消原因', icon: 'none' })
         return
       }
+      if (this.cancelSubmitting) return
+      this.cancelSubmitting = true
       try {
         await http.post(`/orders/${this.orderId}/cancel`, { reason })
         uni.showToast({ title: '已取消', icon: 'success' })
+        this.showCancelPopup = false
         this.loadDetail()
       } catch (e) {
         console.error('取消失败', e)
+      } finally {
+        this.cancelSubmitting = false
       }
     }
   }
@@ -288,6 +343,13 @@ export default defineComponent({
         font-weight: 400;
       }
     }
+
+    /* 状态：纯文字 + 颜色（替代胶囊标签） */
+    .status-text {
+      flex-shrink: 0;
+      font-size: 28rpx;
+      font-weight: 600;
+    }
   }
 
   .order-no {
@@ -300,6 +362,50 @@ export default defineComponent({
     margin-top: 8rpx;
     font-size: 24rpx;
     color: #999999;
+  }
+}
+
+.reporter-card {
+  display: flex;
+  align-items: center;
+  background-color: #ffffff;
+  border-radius: 20rpx;
+  padding: 24rpx 28rpx;
+  margin-top: 20rpx;
+
+  .reporter-avatar {
+    width: 84rpx;
+    height: 84rpx;
+    border-radius: 50%;
+    margin-right: 20rpx;
+    flex-shrink: 0;
+    background-color: #4d80f0;
+
+    &--default {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #ffffff;
+      font-size: 36rpx;
+      font-weight: 600;
+    }
+  }
+
+  .reporter-info {
+    flex: 1;
+    min-width: 0;
+
+    .reporter-name {
+      font-size: 30rpx;
+      font-weight: 600;
+      color: #1a1a1a;
+    }
+
+    .reporter-tag {
+      margin-top: 6rpx;
+      font-size: 24rpx;
+      color: #999999;
+    }
   }
 }
 
@@ -465,5 +571,34 @@ export default defineComponent({
       margin-right: 0;
     }
   }
+}
+
+/* 取消工单弹窗（与 order-action-bar 退回弹窗一致） */
+.popup-body {
+  padding: 36rpx 32rpx 28rpx;
+  background-color: #ffffff;
+  border-radius: 20rpx;
+}
+
+.popup-title {
+  font-size: 32rpx;
+  font-weight: 600;
+  color: #1a1a1a;
+}
+
+.popup-label {
+  margin-top: 24rpx;
+  font-size: 26rpx;
+  color: #333333;
+
+  .popup-label-req {
+    color: #fa5151;
+  }
+}
+
+.popup-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 28rpx;
 }
 </style>

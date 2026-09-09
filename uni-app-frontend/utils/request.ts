@@ -130,12 +130,14 @@ export function request<T = unknown>(options: RequestOptions): Promise<T> {
                     }
                   })
                 } else {
-                  // 续期失败：新用户或网络异常，仅对“已登录态失效”场景做清理
+                  // 续期失败：新用户或网络异常。仅清理本地登录态并提示，
+                  // 不强制跳登录页——由页面“去登录/登录”入口引导，未登录态可正常浏览。
                   clearLoginState()
-                  uni.showToast({ title: '登录已过期，请重新登录', icon: 'none' })
-                  setTimeout(() => {
-                    uni.reLaunch({ url: '/pages/auth/login' })
-                  }, 600)
+                  if (!token) {
+                    // 本就未登录：静默失败，不弹提示（避免干扰浏览）
+                  } else {
+                    uni.showToast({ title: '登录已过期，请重新登录', icon: 'none' })
+                  }
                   reject(body)
                 }
               })

@@ -59,6 +59,12 @@ type AdminOrderItem struct {
 	ImageCount     int64         `json:"image_count"`
 	SubmittedAt    *time.Time    `json:"submitted_at"`
 	CreatedAt      time.Time     `json:"created_at"`
+	// V1.3: 列表卡片需展示 位置 / 联系人 / 故障图缩略图
+	Room    string      `json:"room"`
+	Contact string      `json:"contact"`
+	Images  []ImageItem `json:"images"`
+	// 列表卡片按权限就地操作所需的可执行动作（与详情页一致，按状态生成）
+	AvailableActions []AdminAction `json:"available_actions"`
 }
 
 // AdminOrderList 管理端工单分页结果 (5.1)
@@ -100,6 +106,7 @@ type AdminOrderDetail struct {
 	OrderNo          *string               `json:"order_no"`
 	EnterpriseID     string                `json:"enterprise_id"`
 	EnterpriseName   string                `json:"enterprise_name"`
+	Reporter         AdminReporter         `json:"reporter"`
 	CategoryID       string                `json:"category_id"`
 	CategoryName     string                `json:"category_name"`
 	PropertyID       string                `json:"property_id"`
@@ -223,6 +230,11 @@ func (s *AdminOrderService) ListOrders(ctx context.Context, op Operator, f repos
 	if err != nil {
 		return nil, s.dbErr("count images failed", err)
 	}
+	// V1.3: 卡片缩略图（故障图，active）
+	imgList, err := s.images.ListActiveByOrders(ctx, orderIDs, string(model.ImageFault))
+	if err != nil {
+		return nil, s.dbErr("list images failed", err)
+	}
 
 	list := make([]AdminOrderItem, 0, len(orders))
 	for _, o := range orders {
@@ -244,6 +256,10 @@ func (s *AdminOrderService) ListOrders(ctx context.Context, op Operator, f repos
 			ImageCount:     imgCounts[o.ID],
 			SubmittedAt:    o.SubmittedAt,
 			CreatedAt:      o.CreatedAt,
+			Room:           o.Room,
+			Contact:        o.Contact,
+			Images:         buildImageItems(imgList[o.ID]),
+			AvailableActions: adminAvailableActions(o.Status),
 		})
 	}
 
@@ -290,6 +306,7 @@ func (s *AdminOrderService) Detail(ctx context.Context, op Operator, orderID str
 		OrderNo:          order.OrderNo,
 		EnterpriseID:     enterpriseIDStr(order.EnterpriseID),
 		EnterpriseName:   order.Enterprise.Name,
+		Reporter:         AdminReporter{ID: order.Reporter.ID, Nickname: order.Reporter.Nickname, AvatarURL: order.Reporter.AvatarUrl},
 		CategoryID:       nstr(order.CategoryID),
 		CategoryName:     order.CategoryName,
 		PropertyID:       nstr(order.PropertyID),
@@ -424,7 +441,7 @@ func (s *AdminOrderService) Reject(ctx context.Context, op Operator, orderID, re
 	}
 
 	from := order.Status
-	order.Status = string(model.OrderDraft)
+	order.Status = string(model.OrderRejected)
 	order.RejectReason = reason
 	// 退回派生规则: 清空流转时间戳/责任人 (按适用情况), 保留 reject_reason 供"已退回"展示
 	order.SubmittedAt = nil
@@ -438,7 +455,7 @@ func (s *AdminOrderService) Reject(ctx context.Context, op Operator, orderID, re
 	if s.notifier != nil {
 		s.notifier.NotifyOrderReject(ctx, order, reason)
 	}
-	return s.appendAdminTimeline(ctx, order, op.UserID, string(model.ActionReject), from, string(model.OrderDraft), reason, ip)
+	return s.appendAdminTimeline(ctx, order, op.UserID, string(model.ActionReject), from, string(model.OrderRejected), reason, ip)
 }
 
 // CompleteOrderInput 完工请求入参 (5.6)
@@ -815,18 +832,18 @@ func adminAvailableActions(status string) []AdminAction {
 	switch model.OrderStatus(status) {
 	case model.OrderReported:
 		return []AdminAction{
-			{Action: string(model.ActionAudit), Label: "审核通过", ToStatus: string(model.OrderPendingAccept), ConfirmMessage: "审核通过后工单进入待接单并上报维修业务员，确认？"},
-			{Action: string(model.ActionReject), Label: "退回", ToStatus: string(model.OrderDraft), RequireReason: true, ReasonMinLength: 10, ConfirmMessage: "退回后报修人可修改重新提交，确认退回？"},
+		{Action: string(model.ActionAudit), Label: "审核通过", ToStatus: string(model.OrderPendingAccept), ConfirmMessage: "审核通过后工单进入待接单并上报维修业务员，确认？"},
+		{Action: string(model.ActionReject), Label: "退回", ToStatus: string(model.OrderRejected), RequireReason: true, ReasonMinLength: 10, ConfirmMessage: "退回后工单进入「已退回」，报修人可修改重新提交，确认退回？"},
 		}
 	case model.OrderPendingAccept:
 		return []AdminAction{
-			{Action: string(model.ActionAccept), Label: "接单维修", ToStatus: string(model.OrderProcessing), ConfirmMessage: "确认接单维修该工单？"},
-			{Action: string(model.ActionReject), Label: "退回", ToStatus: string(model.OrderDraft), RequireReason: true, ReasonMinLength: 10, ConfirmMessage: "退回后报修人可修改重新提交，确认退回？"},
+		{Action: string(model.ActionAccept), Label: "接单维修", ToStatus: string(model.OrderProcessing), ConfirmMessage: "确认接单维修该工单？"},
+		{Action: string(model.ActionReject), Label: "退回", ToStatus: string(model.OrderRejected), RequireReason: true, ReasonMinLength: 10, ConfirmMessage: "退回后工单进入「已退回」，报修人可修改重新提交，确认退回？"},
 		}
 	case model.OrderProcessing:
 		return []AdminAction{
-			{Action: string(model.ActionComplete), Label: "完工", ToStatus: string(model.OrderCompleted), ConfirmMessage: "确认完工该工单？"},
-			{Action: string(model.ActionReject), Label: "退回", ToStatus: string(model.OrderDraft), RequireReason: true, ReasonMinLength: 10, ConfirmMessage: "退回后报修人可修改重新提交，确认退回？"},
+		{Action: string(model.ActionComplete), Label: "完工", ToStatus: string(model.OrderCompleted), ConfirmMessage: "确认完工该工单？"},
+		{Action: string(model.ActionReject), Label: "退回", ToStatus: string(model.OrderRejected), RequireReason: true, ReasonMinLength: 10, ConfirmMessage: "退回后工单进入「已退回」，报修人可修改重新提交，确认退回？"},
 		}
 	case model.OrderCompleted:
 		return []AdminAction{

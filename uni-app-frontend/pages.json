@@ -7,9 +7,15 @@
   },
   "pages": [
     {
+      "path": "pages/service/index",
+      "style": {
+        "navigationBarTitleText": "服务"
+      }
+    },
+    {
       "path": "pages/order/list",
       "style": {
-        "navigationBarTitleText": "工单",
+        "navigationBarTitleText": "我的工单",
         "enablePullDownRefresh": true
       }
     },
@@ -82,9 +88,16 @@
       }
     },
     {
+      "path": "pages/admin/order/list",
+      "style": {
+        "navigationBarTitleText": "处理工单",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
       "path": "pages/review/index",
       "style": {
-        "navigationBarTitleText": "单位审核",
+        "navigationBarTitleText": "审核工单",
         "enablePullDownRefresh": true
       }
     }
@@ -96,8 +109,8 @@
     "borderStyle": "black",
     "list": [
       {
-        "pagePath": "pages/order/list",
-        "text": "工单",
+        "pagePath": "pages/service/index",
+        "text": "服务",
         "iconPath": "static/tabbar/order.png",
         "selectedIconPath": "static/tabbar/order-active.png"
       },

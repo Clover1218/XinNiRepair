@@ -19,9 +19,9 @@
       >
         <view class="card-header">
           <view class="ent-name">{{ item.name }}</view>
-          <wd-tag :type="enterpriseStatusTagType(item.status)" round>
+          <text class="ent-status-text" :style="{ color: enterpriseStatusColor(item.status) }">
             {{ enterpriseStatusLabel(item.status) }}
-          </wd-tag>
+          </text>
         </view>
         <view class="card-stats">
           <view class="stat">
@@ -58,7 +58,7 @@
 import { defineComponent } from 'vue'
 import { http } from '@/utils/request'
 import { isStoreStaff } from '@/utils/auth'
-import { formatDate, enterpriseStatusLabel, enterpriseStatusTagType } from '@/utils/format'
+import { formatDate, enterpriseStatusLabel, enterpriseStatusColor } from '@/utils/format'
 import type { AdminEnterpriseItem, PageResult } from '@/types'
 
 export default defineComponent({
@@ -66,7 +66,7 @@ export default defineComponent({
     return {
       formatDate,
       enterpriseStatusLabel,
-      enterpriseStatusTagType
+      enterpriseStatusColor
     }
   },
   data() {
@@ -166,6 +166,13 @@ export default defineComponent({
         font-size: 32rpx;
         font-weight: 600;
         color: #1a1a1a;
+      }
+
+      /* 企业状态：纯文字 + 颜色 */
+      .ent-status-text {
+        flex-shrink: 0;
+        font-size: 26rpx;
+        font-weight: 600;
       }
     }
 

@@ -3,191 +3,121 @@
     <!-- 未登录：空态 + 登录引导 -->
     <view v-if="!isLoggedIn" class="not-login">
       <view class="empty-icon">📋</view>
-      <view class="empty-text">登录后查看工单 / 维修任务</view>
+      <view class="empty-text">登录后查看我的工单</view>
       <view class="empty-tip">登录后可发起报修、跟进处理进度</view>
       <wd-button type="primary" round size="small" @click="goLogin">去登录</wd-button>
     </view>
 
     <template v-else>
-      <!-- 顶部工具栏：角色自适应 -->
+      <!-- 工具栏 -->
       <view class="toolbar">
-        <!-- 店方：维修工作台 / 我的报修 双入口 -->
-        <view v-if="isStoreStaff" class="seg">
-          <view
-            class="seg-item"
-            :class="{ active: mode === 'store' }"
-            @click="switchMode('store')"
-          >
-            维修工作台
-          </view>
-          <view
-            class="seg-item"
-            :class="{ active: mode === 'member' }"
-            @click="switchMode('member')"
-          >
-            我的报修
-          </view>
-        </view>
-        <view v-else class="toolbar-title">我的报修</view>
-
+        <view class="toolbar-title">我的工单</view>
         <view class="toolbar-right">
-          <!-- 店方工作台：可接单提示入口 -->
-          <wd-button
-            v-if="mode === 'store'"
-            size="small"
-            type="primary"
-            round
-            @click="refresh(true)"
-          >
-            刷新
-          </wd-button>
-          <wd-button v-else size="small" type="primary" round @click="createOrder">+ 新建</wd-button>
+          <wd-button size="small" type="primary" round @click="createOrder">+ 新建</wd-button>
         </view>
       </view>
 
-      <!-- 单位/企业筛选 -->
-      <view v-if="mode === 'store' || showMemberEnterprisePicker" class="filter-bar">
+      <!-- 多企业时提供单位筛选 -->
+      <view v-if="enterpriseFilterOptions.length > 2" class="filter-bar">
         <picker
           mode="selector"
           :range="enterpriseFilterOptions"
           range-key="name"
+          :value="enterpriseFilterIndex"
           @change="onEnterpriseFilterChange"
         >
           <view class="filter-picker">
-            <text class="filter-label">{{ mode === 'store' ? '单位' : '企业' }}</text>
+            <text class="filter-label">企业</text>
             <text class="filter-value">{{ currentEnterpriseFilterName }}</text>
             <text class="filter-arrow">▾</text>
           </view>
         </picker>
-        <!-- 店方：搜索工单号/关键字 -->
-        <view v-if="mode === 'store'" class="store-search">
-          <input
-            v-model="keyword"
-            class="search-input"
-            placeholder="单号/描述/报修人"
-            placeholder-class="search-placeholder"
-            confirm-type="search"
-            @confirm="onSearch"
-          />
-          <text class="search-btn" @click="onSearch">搜索</text>
-        </view>
-      </view>
-
-      <!-- 单位审核待办卡（报修人模式下，当前上下文单位为审核单位时展示） -->
-      <view
-        v-if="mode === 'member' && showReviewTodo"
-        class="review-todo"
-        @click="goReviewModule"
-      >
-        <view class="todo-icon">⚡</view>
-        <view class="todo-body">
-          <view class="todo-title">本单位待审核工单</view>
-          <view class="todo-sub">
-            {{ reviewTodoCount > 0 ? `有待审核 ${reviewTodoCount} 单（按提交时间倒序）` : '暂无待审核工单' }}
-          </view>
-        </view>
-        <view class="todo-link">
-          去审核 ›
-        </view>
       </view>
 
       <!-- 状态 Tab -->
       <view class="tabs-wrap">
-        <wd-tabs
-          :model-value="activeTab"
-          @change="onTabChange"
-        >
-          <wd-tab
-            v-for="tab in currentTabs"
-            :key="tab.value"
-            :title="tab.label"
-            :name="tab.value"
-          ></wd-tab>
+        <wd-tabs :model-value="activeTab" @change="onTabChange">
+          <wd-tab v-for="tab in tabs" :key="tab.value" :title="tab.label" :name="tab.value"></wd-tab>
         </wd-tabs>
       </view>
 
-      <!-- 列表 -->
+      <!-- 列表：统一工单卡片（与审核工单 / 处理工单列表完全一致） -->
       <view class="order-list">
-        <!-- ── 店方工作台卡片 ── -->
-        <template v-if="mode === 'store'">
-          <view v-for="item in list" :key="item.id" class="order-card" @click="goAdminDetail(item.id)">
-            <view class="card-header">
-              <view class="card-title">
-                <text class="title-no">{{ item.order_no || '未生成单号' }}</text>
-                <text v-if="item.urgency_label" class="title-urgency">{{ item.urgency_label }}</text>
-              </view>
-              <wd-tag :type="statusTagType(item.status)" round>{{ item.status_label }}</wd-tag>
-            </view>
-            <view class="card-cat">
-              {{ item.enterprise_name || '未指定单位' }}
-              <template v-if="item.category_name">
-                · {{ item.category_name }}<template v-if="item.property_name">/{{ item.property_name }}</template>
-              </template>
-            </view>
-            <view class="card-desc">{{ item.description || '（无描述）' }}</view>
-            <view class="card-meta">
-              <text>报修人：{{ item.reporter?.nickname || '--' }}</text>
-              <text class="meta-time">{{ formatDateTime(item.submitted_at || item.created_at) }}</text>
-            </view>
-            <view class="card-actions">
-              <wd-button size="small" type="primary" plain round>查看并处理</wd-button>
-            </view>
+        <order-card
+          v-for="item in list"
+          :key="item.id"
+          :item="item"
+          @click="goOrderDetail(item.id)"
+        >
+          <!-- 被退回提示条（已退回状态专属） -->
+          <view v-if="item.status === 'rejected' && item.reject_reason" class="reject-bar">
+            已退回：{{ item.reject_reason }}
           </view>
-        </template>
-
-        <!-- ── 我的报修卡片 ── -->
-        <template v-else>
-          <view v-for="item in list" :key="item.id" class="order-card" @click="goOrderDetail(item.id)">
-            <view class="card-header">
-              <view class="card-title member-title">
-                <text>{{ item.category_name || '未分类' }}</text>
-                <template v-if="item.property_name"><text class="cat-sep">·</text>{{ item.property_name }}</template>
-              </view>
-              <wd-tag :type="statusTagType(item.status)" round>{{ item.status_label }}</wd-tag>
-            </view>
-            <view class="card-desc">{{ item.description || '（无描述）' }}</view>
-            <view v-if="item.enterprise_name" class="card-enterprise">{{ item.enterprise_name }}</view>
-            <view class="card-meta">
-              <wd-tag :type="urgencyTagType(item.urgency)" plain round>{{ item.urgency_label }}</wd-tag>
-              <text class="meta-time">{{ formatDateTime(item.submitted_at || item.created_at) }}</text>
-            </view>
-            <!-- 被退回草稿提示条 -->
-            <view v-if="item.status === 'draft' && item.reject_reason" class="reject-bar">
-              已退回：{{ item.reject_reason }}
-            </view>
-            <!-- 已完成金额 -->
-            <view v-if="item.status === 'completed' && item.amount" class="amount-line">
-              金额：￥{{ formatAmount(item.amount) }}
-            </view>
-            <view v-if="item.order_no" class="card-no">单号：{{ item.order_no }}</view>
-
-            <view class="card-actions">
-              <template v-if="item.status === 'draft'">
-                <wd-button size="small" plain round @click.stop="editOrder(item.id)">编辑</wd-button>
-                <wd-button size="small" plain round @click.stop="submitDraft(item)">提交</wd-button>
-                <wd-button size="small" type="danger" plain round @click.stop="cancelOrder(item)">取消</wd-button>
-                <wd-button size="small" plain round @click.stop="deleteOrder(item)">删除</wd-button>
-              </template>
-              <template v-else-if="item.status === 'reported' || item.status === 'pending_accept'">
-                <wd-button size="small" type="warning" plain round @click.stop="cancelOrder(item)">取消</wd-button>
-              </template>
-            </view>
+          <!-- 已完成金额 -->
+          <view v-if="item.status === 'completed' && item.amount" class="amount-line">
+            金额：￥{{ formatAmount(item.amount) }}
           </view>
-        </template>
+
+          <!-- 操作区：冒泡拦截放在原生 view 上（wd-button 是组件，组件事件上的 .stop 不生效，
+               否则点按钮会先冒泡到卡片、触发“进入详情”）
+               按钮为圆角矩形（12rpx，非胶囊），且为实心填充 + 白字：背景用对应 type 色
+               （编辑/提交/删除=主题蓝、取消(草稿/已退回)=危险红、取消(已上报/待接单)=警告橙），
+               与底栏「当前状态」的胶囊标签（小圆角、彩色底）形成明显区分 -->
+          <template #actions>
+            <view
+              v-if="item.status === 'draft' || item.status === 'rejected' || item.status === 'reported' || item.status === 'pending_accept'"
+              class="card-actions"
+              @click.stop="stopCardClick"
+            >
+              <template v-if="item.status === 'draft' || item.status === 'rejected'">
+                <wd-button size="small" :custom-style="actBtnStyle" @click="editOrder(item.id)">编辑</wd-button>
+                <wd-button size="small" :custom-style="actBtnStyle" @click="submitDraft(item)">提交</wd-button>
+                <wd-button size="small" :custom-style="actBtnStyle" @click="deleteOrder(item)">删除</wd-button>
+              </template>
+              <template v-else>
+                <wd-button size="small" type="warning" :custom-style="actBtnStyle" @click="cancelOrder(item)">
+                  取消
+                </wd-button>
+              </template>
+            </view>
+          </template>
+        </order-card>
 
         <!-- 空状态 -->
         <view v-if="!loading && list.length === 0" class="empty">
-          <view class="empty-icon">{{ mode === 'store' ? '🔧' : '📋' }}</view>
-          <view class="empty-text">
-            {{ mode === 'store' ? '当前条件下暂无工单' : '暂无工单' }}
-          </view>
-          <view v-if="mode === 'member'" class="empty-tip">点击「+ 新建」发起报修</view>
+          <view class="empty-icon">📋</view>
+          <view class="empty-text">暂无工单</view>
+          <view class="empty-tip">点击「+ 新建」发起报修</view>
         </view>
 
         <!-- 加载更多 -->
         <view v-if="list.length > 0" class="load-more">
           <text>{{ loading ? '加载中...' : finished ? '没有更多了' : '上拉加载更多' }}</text>
         </view>
+
+        <!-- 取消工单弹窗：与 order-action-bar 的退回弹窗统一（wd-popup + wd-textarea） -->
+        <wd-popup v-model="showCancelPopup" position="center" round custom-style="width: 86%;">
+          <view class="popup-body">
+            <view class="popup-title">取消工单</view>
+            <view class="popup-label">
+              取消原因<text class="popup-label-req">（必填，≤200字）</text>
+            </view>
+            <wd-textarea
+              v-model="cancelReason"
+              placeholder="请填写取消原因"
+              :maxlength="200"
+              show-word-limit
+              auto-height
+              custom-style="min-height: 160rpx; padding: 20rpx; background: #f5f6f8; border-radius: 12rpx;"
+            />
+            <view class="popup-actions">
+              <wd-button plain :custom-style="actBtnStyle" size="small" @click="showCancelPopup = false">取消</wd-button>
+              <wd-button type="danger" :custom-style="actBtnStyle" size="small" :loading="cancelSubmitting" @click="confirmCancel">
+                确认取消
+              </wd-button>
+            </view>
+          </view>
+        </wd-popup>
       </view>
     </template>
   </view>
@@ -197,94 +127,65 @@
 import { defineComponent } from 'vue'
 import { http } from '@/utils/request'
 import { PAGE_SIZE } from '@/utils/config'
-import { normalizePage, formatDateTime, formatAmount, statusTagType, urgencyTagType } from '@/utils/format'
-import { isStoreStaff, isReviewerOf } from '@/utils/auth'
+import { normalizePage, formatAmount } from '@/utils/format'
 import { useUserStore } from '@/stores/user'
-import { useEnterpriseStore } from '@/stores/enterprise'
-
-type Mode = 'member' | 'store'
 
 export default defineComponent({
   setup() {
     return {
       userStore: useUserStore(),
-      enterpriseStore: useEnterpriseStore(),
-      formatDateTime,
-      formatAmount,
-      statusTagType,
-      urgencyTagType
+      formatAmount
     }
   },
   data() {
     return {
-      mode: 'member' as Mode,
       isLoggedIn: false,
-      // 企业筛选（店方：全部单位/具体单位；报修人：多企业筛选）
       enterpriseFilterOptions: [] as { id: string; name: string }[],
       enterpriseFilterIndex: 0,
-      keyword: '',
-      // 成员模式 Tab：进行中(默认) / 草稿 / 已完成 / 已取消
-      memberTabs: [
-        { label: '进行中', value: 'active', status: 'reported,pending_accept,processing' },
+      // 我的工单 Tab：进行中(默认) / 草稿 / 已退回 / 已完成 / 已取消（V1.2 3.2 沿用；C19 新增「已退回」独立 Tab）
+      tabs: [
+        // { label: '进行中', value: 'active', status: 'reported,pending_accept,processing' },
+		{ label: '进行中', value: 'active', status: 'reported,pending_accept,processing' },
         { label: '草稿', value: 'draft', status: 'draft' },
+        { label: '已退回', value: 'rejected', status: 'rejected' },
         { label: '已完成', value: 'completed', status: 'completed' },
         { label: '已取消', value: 'cancelled', status: 'cancelled' }
       ],
-      // 店方模式 Tab：待接单(默认) / 处理中 / 已完成 / 已取消
-      storeTabs: [
-        { label: '待接单', value: 'pending_accept', status: 'pending_accept' },
-        { label: '处理中', value: 'processing', status: 'processing' },
-        { label: '已完成', value: 'completed', status: 'completed' },
-        { label: '已取消', value: 'cancelled', status: 'cancelled' }
-      ],
-      activeMemberTab: 'active',
-      activeStoreTab: 'pending_accept',
+      activeTab: 'active',
+      /**
+       * 卡片操作按钮：实心填充 + 白字，圆角矩形（12rpx），与底栏「当前状态」的胶囊标签明确区分。
+       * - 背景 = 对应 type 色（编辑/提交/删除=主题蓝、取消=危险红/警告橙），文字白色；
+       * - 去掉 wd-button 的 `plain`（默认即为实心白字），底色即 type 色；
+       * - border-radius 走 custom-style 内联样式（12rpx 圆角矩形），因为 wd-button 圆角由
+       *   `.wd-button.is-small` / `.is-round` 两个类选择器控制，普通自定义类优先级不够，覆盖不掉。
+       */
+      actBtnStyle: 'margin-left: 12rpx; border-radius: 12rpx',
+      /** 取消工单弹窗 */
+      showCancelPopup: false,
+      cancelReason: '',
+      cancelTargetId: '',
+      cancelSubmitting: false,
       list: [] as any[],
       page: 1,
       totalPages: 1,
       loading: false,
-      finished: false,
-      // 审核待办
-      reviewTodoCount: 0,
-      loadingReviewTodo: false
+      finished: false
     }
   },
   computed: {
-    isStoreStaff(): boolean {
-      return isStoreStaff()
-    },
-    activeTab(): string {
-      return this.mode === 'store' ? this.activeStoreTab : this.activeMemberTab
-    },
-    currentTabs() {
-      return this.mode === 'store' ? this.storeTabs : this.memberTabs
-    },
-    currentEnterpriseId(): string {
-      return this.enterpriseStore.currentEnterpriseId
-    },
     approvedEnterprises(): { enterprise_id: string; enterprise_name: string }[] {
       return (this.userStore.userInfo?.enterprises ?? []).filter((e) => e.status === 'approved')
     },
-    showMemberEnterprisePicker(): boolean {
-      return this.approvedEnterprises.length > 1
-    },
-    /** 店方模式下可查看自己的报修（本人也是某单位 approved 成员） */
-    showReviewTodo(): boolean {
-      return this.mode === 'member' && !!this.currentEnterpriseId && isReviewerOf(this.currentEnterpriseId)
-    },
     currentEnterpriseFilterName(): string {
-      const idx = this.enterpriseFilterIndex
-      if (idx <= 0 || idx >= this.enterpriseFilterOptions.length) {
-        return this.mode === 'store' ? '全部单位' : '全部企业'
-      }
-      return this.enterpriseFilterOptions[idx].name
+      const opt = this.enterpriseFilterOptions[this.enterpriseFilterIndex]
+      return opt ? opt.name : '全部企业'
     }
   },
   onShow() {
     this.init()
   },
   onPullDownRefresh() {
-    this.refresh(true).finally(() => uni.stopPullDownRefresh())
+    this.loadList(true).finally(() => uni.stopPullDownRefresh())
   },
   onReachBottom() {
     if (this.isLoggedIn && !this.finished && !this.loading) {
@@ -293,7 +194,6 @@ export default defineComponent({
   },
   methods: {
     async init() {
-      // 无 token：先尝试静默续期一次（老用户无感登录）
       if (!this.userStore.token) {
         const ok = await this.userStore.ensureLoggedIn()
         if (!ok) {
@@ -307,140 +207,58 @@ export default defineComponent({
       } catch (e) {
         // 401 已由请求层静默续期/清态处理
       }
-      this.mode = isStoreStaff() ? 'store' : 'member'
-      uni.setNavigationBarTitle({
-        title: this.mode === 'store' ? '维修工作台' : '我的报修'
-      })
-      await this.buildEnterpriseFilter()
-      this.refresh(true)
+      this.buildEnterpriseFilter()
+      this.loadList(true)
     },
-    switchMode(mode: Mode) {
-      if (this.mode === mode) return
-      this.mode = mode
-      uni.setNavigationBarTitle({ title: mode === 'store' ? '维修工作台' : '我的报修' })
-      // 重新构建对应模式的筛选下拉（保留原选项 id 一致时不重复请求）
-      if (mode === 'store') {
-        this.loadStoreEnterprises()
-      } else {
-        this.enterpriseFilterOptions = [
-          { id: '', name: '全部企业' },
-          ...this.approvedEnterprises.map((e) => ({ id: e.enterprise_id, name: e.enterprise_name }))
-        ]
-        this.enterpriseFilterIndex = 0
-      }
-      this.refresh(true)
-    },
-    /** 店方：全部单位 + 下拉（数据源 GET /admin/enterprises） */
-    async loadStoreEnterprises() {
-      try {
-        const data = await http.get<any>('/admin/enterprises', { page: 1, page_size: 100 })
-        const res = normalizePage(data)
-        const opts = (res.list as any[]).map((e) => ({ id: e.id, name: e.name }))
-        this.enterpriseFilterOptions = [{ id: '', name: '全部单位' }, ...opts]
-        if (this.enterpriseFilterIndex >= this.enterpriseFilterOptions.length) {
-          this.enterpriseFilterIndex = 0
-        }
-      } catch (e) {
-        this.enterpriseFilterOptions = [{ id: '', name: '全部单位' }]
-      }
-    },
-    /** 报修人：多企业筛选列表 */
-    async buildMemberEnterprises() {
+    buildEnterpriseFilter() {
       this.enterpriseFilterOptions = [
         { id: '', name: '全部企业' },
         ...this.approvedEnterprises.map((e) => ({ id: e.enterprise_id, name: e.enterprise_name }))
       ]
-    },
-    async buildEnterpriseFilter() {
-      if (this.mode === 'store') {
-        await this.loadStoreEnterprises()
-      } else {
-        this.buildMemberEnterprises()
+      if (this.enterpriseFilterIndex >= this.enterpriseFilterOptions.length) {
+        this.enterpriseFilterIndex = 0
       }
     },
     onEnterpriseFilterChange(e: { detail: { value: number } }) {
       this.enterpriseFilterIndex = Number(e.detail.value) || 0
-      this.refresh(true)
+      this.loadList(true)
     },
     currentStatusParam(): string {
-      const tab = this.mode === 'store' ? this.storeTabs : this.memberTabs
-      const cur = this.activeTab
-      const found = tab.find((t) => t.value === cur)
-      return found ? found.status : ''
-    },
-    onSearch() {
-      this.refresh(true)
+      const t = this.tabs.find((x) => x.value === this.activeTab)
+      return t ? t.status : ''
     },
     onTabChange(e: { name: string }) {
-      if (this.mode === 'store') {
-        this.activeStoreTab = e.name
-      } else {
-        this.activeMemberTab = e.name
-      }
-      this.refresh(true)
-    },
-    async refresh(reset = true) {
-      if (this.mode === 'member' && this.showReviewTodo) {
-        this.loadReviewTodoCount()
-      }
-      return this.loadList(reset)
-    },
-    /** 加载待审核数（审核员访问 GET /admin/orders 需带 enterprise_id） */
-    async loadReviewTodoCount() {
-      if (this.loadingReviewTodo) return
-      this.loadingReviewTodo = true
-      try {
-        const data = await http.get<any>('/admin/orders', {
-          status: 'reported',
-          enterprise_id: this.currentEnterpriseId,
-          page: 1,
-          page_size: 1
-        })
-        const res = normalizePage(data)
-        this.reviewTodoCount = res.total
-      } catch (e) {
-        this.reviewTodoCount = 0
-      } finally {
-        this.loadingReviewTodo = false
-      }
+      this.activeTab = e.name
+      this.loadList(true)
     },
     async loadList(reset = false) {
       if (this.loading) return
       this.loading = true
       try {
         const targetPage = reset ? 1 : this.page + 1
-        const params: Record<string, unknown> = {
-          page: targetPage,
-          page_size: PAGE_SIZE
-        }
+        const params: Record<string, unknown> = { page: targetPage, page_size: PAGE_SIZE }
         const status = this.currentStatusParam()
         if (status) params.status = status
-        const entId =
-          this.enterpriseFilterIndex > 0 && this.enterpriseFilterIndex < this.enterpriseFilterOptions.length
-            ? this.enterpriseFilterOptions[this.enterpriseFilterIndex].id
-            : ''
-        if (entId) params.enterprise_id = entId
-
-        let data: any
-        if (this.mode === 'store') {
-          if (this.keyword.trim()) params.keyword = this.keyword.trim()
-          data = await http.get<any>('/admin/orders', params)
-        } else {
-          data = await http.get<any>('/orders', params)
-        }
+        const opt = this.enterpriseFilterOptions[this.enterpriseFilterIndex]
+        if (opt && opt.id) params.enterprise_id = opt.id
+        const data = await http.get<any>('/orders', params)
         const res = normalizePage(data)
         this.page = res.page
         this.totalPages = res.total_pages
         this.finished = this.page >= this.totalPages
         this.list = reset ? res.list : [...this.list, ...res.list]
       } catch (e) {
-        console.error('加载工单列表失败', e)
+        console.error('加载我的工单失败', e)
       } finally {
         this.loading = false
       }
     },
     goLogin() {
       uni.navigateTo({ url: '/pages/auth/login' })
+    },
+    /** 操作区空处理：仅用于拦截冒泡，避免卡片点击进入详情 */
+    stopCardClick() {
+      // no-op
     },
     createOrder() {
       uni.showLoading({ title: '创建中...' })
@@ -457,12 +275,6 @@ export default defineComponent({
     },
     goOrderDetail(orderId: string) {
       uni.navigateTo({ url: `/pages/order/detail?id=${orderId}` })
-    },
-    goAdminDetail(orderId: string) {
-      uni.navigateTo({ url: `/pages/admin/order/detail?id=${orderId}` })
-    },
-    goReviewModule() {
-      uni.navigateTo({ url: '/pages/review/index' })
     },
     /** 草稿提交 */
     submitDraft(item: any) {
@@ -482,30 +294,31 @@ export default defineComponent({
         }
       })
     },
-    /** 取消工单（填原因） */
+    /** 取消工单：打开原因弹窗（与 order-action-bar 退回弹窗统一） */
     cancelOrder(item: any) {
-      const that = this
-      uni.showModal({
-        title: '取消工单',
-        content: '请填写取消原因',
-        editable: true,
-        placeholderText: '如：问题已自行解决（≤200字）',
-        success: async (res) => {
-          if (!res.confirm) return
-          const reason = (res.content || '').trim()
-          if (!reason) {
-            uni.showToast({ title: '请填写取消原因', icon: 'none' })
-            return
-          }
-          try {
-            await http.post(`/orders/${item.id}/cancel`, { reason })
-            uni.showToast({ title: '已取消', icon: 'success' })
-            that.loadList(true)
-          } catch (e) {
-            console.error('取消失败', e)
-          }
-        }
-      })
+      this.cancelTargetId = item.id
+      this.cancelReason = ''
+      this.showCancelPopup = true
+    },
+    /** 确认取消工单 */
+    async confirmCancel() {
+      const reason = this.cancelReason.trim()
+      if (!reason) {
+        uni.showToast({ title: '请填写取消原因', icon: 'none' })
+        return
+      }
+      if (this.cancelSubmitting) return
+      this.cancelSubmitting = true
+      try {
+        await http.post(`/orders/${this.cancelTargetId}/cancel`, { reason })
+        uni.showToast({ title: '已取消', icon: 'success' })
+        this.showCancelPopup = false
+        this.loadList(true)
+      } catch (e) {
+        console.error('取消失败', e)
+      } finally {
+        this.cancelSubmitting = false
+      }
     },
     /** 删除草稿 */
     deleteOrder(item: any) {
@@ -553,38 +366,15 @@ export default defineComponent({
     font-weight: 600;
     color: #1a1a1a;
   }
-
-  .seg {
-    display: flex;
-    background: #f0f2f5;
-    border-radius: 999rpx;
-    padding: 4rpx;
-
-    .seg-item {
-      padding: 10rpx 28rpx;
-      font-size: 26rpx;
-      color: #666666;
-      border-radius: 999rpx;
-
-      &.active {
-        background: #ffffff;
-        color: #4d80f0;
-        font-weight: 600;
-        box-shadow: 0 2rpx 8rpx rgba(0, 0, 0, 0.08);
-      }
-    }
-  }
 }
 
 .filter-bar {
-  display: flex;
-  align-items: center;
   padding: 16rpx 24rpx;
   background-color: #ffffff;
   border-bottom: 1rpx solid #f5f5f5;
 
   .filter-picker {
-    display: flex;
+    display: inline-flex;
     align-items: center;
     background-color: #f5f6f8;
     padding: 10rpx 20rpx;
@@ -611,72 +401,6 @@ export default defineComponent({
       color: #999999;
     }
   }
-
-  .store-search {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    background: #f5f6f8;
-    border-radius: 999rpx;
-    padding: 4rpx 8rpx 4rpx 20rpx;
-    margin-left: 16rpx;
-
-    .search-input {
-      flex: 1;
-      font-size: 24rpx;
-      height: 56rpx;
-      color: #333333;
-    }
-
-    .search-btn {
-      padding: 8rpx 20rpx;
-      font-size: 24rpx;
-      color: #4d80f0;
-    }
-  }
-}
-
-.search-placeholder {
-  color: #bbbbbb;
-}
-
-/* 单位审核待办卡 */
-.review-todo {
-  display: flex;
-  align-items: center;
-  margin: 20rpx 24rpx 0;
-  padding: 24rpx 28rpx;
-  background: linear-gradient(135deg, #fff7e6 0%, #ffffff 100%);
-  border: 2rpx solid #ffd591;
-  border-radius: 20rpx;
-
-  .todo-icon {
-    font-size: 44rpx;
-    margin-right: 20rpx;
-  }
-
-  .todo-body {
-    flex: 1;
-    min-width: 0;
-
-    .todo-title {
-      font-size: 30rpx;
-      font-weight: 600;
-      color: #1a1a1a;
-    }
-
-    .todo-sub {
-      margin-top: 8rpx;
-      font-size: 24rpx;
-      color: #8a6d3b;
-    }
-  }
-
-  .todo-link {
-    font-size: 26rpx;
-    color: #4d80f0;
-    flex-shrink: 0;
-  }
 }
 
 .tabs-wrap {
@@ -688,75 +412,8 @@ export default defineComponent({
   padding: 20rpx 24rpx;
 }
 
-.order-card {
-  background-color: #ffffff;
-  border-radius: 20rpx;
-  padding: 28rpx;
-  margin-bottom: 20rpx;
-  box-shadow: 0 4rpx 16rpx rgba(0, 0, 0, 0.04);
-
-  .card-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-
-    .card-title {
-      flex: 1;
-      min-width: 0;
-      margin-right: 16rpx;
-      font-size: 30rpx;
-      font-weight: 600;
-      color: #1a1a1a;
-      display: flex;
-      align-items: center;
-
-      .title-no {
-        overflow: hidden;
-        white-space: nowrap;
-        text-overflow: ellipsis;
-      }
-
-      .title-urgency {
-        margin-left: 12rpx;
-        flex-shrink: 0;
-        font-size: 20rpx;
-        color: #fa5151;
-        background-color: rgba(250, 81, 81, 0.08);
-        border-radius: 6rpx;
-        padding: 2rpx 10rpx;
-      }
-
-      .cat-sep {
-        margin: 0 8rpx;
-        color: #cccccc;
-        font-weight: 400;
-      }
-    }
-  }
-
-  .card-cat {
-    margin-top: 12rpx;
-    font-size: 24rpx;
-    color: #666666;
-  }
-
-  .card-desc {
-    margin-top: 12rpx;
-    font-size: 26rpx;
-    color: #333333;
-    line-height: 1.5;
-    display: -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-    overflow: hidden;
-  }
-
-  .card-enterprise {
-    margin-top: 12rpx;
-    font-size: 24rpx;
-    color: #4d80f0;
-  }
-
+/* 卡片主体由 components/order-card 统一渲染；此处仅保留「我的工单」专属的附加块样式 */
+.order-list {
   .reject-bar {
     margin-top: 16rpx;
     background-color: #fff7e6;
@@ -774,32 +431,11 @@ export default defineComponent({
     color: #fa5151;
   }
 
-  .card-no {
-    margin-top: 12rpx;
-    font-size: 22rpx;
-    color: #bbbbbb;
-  }
-
-  .card-meta {
-    display: flex;
-    align-items: center;
-    margin-top: 16rpx;
-
-    .meta-time {
-      margin-left: 16rpx;
-      font-size: 24rpx;
-      color: #999999;
-    }
-  }
-
+  /* 操作按钮：圆角矩形 + 实心白字（背景=type 色），区别于底栏状态胶囊；圆角由 actBtnStyle 内联下发 */
   .card-actions {
     display: flex;
     justify-content: flex-end;
     margin-top: 24rpx;
-
-    wd-button {
-      margin-left: 12rpx;
-    }
   }
 }
 
@@ -855,5 +491,34 @@ export default defineComponent({
   text-align: center;
   font-size: 24rpx;
   color: #bbbbbb;
+}
+
+/* 取消工单弹窗（与 order-action-bar 退回弹窗一致） */
+.popup-body {
+  padding: 36rpx 32rpx 28rpx;
+  background-color: #ffffff;
+  border-radius: 20rpx;
+}
+
+.popup-title {
+  font-size: 32rpx;
+  font-weight: 600;
+  color: #1a1a1a;
+}
+
+.popup-label {
+  margin-top: 24rpx;
+  font-size: 26rpx;
+  color: #333333;
+
+  .popup-label-req {
+    color: #fa5151;
+  }
+}
+
+.popup-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 28rpx;
 }
 </style>

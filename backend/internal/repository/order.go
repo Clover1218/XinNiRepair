@@ -374,6 +374,27 @@ func (r *OrderImageRepository) CountActiveByOrders(ctx context.Context, orderIDs
 	return result, nil
 }
 
+// ListActiveByOrders 批量查询多个工单的 active 图片 (按 sort_order 升序), 返回 map[orderID][]OrderImage
+// V1.3: 供管理端列表卡片展示故障图缩略图
+func (r *OrderImageRepository) ListActiveByOrders(ctx context.Context, orderIDs []string, imageType string) (map[string][]model.OrderImage, error) {
+	result := make(map[string][]model.OrderImage, len(orderIDs))
+	if len(orderIDs) == 0 {
+		return result, nil
+	}
+	var images []model.OrderImage
+	err := r.db.WithContext(ctx).
+		Where("order_id IN ? AND image_type = ? AND status = ?", orderIDs, imageType, model.ImageActive).
+		Order("order_id ASC, sort_order ASC").
+		Find(&images).Error
+	if err != nil {
+		return nil, err
+	}
+	for _, img := range images {
+		result[img.OrderID] = append(result[img.OrderID], img)
+	}
+	return result, nil
+}
+
 // ────────────────────────────────────────────
 // 工单时间轴数据访问
 // ────────────────────────────────────────────

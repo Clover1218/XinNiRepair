@@ -318,7 +318,7 @@ func TestV14RejectAndCancel(t *testing.T) {
 		t.Fatalf("reviewer reject: %v", err)
 	}
 	order, _ = env.orders.FindByID(env.ctx, order.ID)
-	if order.Status != string(model.OrderDraft) || order.RejectReason == "" {
+	if order.Status != string(model.OrderRejected) || order.RejectReason == "" {
 		t.Fatalf("after reject: status=%s reason=%q", order.Status, order.RejectReason)
 	}
 	if order.SubmittedAt != nil {

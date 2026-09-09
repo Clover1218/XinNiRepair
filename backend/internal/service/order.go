@@ -51,6 +51,7 @@ var statusLabels = map[string]string{
 	"reported":       "已上报",
 	"pending_accept": "待接单",
 	"processing":     "处理中",
+	"rejected":       "已退回",
 	"completed":      "已处理",
 	"cancelled":      "已取消",
 }
@@ -168,6 +169,12 @@ type OrderListItem struct {
 	StatusLabel    string     `json:"status_label"`
 	CreatedAt      time.Time  `json:"created_at"`
 	SubmittedAt    *time.Time `json:"submitted_at"`
+	/* ── V1.3 统一工单卡片所需字段（与 AdminOrderItem 对齐，见开发文档 V1.3 5.4） ── */
+	/** 报修位置/房间号 */
+	Room string `json:"room"`
+	/** 联系人及电话（"王五 12345678910"，待后端拆分为 contact_name/contact_phone） */
+	Contact string      `json:"contact"`
+	Images  []ImageItem `json:"images"`
 }
 
 // OrderListResult 我的工单列表 (4.6)
@@ -196,6 +203,13 @@ type TimelineItem struct {
 	CreatedAt    time.Time `json:"created_at"`
 }
 
+// OrderReporter 报修人摘要 (4.7)
+type OrderReporter struct {
+	ID        string `json:"id"`
+	Nickname  string `json:"nickname"`
+	AvatarURL string `json:"avatar_url"`
+}
+
 // OrderDetail 工单详情 (4.7)
 type OrderDetail struct {
 	ID               string                `json:"id"`
@@ -214,6 +228,7 @@ type OrderDetail struct {
 	Status           string                `json:"status"`
 	StatusLabel      string                `json:"status_label"`
 	RejectReason     string                `json:"reject_reason"`
+	Reporter         OrderReporter         `json:"reporter"`
 	RepairContent    string                `json:"repair_content"`
 	Quantity         int                   `json:"quantity"`
 	UnitPrice        float64               `json:"unit_price"`
@@ -376,7 +391,7 @@ func (s *OrderService) Create(ctx context.Context, userID string) (*OrderDraftRe
 // 常见问题不作为工单字段 (前端选中后预填 description);
 // images 传完整列表, 按 status 全量替换。
 func (s *OrderService) Update(ctx context.Context, userID, orderID string, in UpdateOrderInput) (*OrderDraftResult, error) {
-	order, err := s.loadOwnedDraft(ctx, userID, orderID)
+	order, err := s.loadOwnedEditable(ctx, userID, orderID)
 	if err != nil {
 		return nil, err
 	}
@@ -491,7 +506,7 @@ func (s *OrderService) Update(ctx context.Context, userID, orderID string, in Up
 // 严格校验必填项完整性与字典有效性后置为 reported; 提交时生成工单号
 // WO{YYYYMMDD}{4位序号} 并写入 submitted_at; 时间轴 submit。
 func (s *OrderService) Submit(ctx context.Context, userID, orderID string) (*SubmitResult, error) {
-	order, err := s.loadOwnedDraft(ctx, userID, orderID)
+	order, err := s.loadOwnedEditable(ctx, userID, orderID)
 	if err != nil {
 		return nil, err
 	}
@@ -517,7 +532,7 @@ func (s *OrderService) Submit(ctx context.Context, userID, orderID string) (*Sub
 		return nil, s.dbErr("update order failed", err)
 	}
 
-	if err := s.appendTimeline(ctx, order, userID, string(model.ActionSubmit), string(model.OrderDraft), string(model.OrderReported), ""); err != nil {
+	if err := s.appendTimeline(ctx, order, userID, string(model.ActionSubmit), order.Status, string(model.OrderReported), ""); err != nil {
 		return nil, err
 	}
 	s.logger.Info("order submitted", zap.String("order_id", order.ID), zap.String("order_no", orderNo))
@@ -544,7 +559,7 @@ func (s *OrderService) notifyReviewersOnSubmit(ctx context.Context, order *model
 
 // Delete 删除草稿 (4.5): 关联故障图软删除 (status=deleted) + 工单状态置为 cancelled (保留追溯)
 func (s *OrderService) Delete(ctx context.Context, userID, orderID string) error {
-	order, err := s.loadOwnedDraft(ctx, userID, orderID)
+	order, err := s.loadOwnedEditable(ctx, userID, orderID)
 	if err != nil {
 		return err
 	}
@@ -571,7 +586,7 @@ func (s *OrderService) List(ctx context.Context, userID, enterpriseID, status st
 				continue
 			}
 			if _, ok := statusLabels[v]; !ok {
-				return nil, apperrors.ErrInvalidParam.WithMessage("status 取值: draft/reported/pending_accept/processing/completed/cancelled, 多个用逗号分隔")
+				return nil, apperrors.ErrInvalidParam.WithMessage("status 取值: draft/reported/pending_accept/processing/rejected/completed/cancelled, 多个用逗号分隔")
 			}
 			statuses = append(statuses, v)
 		}
@@ -585,6 +600,16 @@ func (s *OrderService) List(ctx context.Context, userID, enterpriseID, status st
 	orders, total, err := s.orders.ListByReporter(ctx, userID, enterpriseID, statuses, (page-1)*pageSize, pageSize)
 	if err != nil {
 		return nil, s.dbErr("list orders failed", err)
+	}
+
+	// V1.3: 统一卡片缩略图（故障图，active），批量查询避免 N+1
+	orderIDs := make([]string, 0, len(orders))
+	for _, o := range orders {
+		orderIDs = append(orderIDs, o.ID)
+	}
+	imgList, err := s.images.ListActiveByOrders(ctx, orderIDs, string(model.ImageFault))
+	if err != nil {
+		return nil, s.dbErr("list images failed", err)
 	}
 
 	list := make([]OrderListItem, 0, len(orders))
@@ -605,6 +630,9 @@ func (s *OrderService) List(ctx context.Context, userID, enterpriseID, status st
 			StatusLabel:    statusLabels[o.Status],
 			CreatedAt:      o.CreatedAt,
 			SubmittedAt:    o.SubmittedAt,
+			Room:           o.Room,
+			Contact:        o.Contact,
+			Images:         buildImageItems(imgList[o.ID]),
 		})
 	}
 
@@ -666,6 +694,7 @@ func (s *OrderService) Detail(ctx context.Context, userID, orderID string) (*Ord
 		Status:           order.Status,
 		StatusLabel:      statusLabels[order.Status],
 		RejectReason:     order.RejectReason,
+		Reporter:         OrderReporter{ID: order.Reporter.ID, Nickname: order.Reporter.Nickname, AvatarURL: order.Reporter.AvatarUrl},
 		RepairContent:    order.RepairContent,
 		Quantity:         order.Quantity,
 		UnitPrice:        order.UnitPrice,
@@ -717,7 +746,7 @@ func (s *OrderService) UploadImage(ctx context.Context, userID, orderID, filenam
 	if err != nil {
 		return nil, err
 	}
-	if order.Status != string(model.OrderDraft) {
+	if order.Status != string(model.OrderDraft) && order.Status != string(model.OrderRejected) {
 		return nil, apperrors.ErrOrderCannotEdit
 	}
 
@@ -777,13 +806,14 @@ func (s *OrderService) UploadImage(ctx context.Context, userID, orderID, filenam
 // 内部辅助
 // ────────────────────────────────────────────
 
-// loadOwnedDraft 加载当前用户拥有的工单并校验为 draft 状态
-func (s *OrderService) loadOwnedDraft(ctx context.Context, userID, orderID string) (*model.RepairOrder, error) {
+// loadOwnedEditable 加载当前用户拥有的工单并校验为可编辑状态 (draft 或 rejected)。
+// rejected 为「已退回」草稿：报修人需修改后重新提交，与 draft 同享编辑/提交/删除能力。
+func (s *OrderService) loadOwnedEditable(ctx context.Context, userID, orderID string) (*model.RepairOrder, error) {
 	order, err := s.loadOwnedOrder(ctx, userID, orderID)
 	if err != nil {
 		return nil, err
 	}
-	if order.Status != string(model.OrderDraft) {
+	if order.Status != string(model.OrderDraft) && order.Status != string(model.OrderRejected) {
 		return nil, apperrors.ErrOrderCannotEdit
 	}
 	return order, nil
@@ -929,7 +959,7 @@ func (s *OrderService) dbErr(msg string, err error) error {
 // availableActions 按状态计算用户端可执行操作
 func availableActions(status string) []string {
 	switch model.OrderStatus(status) {
-	case model.OrderDraft:
+	case model.OrderDraft, model.OrderRejected:
 		return []string{"submit", "cancel"}
 	case model.OrderReported, model.OrderPendingAccept:
 		return []string{"cancel"}

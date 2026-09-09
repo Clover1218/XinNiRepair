@@ -2,14 +2,14 @@
   <view class="page">
     <!-- 未登录 -->
     <view v-if="!isLoggedIn" class="empty-wrap">
-      <view class="empty-icon">🔍</view>
-      <view class="empty-text">登录后查看审核任务</view>
+      <view class="empty-icon">🔧</view>
+      <view class="empty-text">登录后查看待处理工单</view>
       <wd-button type="primary" round size="small" @click="goLogin">去登录</wd-button>
     </view>
 
     <view v-else-if="!hasPermission" class="empty-wrap">
-      <view class="empty-icon">🔍</view>
-      <view class="empty-text">暂无可审核的单位</view>
+      <view class="empty-icon">🔧</view>
+      <view class="empty-text">仅维修业务员可进入处理工单</view>
     </view>
 
     <template v-else>
@@ -57,31 +57,30 @@
 import { defineComponent } from 'vue'
 import { http } from '@/utils/request'
 import { PAGE_SIZE } from '@/utils/config'
-import { normalizePage, REVIEW_TABS } from '@/utils/format'
-import { isStoreStaff, isUnitReviewer, reviewerEnterprises } from '@/utils/auth'
+import { normalizePage, REPAIR_TABS } from '@/utils/format'
+import { isStoreStaff } from '@/utils/auth'
 import type { AdminOrderListItem } from '@/types'
 import { useUserStore } from '@/stores/user'
-import { useEnterpriseStore } from '@/stores/enterprise'
 
 /**
- * V1.3 审核工单页（第五章）
- * - Header：企业筛选（单个企业 / 全部企业）
- * - 状态分组：待审核(reported) / 处理中(pending_accept,processing) / 结束(completed,cancelled)
+ * V1.3 处理工单页（第六章，维修业务员/超管）
+ * - Header：企业筛选（默认“全部企业”）
+ * - 状态分组：待接单(pending_accept) / 处理中(processing) / 结束(completed,cancelled)
+ * - 列表卡片与审核工单页、我的工单页完全一致（order-card 统一卡片：缩略图 + 完整描述≤3行 + 报修企业/报修地点/报修人/联系方式/问题类型 + 分隔线 + 当前状态与提交时间）
  * - 卡片底部按当前权限渲染可操作按钮（order-action-bar：审核通过/退回/接单/完工/重新打开/改对账），简单动作就地弹窗执行，复杂表单（完工/对账）跳转详情页；与详情页可用操作一致
  */
 export default defineComponent({
   setup() {
-    return { userStore: useUserStore(), enterpriseStore: useEnterpriseStore() }
+    return { userStore: useUserStore() }
   },
   data() {
     return {
       isLoggedIn: false,
       hasPermission: false,
-      storeStaff: false,
       enterpriseOptions: [] as { id: string; name: string }[],
       enterpriseIndex: 0,
-      tabs: REVIEW_TABS,
-      activeTab: 'pending',
+      tabs: REPAIR_TABS,
+      activeTab: 'pending_accept',
       list: [] as AdminOrderListItem[],
       page: 1,
       totalPages: 1,
@@ -121,40 +120,26 @@ export default defineComponent({
       } catch (e) {
         // 401 由请求层兜底
       }
-      this.storeStaff = isStoreStaff()
-      if (!isUnitReviewer() && !this.storeStaff) {
+      if (!isStoreStaff()) {
         this.hasPermission = false
-        uni.showToast({ title: '无审核权限', icon: 'none' })
+        uni.showToast({ title: '无处理工单权限', icon: 'none' })
         return
       }
       this.hasPermission = true
       await this.buildEnterpriseOptions()
       this.loadList(true)
     },
-    /** 企业筛选数据源：店方=全部企业+企业列表；审核员=其担任审核员的单位（多单位时提供“全部企业”） */
     async buildEnterpriseOptions() {
-      let opts: { id: string; name: string }[] = []
-      if (this.storeStaff) {
-        opts = [{ id: '', name: '全部企业' }]
-        try {
-          const data = await http.get<any>('/admin/enterprises', { page: 1, page_size: 100 })
-          const res = normalizePage<{ id: string; name: string }>(data)
-          opts = opts.concat(res.list.map((e) => ({ id: e.id, name: e.name })))
-        } catch (e) {
-          // 拉不到企业列表时仍可用“全部企业”
-        }
-      } else {
-        const units = reviewerEnterprises().map((u) => ({
-          id: u.enterprise_id,
-          name: u.enterprise_name
-        }))
-        opts = units.length > 1 ? [{ id: '', name: '全部企业' }].concat(units) : units
+      const opts: { id: string; name: string }[] = [{ id: '', name: '全部企业' }]
+      try {
+        const data = await http.get<any>('/admin/enterprises', { page: 1, page_size: 100 })
+        const res = normalizePage<{ id: string; name: string }>(data)
+        res.list.forEach((e) => opts.push({ id: e.id, name: e.name }))
+      } catch (e) {
+        // 拉取失败时仍可用“全部企业”
       }
       this.enterpriseOptions = opts
-      // 默认选中当前上下文单位（在可选列表中），否则第一个可选项
-      const cur = this.enterpriseStore.currentEnterpriseId
-      const idx = opts.findIndex((o) => o.id && o.id === cur)
-      this.enterpriseIndex = idx >= 0 ? idx : 0
+      if (this.enterpriseIndex >= opts.length) this.enterpriseIndex = 0
     },
     onEnterpriseChange(index: number) {
       this.enterpriseIndex = index
@@ -172,21 +157,11 @@ export default defineComponent({
       if (this.loading) return
       this.loading = true
       try {
-        const status = this.currentStatusParam()
-        // 审核员选择“全部企业”且后端不支持多单位：逐单位取首页后按时间合并（本期不分页）
-        if (!this.storeStaff && !this.currentEnterpriseId) {
-          const merged = await this.loadMergedUnits(status)
-          this.list = merged
-          this.finished = true
-          this.totalPages = 1
-          this.page = 1
-          return
-        }
         const targetPage = reset ? 1 : this.page + 1
         const params: Record<string, unknown> = {
           page: targetPage,
           page_size: PAGE_SIZE,
-          status
+          status: this.currentStatusParam()
         }
         if (this.currentEnterpriseId) params.enterprise_id = this.currentEnterpriseId
         const data = await http.get<any>('/admin/orders', params)
@@ -196,34 +171,10 @@ export default defineComponent({
         this.finished = this.page >= this.totalPages
         this.list = reset ? res.list : [...this.list, ...res.list]
       } catch (e) {
-        console.error('加载审核工单失败', e)
+        console.error('加载处理工单失败', e)
       } finally {
         this.loading = false
       }
-    },
-    /** 多审核单位合并：各取首页第一页，按提交时间倒序合并 */
-    async loadMergedUnits(status: string): Promise<AdminOrderListItem[]> {
-      const units = reviewerEnterprises()
-      const results = await Promise.all(
-        units.map((u) =>
-          http
-            .get<any>('/admin/orders', {
-              page: 1,
-              page_size: PAGE_SIZE,
-              status,
-              enterprise_id: u.enterprise_id
-            })
-            .then((d) => normalizePage<AdminOrderListItem>(d).list)
-            .catch(() => [] as AdminOrderListItem[])
-        )
-      )
-      const all = results.reduce((acc, cur) => acc.concat(cur), [] as AdminOrderListItem[])
-      all.sort((a, b) => {
-        const ta = new Date(a.submitted_at || a.created_at).getTime()
-        const tb = new Date(b.submitted_at || b.created_at).getTime()
-        return tb - ta
-      })
-      return all
     },
     goLogin() {
       uni.navigateTo({ url: '/pages/auth/login' })

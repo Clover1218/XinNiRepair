@@ -50,7 +50,7 @@ export default defineComponent({
     // 本地已有 token：直接进入首页（token 有效性由首页 onShow/请求层 401 静默续期兜底）
     const token = uni.getStorageSync('token')
     if (token) {
-      uni.switchTab({ url: '/pages/order/list' })
+      uni.switchTab({ url: '/pages/service/index' })
     }
   },
   methods: {
@@ -89,7 +89,7 @@ export default defineComponent({
         }
         uni.showToast({ title: '登录成功', icon: 'success' })
         setTimeout(() => {
-          uni.switchTab({ url: '/pages/order/list' })
+          uni.switchTab({ url: '/pages/service/index' })
         }, 500)
       } catch (e) {
         // 错误信息已由请求封装统一 Toast

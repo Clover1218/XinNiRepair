@@ -33,6 +33,7 @@ export type OrderStatus =
   | 'reported'
   | 'pending_accept'
   | 'processing'
+  | 'rejected'
   | 'completed'
   | 'cancelled'
 
@@ -110,6 +111,13 @@ export interface OrderListItem {
   amount?: number
   /** 退回原因（被退回草稿；V1.2 需确认 #5） */
   reject_reason?: string | null
+  /* ── V1.3 统一工单卡片所需字段（后端补充，见开发文档 V1.3 5.4） ── */
+  /** 报修位置/房间号 */
+  room?: string
+  /** 联系人及电话（"王五 12345678910"，待后端拆分为 contact_name/contact_phone） */
+  contact?: string
+  /** 故障图（用于卡片缩略图预览） */
+  images?: OrderImage[]
 }
 
 /** 完工对账 metadata */
@@ -138,6 +146,8 @@ export interface OrderDetail {
   status: OrderStatus
   status_label?: string
   reject_reason: string | null
+  /** 报修人（提交账户）摘要 */
+  reporter?: { id: string; nickname: string; avatar_url: string }
   images: OrderImage[]
   receipts: OrderImage[]
   timeline: TimelineItem[]
@@ -209,6 +219,15 @@ export interface AdminOrderListItem {
   image_count: number
   submitted_at: string | null
   created_at: string
+  /* ── V1.3 卡片所需字段（后端补充，见开发文档 V1.3 第五章） ── */
+  /** 报修位置/房间号 */
+  room?: string
+  /** 联系人及电话（待后端拆分为 contact_name/contact_phone） */
+  contact?: string
+  /** 故障图（用于卡片缩略图预览） */
+  images?: OrderImage[]
+  /** 当前用户对该工单的可执行操作（后端按状态生成，前端按角色裁剪后渲染按钮） */
+  available_actions?: AvailableAction[]
 }
 
 /** 管理端工单详情（GET /admin/orders/{id}） */

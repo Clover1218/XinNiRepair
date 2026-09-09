@@ -164,7 +164,7 @@ export default defineComponent({
         // V1.2 问题1：注册成功即登录（userStore.register 已写 token + 同步企业），直接进入首页
         uni.showToast({ title: '注册成功', icon: 'success' })
         setTimeout(() => {
-          uni.switchTab({ url: '/pages/order/list' })
+          uni.switchTab({ url: '/pages/service/index' })
         }, 500)
       } catch (err: any) {
         console.error('注册失败', err)

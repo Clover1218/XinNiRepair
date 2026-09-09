@@ -47,3 +47,42 @@ export function isReviewerOf(enterpriseId?: string): boolean {
 export function isCurrentEnterpriseReviewer(): boolean {
   return isReviewerOf(useEnterpriseStore().currentEnterpriseId)
 }
+
+/* ==================== V1.3：服务主页入口可见性 ==================== */
+
+/** 本人已通过（approved）的成员单位 */
+export function memberEnterprises(): { enterprise_id: string; enterprise_name: string }[] {
+  return (useUserStore().userInfo?.enterprises ?? [])
+    .filter((e) => e.status === 'approved')
+    .map((e) => ({ enterprise_id: e.enterprise_id, enterprise_name: e.enterprise_name }))
+}
+
+export interface ServiceEntryVisibility {
+  /** 我的工单 */
+  myOrders: boolean
+  /** 审核工单 */
+  reviewOrders: boolean
+  /** 处理工单 */
+  repairOrders: boolean
+  /** 企业管理 */
+  enterprise: boolean
+}
+
+/**
+ * 服务主页入口可见性矩阵（V1.3）：
+ * - 普通用户(0)：我的工单
+ * - 单位审核员(0+reviewer)：我的工单 + 审核工单 + 企业管理
+ * - 维修业务员(1)：处理工单 + 企业管理；兼任审核员时加审核工单；兼任单位成员时加我的工单
+ * - 超级管理员(2)：全部
+ */
+export function serviceEntryVisibility(): ServiceEntryVisibility {
+  const role = platformRole()
+  const reviewer = isUnitReviewer()
+  const member = memberEnterprises().length > 0
+  return {
+    myOrders: role === 0 || role === 2 || (role === 1 && member),
+    reviewOrders: role === 2 || reviewer,
+    repairOrders: role >= 1,
+    enterprise: role >= 1 || reviewer
+  }
+}

@@ -22,6 +22,79 @@ export function maskPhone(phone?: string): string {
   return `${phone.slice(0, 3)}****${phone.slice(-4)}`
 }
 
+/**
+ * 联系人拆分：后端当前为单字段 contact（"张三 13800001234"）。
+ * V1.3 需后端拆分为 contact_name / contact_phone（见开发文档第十一章 #1），
+ * 过渡期由前端按“尾部 11 位手机号”解析；解析失败则整体视为联系人。
+ */
+export function splitContact(contact?: string | null): { name: string; phone: string } {
+  const raw = (contact || '').trim()
+  if (!raw) return { name: '', phone: '' }
+  const m = raw.match(/^(.*?)[\s,，·、/-]*(1\d{10})$/)
+  if (m) return { name: m[1].trim(), phone: m[2] }
+  return { name: raw, phone: '' }
+}
+
+/** 联系人展示：张三 · 138****1234（无电话时仅显示姓名） */
+export function contactDisplay(contact?: string | null, fallbackName?: string): string {
+  const { name, phone } = splitContact(contact)
+  const shownName = name || (fallbackName || '').trim()
+  if (!shownName) return phone ? maskPhone(phone) : ''
+  return phone ? `${shownName} · ${maskPhone(phone)}` : shownName
+}
+
+/** 相对时间：刚刚 / N分钟前 / N小时前 / 昨天 HH:mm / MM-DD / YYYY-MM-DD（V1.3 卡片右上角） */
+export function relativeTime(value?: string | null): string {
+  if (!value) return ''
+  const t = new Date(value).getTime()
+  if (Number.isNaN(t)) return value
+  const diff = Math.floor((Date.now() - t) / 1000)
+  if (diff < 60) return '刚刚'
+  if (diff < 3600) return `${Math.floor(diff / 60)}分钟前`
+  if (diff < 86400) return `${Math.floor(diff / 3600)}小时前`
+  const d = new Date(t)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`
+  if (diff < 172800) return `昨天 ${hm}`
+  if (d.getFullYear() === new Date().getFullYear()) return `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
+/** 描述首行（卡片标题） */
+export function descFirstLine(desc?: string | null): string {
+  const lines = (desc || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
+  return lines[0] || '（无描述）'
+}
+
+/** 描述次行（卡片副标题，无则返回空） */
+export function descSecondLine(desc?: string | null): string {
+  const lines = (desc || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
+  return lines.slice(1).join(' ')
+}
+
+/* ==================== V1.3 状态分组 Tab 常量 ==================== */
+
+export interface StatusGroupTab {
+  value: string
+  label: string
+  /** 传给 GET /admin/orders 的 status（支持逗号多值） */
+  status: string
+}
+
+/** 审核工单页：待审核 / 处理中 / 结束 */
+export const REVIEW_TABS: StatusGroupTab[] = [
+  { value: 'pending', label: '待审核', status: 'reported' },
+  { value: 'processing', label: '处理中', status: 'pending_accept,processing' },
+  { value: 'finished', label: '结束', status: 'completed,cancelled' }
+]
+
+/** 处理工单页：待接单 / 处理中 / 结束 */
+export const REPAIR_TABS: StatusGroupTab[] = [
+  { value: 'pending_accept', label: '待接单', status: 'pending_accept' },
+  { value: 'processing', label: '处理中', status: 'processing' },
+  { value: 'finished', label: '结束', status: 'completed,cancelled' }
+]
+
 /** 金额展示：保留两位小数，空值返回空串 */
 export function formatAmount(v?: number | string | null): string {
   if (v === null || v === undefined || v === '') return ''
@@ -30,12 +103,13 @@ export function formatAmount(v?: number | string | null): string {
   return n.toFixed(2)
 }
 
-/** 工单状态中文（与《数据库字段设计文档 V1.4》一致；V1.2 移除 reviewed，新增 pending_accept） */
+/** 工单状态中文（与《数据库字段设计文档 V1.4》一致；V1.2 移除 reviewed，新增 pending_accept；C19 新增 rejected=已退回） */
 export const STATUS_LABELS: Record<string, string> = {
   draft: '草稿',
   reported: '已上报',
   pending_accept: '待接单',
   processing: '处理中',
+  rejected: '已退回',
   completed: '已处理',
   cancelled: '已取消'
 }
@@ -144,6 +218,8 @@ export function statusTagType(s?: string): 'default' | 'primary' | 'success' | '
       return 'primary'
     case 'processing':
       return 'primary'
+    case 'rejected':
+      return 'danger'
     case 'completed':
       return 'success'
     case 'cancelled':
@@ -165,6 +241,38 @@ export function urgencyTagType(s?: string): 'default' | 'primary' | 'success' | 
     default:
       return 'default'
   }
+}
+
+/**
+ * wd-tag 类型 -> 纯文字颜色。
+ * 用于将胶囊形状态标签改为「纯文字 + 颜色」，避免胶囊样式视觉偏重。
+ */
+const TAG_TYPE_COLOR: Record<'default' | 'primary' | 'success' | 'warning' | 'danger', string> = {
+  default: '#999999',
+  primary: '#4d80f0',
+  success: '#07c160',
+  warning: '#ff9f0a',
+  danger: '#fa5151'
+}
+
+/** 工单状态 -> 纯文字颜色 */
+export function statusColor(s?: string): string {
+  return TAG_TYPE_COLOR[statusTagType(s)]
+}
+
+/** 成员状态 -> 纯文字颜色 */
+export function memberStatusColor(s?: string): string {
+  return TAG_TYPE_COLOR[memberStatusTagType(s)]
+}
+
+/** 企业状态 -> 纯文字颜色 */
+export function enterpriseStatusColor(s?: string): string {
+  return TAG_TYPE_COLOR[enterpriseStatusTagType(s)]
+}
+
+/** 紧急程度 -> 纯文字颜色 */
+export function urgencyColor(s?: string): string {
+  return TAG_TYPE_COLOR[urgencyTagType(s)]
 }
 
 /**

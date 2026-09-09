@@ -71,6 +71,7 @@ const (
 	OrderProcessing    OrderStatus = "processing"     // 处理中
 	OrderCompleted     OrderStatus = "completed"      // 已处理/完成（终态，可重新打开）
 	OrderCancelled     OrderStatus = "cancelled"      // 已取消（终态，列表底部单独展示）
+	OrderRejected      OrderStatus = "rejected"       // 已退回（审核员/维修员退回，报修人可修改重提或取消）
 )
 
 // Urgency 紧急程度
@@ -137,12 +138,14 @@ const (
 // ────────────────────────────────────────────
 
 // ValidTransitions 定义合法状态流转 (from → []to)。
-// 退回不是独立状态：退回操作将状态置回 draft（见 OrderReject 业务规则）。
+// 退回是独立状态 rejected（C19）：退回操作将状态置为 rejected（见 OrderReject 业务规则），
+// 与草稿 draft 区分，便于筛选/统计与前端明确展示「已退回」。
 var ValidTransitions = map[OrderStatus][]OrderStatus{
 	OrderDraft:         {OrderReported, OrderCancelled},                  // 提交 / 取消
-	OrderReported:      {OrderPendingAccept, OrderDraft, OrderCancelled}, // 审核通过 / 退回 / 取消
-	OrderPendingAccept: {OrderProcessing, OrderDraft, OrderCancelled},    // 接单 / 退回 / 取消
-	OrderProcessing:    {OrderCompleted, OrderDraft},                     // 完工 / 退回
+	OrderReported:      {OrderPendingAccept, OrderRejected, OrderCancelled}, // 审核通过 / 退回 / 取消
+	OrderPendingAccept: {OrderProcessing, OrderRejected, OrderCancelled},    // 接单 / 退回 / 取消
+	OrderProcessing:    {OrderCompleted, OrderRejected},                     // 完工 / 退回
+	OrderRejected:      {OrderReported, OrderCancelled},                  // 重新提交（报修人修改后）/ 取消
 	OrderCompleted:     {OrderProcessing},                                // 重新打开（维修业务员）
 	OrderCancelled:     {},                                               // 终态
 }
@@ -172,7 +175,7 @@ func IsFinalStatus(s OrderStatus) bool {
 // IsCancelableStatus 判断是否可取消 (报修人取消范围)
 func IsCancelableStatus(s OrderStatus) bool {
 	switch s {
-	case OrderDraft, OrderReported, OrderPendingAccept:
+	case OrderDraft, OrderReported, OrderPendingAccept, OrderRejected:
 		return true
 	default:
 		return false

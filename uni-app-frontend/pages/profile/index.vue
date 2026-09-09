@@ -38,28 +38,6 @@
         </view>
       </view>
 
-      <!-- 入口卡：单位审核员 -->
-      <view v-if="reviewerEnts.length > 0 && !storeStaffFlag" class="entry-card" @click="goReview">
-        <view class="entry-icon reviewer">⚖</view>
-        <view class="entry-text">
-          <view class="entry-title">单位审核</view>
-          <view class="entry-sub">
-            {{ reviewerSubtitle }}
-          </view>
-        </view>
-        <text class="entry-arrow">›</text>
-      </view>
-
-      <!-- 入口卡：店方（维修业务员/超管） -->
-      <view v-if="storeStaffFlag" class="entry-card" @click="goEnterprise">
-        <view class="entry-icon staff">🏢</view>
-        <view class="entry-text">
-          <view class="entry-title">企业管理</view>
-          <view class="entry-sub">企业列表 · 成员管理 · 工单处理</view>
-        </view>
-        <text class="entry-arrow">›</text>
-      </view>
-
       <!-- 我的企业 -->
       <view class="ent-title">
         <text>我的企业</text>
@@ -91,6 +69,18 @@
         </view>
       </view>
 
+      <!-- 协议入口 -->
+      <view class="link-list">
+        <view class="link-item" @click="openAgreement('user')">
+          <text>用户协议</text>
+          <text class="link-arrow">›</text>
+        </view>
+        <view class="link-item" @click="openAgreement('privacy')">
+          <text>隐私政策</text>
+          <text class="link-arrow">›</text>
+        </view>
+      </view>
+
       <!-- 退出登录 -->
       <view class="logout-wrap">
         <wd-button block plain round @click="onLogout">退出登录</wd-button>
@@ -103,7 +93,6 @@
 import { defineComponent } from 'vue'
 import { useUserStore } from '@/stores/user'
 import { useEnterpriseStore } from '@/stores/enterprise'
-import { isStoreStaff, reviewerEnterprises } from '@/utils/auth'
 import { maskPhone, roleLabel, memberStatusLabel } from '@/utils/format'
 import type { EnterpriseBrief, PlatformRole } from '@/types'
 
@@ -125,9 +114,7 @@ export default defineComponent({
   },
   data() {
     return {
-      isLoggedIn: false,
-      storeStaffFlag: false,
-      reviewerList: [] as { enterprise_id: string; enterprise_name: string }[]
+      isLoggedIn: false
     }
   },
   computed: {
@@ -151,16 +138,6 @@ export default defineComponent({
     },
     platformRoleText(): string {
       return ROLE_TEXT[this.platformRoleValue] || '普通用户'
-    },
-    reviewerEnts(): { enterprise_id: string; enterprise_name: string }[] {
-      return this.reviewerList
-    },
-    reviewerSubtitle(): string {
-      const names = this.reviewerList.map((e) => e.enterprise_name)
-      if (names.length === 0) return ''
-      return names.length === 1
-        ? names[0]
-        : `${names[0]} 等 ${names.length} 个单位`
     }
   },
   onShow() {
@@ -181,17 +158,13 @@ export default defineComponent({
       } catch (e) {
         // 401 已由请求层处理
       }
-      this.storeStaffFlag = isStoreStaff()
-      this.reviewerList = reviewerEnterprises()
+      // V1.3：若当前上下文单位已不是 approved（被移除/拒绝），store 会自动重置
     },
     goLogin() {
       uni.navigateTo({ url: '/pages/auth/login' })
     },
-    goReview() {
-      uni.navigateTo({ url: '/pages/review/index' })
-    },
-    goEnterprise() {
-      uni.navigateTo({ url: '/pages/admin/enterprise/list' })
+    openAgreement(type: string) {
+      uni.navigateTo({ url: `/pages/auth/agreement?type=${type}` })
     },
     goJoin() {
       uni.navigateTo({ url: '/pages/enterprise/join' })
@@ -455,6 +428,31 @@ export default defineComponent({
     text-align: center;
     font-size: 26rpx;
     color: #999999;
+  }
+}
+
+.link-list {
+  background-color: #ffffff;
+  border-radius: 20rpx;
+  overflow: hidden;
+
+  .link-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 28rpx;
+    font-size: 28rpx;
+    color: #333333;
+    border-bottom: 1rpx solid #f2f3f5;
+
+    &:last-child {
+      border-bottom: none;
+    }
+
+    .link-arrow {
+      font-size: 32rpx;
+      color: #cccccc;
+    }
   }
 }
 

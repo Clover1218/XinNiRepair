@@ -4,9 +4,9 @@
     <view v-if="ent" class="info-card">
       <view class="info-header">
         <text class="info-name">{{ ent.name }}</text>
-        <wd-tag v-if="ent.status" :type="enterpriseStatusTagType(ent.status)" round>
+        <text v-if="ent.status" class="ent-status-text" :style="{ color: enterpriseStatusColor(ent.status) }">
           {{ enterpriseStatusLabel(ent.status) }}
-        </wd-tag>
+        </text>
         <wd-button size="small" plain round @click="editName">改名</wd-button>
       </view>
       <view class="info-stats">
@@ -102,7 +102,7 @@
                 <text class="member-role-chip" :class="m.role === 'reviewer' || m.role === 'admin' ? 'reviewer' : 'member'">
                   {{ m.role === 'reviewer' || m.role === 'admin' ? '单位审核员' : '普通成员' }}
                 </text>
-                <wd-tag :type="memberStatusTagType(m.status)" round>{{ m.status_label }}</wd-tag>
+                <text class="member-status-text" :style="{ color: memberStatusColor(m.status) }">{{ m.status_label }}</text>
               </view>
               <view class="member-meta">
                 <text>{{ m.phone ? maskPhone(m.phone) : '未绑定手机号' }}</text>
@@ -164,8 +164,8 @@ import {
   maskPhone,
   roleLabel,
   enterpriseStatusLabel,
-  enterpriseStatusTagType,
-  memberStatusTagType
+  enterpriseStatusColor,
+  memberStatusColor
 } from '@/utils/format'
 import type { EnterpriseDetail, MemberItem } from '@/types'
 
@@ -178,8 +178,8 @@ export default defineComponent({
       maskPhone,
       roleLabel,
       enterpriseStatusLabel,
-      enterpriseStatusTagType,
-      memberStatusTagType
+      enterpriseStatusColor,
+      memberStatusColor
     }
   },
   data() {
@@ -512,6 +512,14 @@ export default defineComponent({
       white-space: nowrap;
     }
 
+    /* 企业状态：纯文字 + 颜色 */
+    .ent-status-text {
+      flex-shrink: 0;
+      margin-left: 16rpx;
+      font-size: 26rpx;
+      font-weight: 600;
+    }
+
     wd-button {
       margin-left: 16rpx;
       flex-shrink: 0;
@@ -781,6 +789,13 @@ export default defineComponent({
               color: #666666;
               background-color: #f0f2f5;
             }
+          }
+
+          /* 成员状态：纯文字 + 颜色 */
+          .member-status-text {
+            margin-left: 12rpx;
+            font-size: 22rpx;
+            font-weight: 600;
           }
         }
 
