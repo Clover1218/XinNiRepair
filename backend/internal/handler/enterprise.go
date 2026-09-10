@@ -71,6 +71,7 @@ func (h *EnterpriseHandler) Get(c *gin.Context) {
 }
 
 // Update 更新企业设置 (PUT /enterprises/:enterprise_id; 单位审核员或店方角色)
+// 权限细分: 免审批开关两者均可; 企业名称仅店方角色(role>=1)可改, 单位审核员改名称由 service 层拒绝。
 func (h *EnterpriseHandler) Update(c *gin.Context) {
 	if !h.requireManage(c, c.Param("enterprise_id")) {
 		return
@@ -85,7 +86,7 @@ func (h *EnterpriseHandler) Update(c *gin.Context) {
 		return
 	}
 
-	detail, err := h.svc.Update(c.Request.Context(), c.Param("enterprise_id"), req.Name, req.AutoApprove)
+	detail, err := h.svc.Update(c.Request.Context(), c.Param("enterprise_id"), c.GetInt("role"), req.Name, req.AutoApprove)
 	if err != nil {
 		h.logger.Error("Update Enterprise: service error", zap.Error(err), zap.String("enterprise_id", c.Param("enterprise_id")))
 		response.FailError(c, err)

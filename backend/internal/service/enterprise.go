@@ -179,8 +179,11 @@ func (s *EnterpriseService) Get(ctx context.Context, userID string, role int, en
 	return detail, nil
 }
 
-// Update 更新企业设置 (仅平台管理员)
-func (s *EnterpriseService) Update(ctx context.Context, enterpriseID string, name *string, autoApprove *bool) (*EnterpriseDetail, error) {
+// Update 更新企业设置。
+//
+// 权限: 店方角色(role>=1) 或 该单位审核员均可改「免审批」开关;
+// 「企业名称」仅店方角色可改 (单位审核员改名称返回 403)。
+func (s *EnterpriseService) Update(ctx context.Context, enterpriseID string, role int, name *string, autoApprove *bool) (*EnterpriseDetail, error) {
 	ent, err := s.ents.FindByID(ctx, enterpriseID)
 	if err != nil {
 		return nil, s.dbErr("find enterprise by id failed", err)
@@ -190,6 +193,9 @@ func (s *EnterpriseService) Update(ctx context.Context, enterpriseID string, nam
 	}
 
 	if name != nil {
+		if role < model.PlatformRoleRepairer {
+			return nil, apperrors.ErrForbidden.WithMessage("仅店方角色可修改企业名称")
+		}
 		n := strings.TrimSpace(*name)
 		if len([]rune(n)) < 2 || len([]rune(n)) > 50 {
 			return nil, apperrors.ErrInvalidParam.WithMessage("企业名称需为2-50字符")

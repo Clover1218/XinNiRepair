@@ -178,17 +178,21 @@ const openEditDialog = () => {
 }
 
 const handleSave = async () => {
-  const name = editName.value.trim()
-  if (name.length < 2 || name.length > 50) {
-    ElMessage.warning('企业名称需为 2-50 字符')
-    return
+  const payload: { auto_approve: boolean; name?: string } = {
+    auto_approve: editAutoApprove.value
+  }
+  // 企业名称仅店方角色可改；单位审核员仅能改「免审核」开关
+  if (isStore.value) {
+    const name = editName.value.trim()
+    if (name.length < 2 || name.length > 50) {
+      ElMessage.warning('企业名称需为 2-50 字符')
+      return
+    }
+    payload.name = name
   }
   saving.value = true
   try {
-    const res = await adminAPI.updateEnterprise(enterpriseId, {
-      name,
-      auto_approve: editAutoApprove.value
-    })
+    const res = await adminAPI.updateEnterprise(enterpriseId, payload)
     ElMessage.success('企业设置已更新')
     editDialogVisible.value = false
     detail.value = res.data
@@ -460,7 +464,7 @@ onMounted(() => {
     <!-- 编辑企业设置弹窗 -->
     <el-dialog v-model="editDialogVisible" title="编辑企业设置" width="420px">
       <el-form label-position="top">
-        <el-form-item label="企业名称（2-50 字符）">
+        <el-form-item v-if="isStore" label="企业名称（2-50 字符）">
           <el-input
             v-model="editName"
             :maxlength="50"

@@ -7,7 +7,7 @@
         <text v-if="ent.status" class="ent-status-text" :style="{ color: enterpriseStatusColor(ent.status) }">
           {{ enterpriseStatusLabel(ent.status) }}
         </text>
-        <wd-button size="small" plain round @click="editName">改名</wd-button>
+        <wd-button v-if="isStoreStaff" size="small" plain round @click="editName">改名</wd-button>
       </view>
       <view class="info-stats">
         <view v-if="ent.member_count !== undefined" class="stat">
@@ -169,6 +169,15 @@ import {
 } from '@/utils/format'
 import type { EnterpriseDetail, MemberItem } from '@/types'
 
+/** 邀请码有效期选项（与网页端保持一致的 5 档） */
+const INVITE_VALIDITY_OPTIONS = [
+  { label: '永久有效', value: 'permanent' },
+  { label: '7 天', value: '7days' },
+  { label: '1 天', value: '1days' },
+  { label: '2 小时', value: '2hours' },
+  { label: '5 分钟', value: '5mins' }
+]
+
 export default defineComponent({
   setup() {
     return {
@@ -291,6 +300,7 @@ export default defineComponent({
     },
     /** 企业改名（PUT /enterprises/:id，名称 2-50，不可重名 4522 已由后端 Toast） */
     editName() {
+      if (!isStoreStaff()) return // 企业名称仅店方角色可改
       const that = this
       uni.showModal({
         title: '修改企业名称',
@@ -366,11 +376,22 @@ export default defineComponent({
         uni.showToast({ title: '二维码生成失败', icon: 'none' })
       }
     },
-    /** 刷新邀请码（默认永久有效） */
+    /** 刷新邀请码：先选有效期（与网页端一致），再二次确认 */
     async refreshCode() {
+      let tapIndex = -1
+      try {
+        const sheet: any = await uni.showActionSheet({
+          itemList: INVITE_VALIDITY_OPTIONS.map((o) => o.label)
+        })
+        tapIndex = sheet?.tapIndex ?? -1
+      } catch (e) {
+        return // 用户取消选择
+      }
+      const opt = INVITE_VALIDITY_OPTIONS[tapIndex]
+      if (!opt) return
       const res = await uni.showModal({
         title: '刷新邀请码',
-        content: '确定重新生成邀请码？原邀请码将失效。',
+        content: `确定重新生成邀请码？有效期：${opt.label}。原邀请码将失效。`,
         confirmText: '确认刷新'
       })
       if (!res.confirm) return
@@ -379,7 +400,7 @@ export default defineComponent({
       try {
         const data = await http.post<{ invite_code: string; expires_at: string | null }>(
           `/enterprises/${this.enterpriseId}/refresh/code`,
-          { validity: 'permanent' }
+          { validity: opt.value }
         )
         if (this.ent) {
           this.ent.invite_code = data.invite_code
