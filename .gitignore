@@ -35,7 +35,8 @@ unpackage/
 !.vscode/extensions.json
 .idea/
 .hbuilderx/
-.workbuddy/
+.workbuddy/*
+.workbuddy/memory
 *.suo
 *.ntvs*
 *.njsproj
