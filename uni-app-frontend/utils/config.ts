@@ -19,5 +19,5 @@ export const IS_LOCAL = true
 export const BASE_URL = IS_LOCAL? 'http://127.0.0.1:8080/api/v1':'https://services.cloverstia.site/api/v1'
 
 
-/** 列表分页默认每页条数（V1.2 约定：小程序侧以常量自定义，后端上限 100） */
+/* 列表分页默认每页条数（V1.2 约定：小程序侧以常量自定义，后端上限 100） */
 export const PAGE_SIZE = 20

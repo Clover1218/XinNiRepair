@@ -103,7 +103,7 @@ export default defineComponent({
       // 退回弹窗
       showReject: false,
       rejectReason: '',
-      rejectMin: 10,
+      rejectMin: 2,
       // 通用确认弹窗
       showSimple: false,
       simpleAction: null as AvailableAction | null,
@@ -155,7 +155,7 @@ export default defineComponent({
     openReject(act: AvailableAction) {
       this.showReject = true
       this.rejectReason = ''
-      this.rejectMin = act.reason_min_length || 10
+      this.rejectMin = act.reason_min_length || 2
     },
     async confirmReject() {
       const reason = this.rejectReason.trim()

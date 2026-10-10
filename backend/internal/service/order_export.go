@@ -395,7 +395,7 @@ func (s *OrderExportService) fieldValue(field string, o model.RepairOrder, amoun
 	case "amount":
 		return amount
 	case "remark":
-		return m.ExtraRemark
+		return o.Remark
 	case "repair_result":
 		return m.RepairResult
 	case "repair_method":

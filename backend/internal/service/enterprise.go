@@ -327,7 +327,10 @@ type AdminEnterpriseDetail struct {
 }
 
 // AdminListEnterprises 企业列表 (5.8, 仅平台管理员), status 取值 active/inactive, 默认 active
-func (s *EnterpriseService) AdminListEnterprises(ctx context.Context, page, pageSize int, keyword, status string) (*AdminEnterpriseList, error) {
+//
+// V1.5: scoped/scopedIDs 由 handler 依据 Operator 的经营范围计算后传入；
+// 维修业务员仅可见其经营范围内的客户企业。
+func (s *EnterpriseService) AdminListEnterprises(ctx context.Context, page, pageSize int, keyword, status string, scoped bool, scopedIDs []string) (*AdminEnterpriseList, error) {
 	var statusVal *int
 	switch status {
 	case "", "active":
@@ -340,7 +343,7 @@ func (s *EnterpriseService) AdminListEnterprises(ctx context.Context, page, page
 		return nil, apperrors.ErrInvalidParam.WithMessage("status 取值: active/inactive")
 	}
 
-	enterprises, total, err := s.ents.ListForAdmin(ctx, strings.TrimSpace(keyword), statusVal, (page-1)*pageSize, pageSize)
+	enterprises, total, err := s.ents.ListForAdmin(ctx, strings.TrimSpace(keyword), statusVal, scoped, scopedIDs, (page-1)*pageSize, pageSize)
 	if err != nil {
 		return nil, s.dbErr("list enterprises failed", err)
 	}

@@ -17,6 +17,15 @@ const enterpriseId = route.params.id as string
 const canManage = computed(() => userStore.canManageEnterprise(enterpriseId))
 const isStore = computed(() => userStore.isStoreStaff)
 
+// V1.5：企业信息**维护**权限——仅超级管理员或本单位审核员。
+// 维修业务员与客户企业是服务关系而非管理关系，不可改名/改设置/刷新邀请码。
+// 后端已同步收紧（AssertCanAdministerEnterprise），此处仅用于隐藏入口。
+const canAdminister = computed(
+  () =>
+    userStore.isSuperAdmin ||
+    userStore.reviewerEnterprises.some(e => e.enterprise_id === enterpriseId)
+)
+
 const loading = ref(false)
 const detail = ref<EnterpriseDetail | EnterpriseMineDetail | null>(null)
 
@@ -349,11 +358,11 @@ onMounted(() => {
         </div>
 
         <div class="invite-actions">
-          <el-button @click="openEditDialog">
+          <el-button v-if="canAdminister" @click="openEditDialog">
             <el-icon><Edit /></el-icon>
             编辑
           </el-button>
-          <el-button @click="openRefreshDialog">
+          <el-button v-if="canAdminister" @click="openRefreshDialog">
             <el-icon><Refresh /></el-icon>
             刷新邀请码
           </el-button>

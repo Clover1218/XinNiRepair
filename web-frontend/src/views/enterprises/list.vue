@@ -1,12 +1,18 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { adminAPI } from '@/api/admin'
 import type { EnterpriseListItem } from '@/types'
 import { formatDateTime } from '@/utils/format'
+import { useUserStore } from '@/stores/user'
 
 const router = useRouter()
+const userStore = useUserStore()
+
+// V1.5：创建客户企业属平台治理动作，仅超级管理员可用。
+// 维修业务员是服务方，不应凭空新增客户单位（后端已同步收紧）。
+const canCreate = computed(() => userStore.isSuperAdmin)
 
 const loading = ref(false)
 const list = ref<EnterpriseListItem[]>([])
@@ -103,7 +109,7 @@ onMounted(fetchList)
         </el-button>
         <el-button @click="handleReset">重置</el-button>
         <div class="spacer" />
-        <el-button type="primary" plain @click="openCreateDialog">
+        <el-button v-if="canCreate" type="primary" plain @click="openCreateDialog">
           <el-icon><Plus /></el-icon>
           创建企业
         </el-button>

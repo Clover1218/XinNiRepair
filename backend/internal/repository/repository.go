@@ -58,6 +58,7 @@ func New(ctx context.Context, cfg config.DatabaseConfig) (*DB, error) {
 			&model.Enterprise{},
 			&model.User{},
 			&model.Membership{},
+			&model.RepairerEnterprise{},
 			&model.RepairOrder{},
 			&model.OrderImage{},
 			&model.OrderTimeline{},

@@ -119,8 +119,8 @@ const openReject = (row: OrderListItem) => {
 
 const handleRejectSubmit = async () => {
   const reason = rejectReason.value.trim()
-  if (reason.length < 10) {
-    ElMessage.warning('退回原因至少 10 个字')
+  if (reason.length < 2) {
+    ElMessage.warning('退回原因至少 2 个字')
     return
   }
   if (reason.length > 200) {
@@ -222,10 +222,10 @@ onMounted(() => {
           </template>
         </el-table-column>
         <el-table-column prop="urgency_label" label="紧急度" width="100" />
-        <el-table-column label="状态" width="110">
+        <el-table-column label="本质" width="130">
           <template #default="{ row }">
-            <el-tag :type="statusTagType[row.status as OrderStatus]">
-              {{ row.status_label }}
+            <el-tag :type="(row.display_tag_type as string) || statusTagType[row.status as OrderStatus]">
+              {{ row.display_tag || row.status_label }}
             </el-tag>
           </template>
         </el-table-column>
@@ -270,7 +270,7 @@ onMounted(() => {
             :rows="4"
             :maxlength="200"
             show-word-limit
-            placeholder="请输入退回原因，至少 10 个字"
+            placeholder="请输入退回原因，至少 2 个字"
           />
         </el-form-item>
       </el-form>

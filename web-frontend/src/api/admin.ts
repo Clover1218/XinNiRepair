@@ -10,6 +10,7 @@ import type {
   EnterpriseStats,
   MemberItem,
   OrderDetail,
+  OrderDraftResult,
   OrderListItem,
   OrderMetadata,
   OrderOptions,
@@ -19,8 +20,13 @@ import type {
   RepairerStats,
   RepairerSummary,
   ReporterOption,
+  RepairerListItem,
+  RepairerScope,
+  ScopeRepairerItem,
+  SubmitResult,
   UserDetail,
-  UserListItem
+  UserListItem,
+  SettingsResult
 } from '@/types'
 
 export interface OrderListParams {
@@ -40,6 +46,10 @@ export interface OrderListParams {
   reporter_id?: string
   sort_by?: string
   sort_order?: string
+  /** V1.5 本质标签筛选：按客户签字状态 signed/pending_sign/none */
+  signature_status?: string
+  /** V1.5 本质标签筛选：按 cancelled 终态成因 unrepairable/customer_cancelled */
+  finish_outcome?: string
 }
 
 export interface EnterpriseListParams {
@@ -47,6 +57,20 @@ export interface EnterpriseListParams {
   page_size?: number
   keyword?: string
   status?: string
+}
+
+/** 创建/更新工单草稿入参（4.2 / 4.3，字段均可选，服务端容忍空对象） */
+export interface OrderDraftInput {
+  enterprise_id?: string
+  category_id?: string
+  property_id?: string
+  description?: string
+  urgency?: string
+  room?: string
+  /** 联系人+电话，约定格式「姓名 空格 电话」 */
+  contact?: string
+  /** 仅 update 生效：完整的图片 URL 列表（全量替换） */
+  images?: string[]
 }
 
 export interface MemberListParams {
@@ -102,7 +126,8 @@ export const adminAPI = {
   rejectOrder: (orderId: string, reason: string) =>
     client.post(`/admin/orders/${orderId}/reject`, { reason }),
 
-  // 5.6 完工（仅店方，必填对账字段）
+  // 5.6 完工登记（仅店方；req② 三结果：result=complete/customer_cancelled/unrepairable）
+  // 当 result=complete 时，sign_mode=signed(已签字,必填收据) | pending_sign(稍后补签,保持处理中)
   completeOrder: (
     orderId: string,
     data: {
@@ -112,8 +137,23 @@ export const adminAPI = {
       unit_price: number
       repair_content: string
       metadata: OrderMetadata
+      result: string
+      sign_mode?: string
     }
   ) => client.post(`/admin/orders/${orderId}/complete`, data),
+
+  // req④ 补签正式完工（仅待补签工单 → completed + 写完工时间 + signature_status=signed）
+  signOrder: (
+    orderId: string,
+    data: {
+      remark?: string
+      receipts?: string[]
+      quantity: number
+      unit_price: number
+      repair_content?: string
+      metadata?: OrderMetadata
+    }
+  ) => client.post(`/admin/orders/${orderId}/signature`, data),
 
   // 5.6.1 修改对账信息（仅 completed 状态店方，字段至少传一个）
   updateFinance: (
@@ -123,6 +163,7 @@ export const adminAPI = {
       unit_price?: number
       repair_content?: string
       metadata?: OrderMetadata
+      remark?: string
     }
   ) => client.post(`/admin/orders/${orderId}/finance`, data),
 
@@ -140,10 +181,6 @@ export const adminAPI = {
     fields?: string[]
     status?: string
   }) => client.get('/admin/orders/export', { params, responseType: 'blob' }),
-
-  // 5.15 维修员(业务员)列表（导出弹窗下拉使用，仅店方）
-  getRepairers: () =>
-    client.get<{ list: Array<{ id: string; nickname: string; avatar_url: string }> }>('/admin/repairers'),
 
   // 5.7 上传收据图片（multipart/form-data）
   uploadReceipt: (orderId: string, file: File) => {
@@ -315,7 +352,81 @@ export const adminAPI = {
   resetPassword: (userId: string, newPassword: string) =>
     client.post(`/admin/users/${userId}/reset-password`, {
       new_password: newPassword
-    })
+    }),
+
+  // ── V1.5 维修业务员经营范围 ──
+
+  /**
+   * 业务员列表（含已分配企业数 scope_count）。
+   * 注意：该接口（5.15）返回体为 { list: [...] }，非裸数组，与新增的经营范围接口不同。
+   */
+  getRepairers: () =>
+    client.get<{ list: RepairerListItem[] }>('/admin/repairers'),
+
+  /** 某业务员的经营范围 */
+  getRepairerScope: (repairerId: string) =>
+    client.get<RepairerScope>(`/admin/repairers/${repairerId}/enterprises`),
+
+  /**
+   * 全量覆盖某业务员的经营范围（幂等；超管）。
+   * 传空数组表示清空——该业务员随后将看不到任何企业的数据（已接工单除外）。
+   */
+  updateRepairerScope: (repairerId: string, enterpriseIds: string[]) =>
+    client.put<RepairerScope>(
+      `/admin/repairers/${repairerId}/enterprises`,
+      { enterprise_ids: enterpriseIds }
+    ),
+
+  /** 服务该企业的业务员（反向查询） */
+  getEnterpriseRepairers: (enterpriseId: string) =>
+    client.get<ScopeRepairerItem[]>(`/admin/enterprises/${enterpriseId}/repairers`),
+
+  /** 当前登录者自身的可见范围 */
+  getMyScope: () => client.get<RepairerScope>('/admin/my/enterprises'),
+
+  // ── 上报工单（4.2/4.3/4.4/4.5；与小程序同源，仅 JWTAuth，不限制平台角色） ──
+
+  /**
+   * 4.2 创建工单草稿。可携带全量内容一次性建单（无需先建空草稿）。
+   * 注意：Create 阶段服务端会忽略 images 字段，图片必须拿到 order_id 后单独上传。
+   */
+  createOrder: (data: OrderDraftInput) =>
+    client.post<OrderDraftResult>('/orders', data),
+
+  /**
+   * 4.3 更新草稿。唯一作用之一是把上传后处于 temporary 的图片转成 active，
+   * 因此 images 传的是**完整列表**（全量替换），不是增量追加。
+   */
+  updateOrder: (orderId: string, data: OrderDraftInput) =>
+    client.put<OrderDraftResult>(`/orders/${orderId}`, data),
+
+  /** 4.4 提交上报（draft/rejected → reported，服务端此时生成工单号） */
+  submitOrder: (orderId: string) =>
+    client.post<SubmitResult>(`/orders/${orderId}/submit`, {}),
+
+  /**
+   * 4.5 上传故障图片（multipart/form-data，字段名 file）。
+   * 前置：工单必须处于 draft/rejected，因此必须先拿到 order_id。
+   * 限制：单张 ≤5MB，jpg/png/webp，同一工单 ≤9 张（服务端校验）。
+   */
+  uploadOrderImage: (orderId: string, file: File) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    return client.post<{ id: string; url: string; sort_order: number; file_size: number }>(
+      `/orders/${orderId}/images`,
+      formData,
+      { headers: { 'Content-Type': 'multipart/form-data' } }
+    )
+  },
+
+  // ── 系统设置（仅超级管理员） ──
+
+  // 列出全部可配置项
+  getSettings: () => client.get<SettingsResult>('/admin/settings'),
+
+  // 更新单个设置项（key + value）
+  updateSetting: (key: string, value: string) =>
+    client.put('/admin/settings', { key, value })
 }
 
 /** 报修选项（4.1 /orders/options；管理端用于大类下拉等） */

@@ -105,12 +105,51 @@ type OrderAdminFilter struct {
 	RepairerID   string // 接单人(维修业务员)精确限定：业务员查看「处理中」仅看自己接的单
 	SortBy       string // order_no | enterprise_name | reporter | category_name | urgency | status | submitted_at | created_at
 	SortOrder    string // asc | desc
+
+	// ── V1.5 经营范围（数据权限）──
+	// ScopeLimited=true 时才应用范围收敛；列表为空且无接单兜底时表示"无任何可见企业"，
+	// 必须返回空结果而不是全量，否则等于没有权限。
+	ScopeLimited       bool
+	ScopeEnterpriseIDs []string
+	// OwnerOrRepairerID 已接单兜底：即使企业已被移出经营范围，
+	// 该接单人自己名下的工单仍须可见，避免工单永久卡在处理中。
+	OwnerOrRepairerID string
+
+	// ── V1.5 本质标签筛选（派生字段，非状态机状态）──
+	SignatureStatus string // 按客户签字状态筛选: signed/pending_sign/none
+	FinishOutcome   string // 按 cancelled 终态成筛选: unrepairable/customer_cancelled
+}
+
+// applyScope 拼接经营范围过滤条件；visible=false 表示当前操作者无任何可见范围。
+func applyScope(f OrderAdminFilter) (cond string, args []interface{}, visible bool) {
+	if !f.ScopeLimited {
+		return "", nil, true
+	}
+	switch {
+	case len(f.ScopeEnterpriseIDs) > 0 && f.OwnerOrRepairerID != "":
+		return "(repair_orders.enterprise_id IN ? OR repair_orders.repairer_id = ?)",
+			[]interface{}{f.ScopeEnterpriseIDs, f.OwnerOrRepairerID}, true
+	case len(f.ScopeEnterpriseIDs) > 0:
+		return "repair_orders.enterprise_id IN ?", []interface{}{f.ScopeEnterpriseIDs}, true
+	case f.OwnerOrRepairerID != "":
+		return "repair_orders.repairer_id = ?", []interface{}{f.OwnerOrRepairerID}, true
+	default:
+		return "", nil, false
+	}
 }
 
 // ListForAdmin 管理端分页查询工单 (5.1), 支持多状态/紧急度/关键字/单位/大类/时间范围/报修人筛选
 func (r *OrderRepository) ListForAdmin(ctx context.Context, f OrderAdminFilter, offset, limit int) ([]model.RepairOrder, int64, error) {
+	// V1.5 经营范围：无任何可见企业时直接返回空结果，不查库
+	scopeCond, scopeArgs, visible := applyScope(f)
+	if !visible {
+		return []model.RepairOrder{}, 0, nil
+	}
 	base := r.db.WithContext(ctx).Model(&model.RepairOrder{}).
 		Joins("JOIN users ON users.id = repair_orders.reporter_id")
+	if scopeCond != "" {
+		base = base.Where(scopeCond, scopeArgs...)
+	}
 	if len(f.Status) > 0 {
 		base = base.Where("repair_orders.status IN ?", f.Status)
 	}
@@ -142,6 +181,12 @@ func (r *OrderRepository) ListForAdmin(ctx context.Context, f OrderAdminFilter, 
 	}
 	if f.RepairerID != "" {
 		base = base.Where("repair_orders.repairer_id = ?", f.RepairerID)
+	}
+	if f.SignatureStatus != "" {
+		base = base.Where("repair_orders.signature_status = ?", f.SignatureStatus)
+	}
+	if f.FinishOutcome != "" {
+		base = base.Where("repair_orders.finish_outcome = ?", f.FinishOutcome)
 	}
 
 	var total int64
@@ -865,11 +910,11 @@ func (r *OrderImageRepository) Create(ctx context.Context, img *model.OrderImage
 	return r.db.WithContext(ctx).Create(img).Error
 }
 
-// FindByOrderAndURL 按工单与 URL 查询图片记录 (含已删除), 不存在时返回 nil
-func (r *OrderImageRepository) FindByOrderAndURL(ctx context.Context, orderID, url string) (*model.OrderImage, error) {
+// FindByOrderAndURL 按工单、图片类型与 URL 查询图片记录 (含已删除), 不存在时返回 nil
+func (r *OrderImageRepository) FindByOrderAndURL(ctx context.Context, orderID, imageType, url string) (*model.OrderImage, error) {
 	var img model.OrderImage
 	err := r.db.WithContext(ctx).
-		Where("order_id = ? AND image_url = ?", orderID, url).
+		Where("order_id = ? AND image_type = ? AND image_url = ?", orderID, imageType, url).
 		First(&img).Error
 	if err == gorm.ErrRecordNotFound {
 		return nil, nil

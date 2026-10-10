@@ -71,6 +71,9 @@ func (h *AdminHandler) ListOrders(c *gin.Context) {
 		ReporterID:   c.Query("reporter_id"),
 		SortBy:       c.Query("sort_by"),
 		SortOrder:    c.Query("sort_order"),
+		// V1.5 本质标签筛选
+		SignatureStatus: c.Query("signature_status"),
+		FinishOutcome:   c.Query("finish_outcome"),
 	}
 	result, err := h.orders.ListOrders(c.Request.Context(), opOf(c), filter, page, pageSize)
 	if err != nil {
@@ -250,6 +253,24 @@ func (h *AdminHandler) Audit(c *gin.Context) {
 	response.OK(c, gin.H{"status": "pending_accept"})
 }
 
+// Unaudit 撤回审核 (POST /admin/orders/:order_id/unaudit, V1.5 问题 #1/#22)
+func (h *AdminHandler) Unaudit(c *gin.Context) {
+	var req struct {
+		Remark string `json:"remark"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Warn("Unaudit Admin: invalid request body", zap.Error(err), zap.String("order_id", c.Param("order_id")))
+		response.Fail(c, apperrors.ErrInvalidParam.WithMessage("请求体格式错误"))
+		return
+	}
+	if err := h.orders.Unaudit(c.Request.Context(), opOf(c), c.Param("order_id"), req.Remark, c.ClientIP()); err != nil {
+		h.logger.Error("Unaudit Admin: service error", zap.Error(err), zap.String("order_id", c.Param("order_id")), zap.String("operator_id", c.GetString("user_id")))
+		response.FailError(c, err)
+		return
+	}
+	response.OK(c, gin.H{"status": "reported"})
+}
+
 // Accept 接单维修 (POST /admin/orders/:order_id/accept, 5.4)
 func (h *AdminHandler) Accept(c *gin.Context) {
 	var req struct {
@@ -283,18 +304,20 @@ func (h *AdminHandler) Reject(c *gin.Context) {
 		response.FailError(c, err)
 		return
 	}
-	response.OK(c, gin.H{"status": "draft"})
+	response.OK(c, gin.H{"status": "rejected"})
 }
 
-// Complete 完工 (POST /admin/orders/:order_id/complete, 5.6)
+// Complete 完工登记 (POST /admin/orders/:order_id/complete, 5.6, req②)
 func (h *AdminHandler) Complete(c *gin.Context) {
 	var req struct {
-		Remark        string               `json:"remark" binding:"required"`
+		Remark        string               `json:"remark"`
 		Receipts      []string             `json:"receipts"`
 		Quantity      int                  `json:"quantity"`
 		UnitPrice     float64              `json:"unit_price"`
 		RepairContent string               `json:"repair_content"`
 		Metadata      model.RepairMetadata `json:"metadata"`
+		Result        string               `json:"result"`
+		SignMode      string               `json:"sign_mode"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		h.logger.Warn("Complete Admin: invalid request body", zap.Error(err), zap.String("order_id", c.Param("order_id")))
@@ -308,13 +331,23 @@ func (h *AdminHandler) Complete(c *gin.Context) {
 		UnitPrice:     req.UnitPrice,
 		RepairContent: req.RepairContent,
 		Metadata:      req.Metadata,
+		Result:        req.Result,
+		SignMode:      req.SignMode,
 	}
 	if err := h.orders.Complete(c.Request.Context(), opOf(c), c.Param("order_id"), c.ClientIP(), in); err != nil {
 		h.logger.Error("Complete Admin: service error", zap.Error(err), zap.String("order_id", c.Param("order_id")), zap.String("operator_id", c.GetString("user_id")))
 		response.FailError(c, err)
 		return
 	}
-	response.OK(c, gin.H{"status": "completed"})
+	// 结单结果可能落到 completed / processing(待补签) / cancelled，返回真实终态
+	finalStatus := "completed"
+	switch {
+	case req.Result == "customer_cancelled" || req.Result == "unrepairable":
+		finalStatus = "cancelled"
+	case req.Result == "complete" && req.SignMode == "pending_sign":
+		finalStatus = "processing"
+	}
+	response.OK(c, gin.H{"status": finalStatus})
 }
 
 // UpdateFinance 修改对账信息 (POST /admin/orders/:order_id/finance, 5.6.1)
@@ -324,6 +357,7 @@ func (h *AdminHandler) UpdateFinance(c *gin.Context) {
 		UnitPrice     *float64              `json:"unit_price"`
 		RepairContent *string               `json:"repair_content"`
 		Metadata      *model.RepairMetadata `json:"metadata"`
+		Remark        *string               `json:"remark"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		h.logger.Warn("UpdateFinance Admin: invalid request body", zap.Error(err), zap.String("order_id", c.Param("order_id")))
@@ -335,6 +369,7 @@ func (h *AdminHandler) UpdateFinance(c *gin.Context) {
 		UnitPrice:     req.UnitPrice,
 		RepairContent: req.RepairContent,
 		Metadata:      req.Metadata,
+		Remark:        req.Remark,
 	}
 	if err := h.orders.UpdateFinance(c.Request.Context(), opOf(c), c.Param("order_id"), c.ClientIP(), in); err != nil {
 		h.logger.Error("UpdateFinance Admin: service error", zap.Error(err), zap.String("order_id", c.Param("order_id")), zap.String("operator_id", c.GetString("user_id")))
@@ -374,6 +409,37 @@ func (h *AdminHandler) UploadReceipt(c *gin.Context) {
 	response.OK(c, result)
 }
 
+// SignComplete 补签正式完工 (POST /admin/orders/:order_id/signature, req④)
+func (h *AdminHandler) SignComplete(c *gin.Context) {
+	var req struct {
+		Receipts      []string             `json:"receipts"`
+		Quantity      int                  `json:"quantity"`
+		UnitPrice     float64              `json:"unit_price"`
+		RepairContent string               `json:"repair_content"`
+		Metadata      model.RepairMetadata `json:"metadata"`
+		Remark        string               `json:"remark"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Warn("SignComplete Admin: invalid request body", zap.Error(err), zap.String("order_id", c.Param("order_id")))
+		response.Fail(c, apperrors.ErrInvalidParam.WithMessage("请求体格式错误"))
+		return
+	}
+	in := service.SignCompleteInput{
+		Receipts:      req.Receipts,
+		Quantity:      req.Quantity,
+		UnitPrice:     req.UnitPrice,
+		RepairContent: req.RepairContent,
+		Metadata:      req.Metadata,
+		Remark:        req.Remark,
+	}
+	if err := h.orders.SignComplete(c.Request.Context(), opOf(c), c.Param("order_id"), c.ClientIP(), in); err != nil {
+		h.logger.Error("SignComplete Admin: service error", zap.Error(err), zap.String("order_id", c.Param("order_id")), zap.String("operator_id", c.GetString("user_id")))
+		response.FailError(c, err)
+		return
+	}
+	response.OK(c, gin.H{"status": "completed"})
+}
+
 // Reopen 重新打开工单 (POST /admin/orders/:order_id/reopen, 5.16)
 func (h *AdminHandler) Reopen(c *gin.Context) {
 	var req struct {
@@ -400,12 +466,22 @@ func (h *AdminHandler) ListEnterprises(c *gin.Context) {
 		response.FailError(c, err)
 		return
 	}
+	// V1.5: 维修业务员仅可见其经营范围内的客户企业（超管/单位审核员不受限）
+	op := opOf(c)
+	scope, err := h.access.OrderScope(c.Request.Context(), op)
+	if err != nil {
+		h.logger.Error("ListEnterprises Admin: scope error", zap.Error(err))
+		response.FailError(c, err)
+		return
+	}
 	result, err := h.entSvc.AdminListEnterprises(
 		c.Request.Context(),
 		page,
 		pageSize,
 		c.Query("keyword"),
 		c.Query("status"),
+		scope.Scoped,
+		scope.EnterpriseIDs,
 	)
 	if err != nil {
 		h.logger.Error("ListEnterprises Admin: service error", zap.Error(err))
@@ -417,6 +493,12 @@ func (h *AdminHandler) ListEnterprises(c *gin.Context) {
 
 // EnterpriseDetail 企业详情 (GET /admin/enterprises/:enterprise_id, 5.9)
 func (h *AdminHandler) EnterpriseDetail(c *gin.Context) {
+	// V1.5: 读操作按经营范围 / 本单位收敛，避免业务员看到范围外的客户资料
+	if err := h.access.AssertCanViewEnterprise(c.Request.Context(), opOf(c), c.Param("enterprise_id")); err != nil {
+		h.logger.Warn("EnterpriseDetail Admin: view denied", zap.Error(err), zap.String("enterprise_id", c.Param("enterprise_id")))
+		response.FailError(c, err)
+		return
+	}
 	detail, err := h.entSvc.AdminEnterpriseDetailByID(c.Request.Context(), c.Param("enterprise_id"))
 	if err != nil {
 		h.logger.Error("EnterpriseDetail Admin: service error", zap.Error(err), zap.String("enterprise_id", c.Param("enterprise_id")))
@@ -428,8 +510,9 @@ func (h *AdminHandler) EnterpriseDetail(c *gin.Context) {
 
 // ListMembers 成员列表 (GET /admin/enterprises/:enterprise_id/members, 5.10; 单位审核员或店方角色)
 func (h *AdminHandler) ListMembers(c *gin.Context) {
-	if err := h.access.CanManageEnterprise(c.Request.Context(), c.Param("enterprise_id"), c.GetString("user_id"), c.GetInt("role")); err != nil {
-		h.logger.Warn("ListMembers Admin: access denied", zap.Error(err), zap.String("enterprise_id", c.Param("enterprise_id")))
+	// V1.5: 成员信息属客户企业内部资料，按经营范围 / 本单位收敛
+	if err := h.access.AssertCanViewEnterprise(c.Request.Context(), opOf(c), c.Param("enterprise_id")); err != nil {
+		h.logger.Warn("ListMembers Admin: view denied", zap.Error(err), zap.String("enterprise_id", c.Param("enterprise_id")))
 		response.FailError(c, err)
 		return
 	}
@@ -458,15 +541,12 @@ func (h *AdminHandler) ListMembers(c *gin.Context) {
 
 // Repairers 维修员(业务员)列表 (GET /admin/repairers, 5.15)
 func (h *AdminHandler) Repairers(c *gin.Context) {
-	users, err := h.orders.ListRepairers(c.Request.Context())
+	// V1.5: 已含 scope_count（经营范围企业数），供超管后台分配时参考
+	list, err := h.orders.ListRepairers(c.Request.Context())
 	if err != nil {
 		h.logger.Error("Repairers Admin: service error", zap.Error(err))
 		response.FailError(c, err)
 		return
-	}
-	list := make([]service.AdminReporter, 0, len(users))
-	for _, u := range users {
-		list = append(list, service.AdminReporter{ID: u.ID, Nickname: u.Nickname, AvatarURL: u.AvatarUrl})
 	}
 	response.OK(c, gin.H{"list": list})
 }

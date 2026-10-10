@@ -24,18 +24,26 @@ const menus = computed<Array<{ path: string; title: string; icon: string }>>(() 
   if (userStore.isStoreStaff) {
     items.push(
       { path: '/orders', title: '工单管理', icon: 'Tickets' },
+      // 代单位上报故障（与小程序同源接口，后端校验该单位成员身份）
+      { path: '/orders/create', title: '上报工单', icon: 'EditPen' },
       { path: '/stats', title: '统计', icon: 'DataAnalysis' },
       { path: '/enterprises', title: '企业管理', icon: 'OfficeBuilding' }
     )
     if (userStore.isSuperAdmin) {
       items.push(
         { path: '/dictionary', title: '项目字典', icon: 'Collection' },
-        { path: '/users', title: '用户管理', icon: 'User' }
+        { path: '/users', title: '用户管理', icon: 'User' },
+        // V1.5 经营范围：业务员能看到哪些客户企业的数据
+        { path: '/repairers', title: '经营范围', icon: 'Connection' },
+        // 系统设置（完工时限等超管参数）
+        { path: '/settings', title: '系统设置', icon: 'Setting' }
       )
     }
   } else if (userStore.hasReviewerRole) {
     // 单位审核员：登录后独立展示“单位审核”与“企业管理”两个入口
     items.push({ path: '/review', title: '单位审核', icon: 'Checked' })
+    // 审核员也可直接上报本单位的故障
+    items.push({ path: '/orders/create', title: '上报工单', icon: 'EditPen' })
     const first = userStore.reviewerEnterprises[0]
     if (first) {
       items.push({

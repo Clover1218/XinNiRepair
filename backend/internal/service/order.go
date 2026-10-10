@@ -67,6 +67,8 @@ var actionLabels = map[string]string{
 	"cancel":         "取消",
 	"upload_receipt": "上传收据",
 	"update_finance": "修改对账信息",
+	"sign":           "补签完工",
+	"defer_sign":     "稍后补签",
 }
 
 // ────────────────────────────────────────────
@@ -151,6 +153,59 @@ type Pagination struct {
 	TotalPages int   `json:"total_pages"`
 }
 
+// ────────────────────────────────────────────
+// 工单本质标签（V1.5）
+// ────────────────────────────────────────────
+
+// ComputeDisplayTag 根据工单状态与本质字段派生"一眼可读"的展示标签。
+//
+// 状态机保持精简（7 态）；"不能修 / 待补收据 / 待补签"等本质由本函数组合既有事实得出，
+// 不直接新增状态机状态，避免流程变复杂。
+//
+// receiptUploaded 表示是否存在 active 状态收据图（仅 processing 态用于区分"待补收据"）。
+// 返回 (标签文案, Element 标签语义类型: info/success/warning/danger/primary)。
+func ComputeDisplayTag(o *model.RepairOrder, receiptUploaded bool) (tag, tagType string) {
+	switch o.Status {
+	case string(model.OrderDraft):
+		return "草稿", "info"
+	case string(model.OrderReported):
+		return "待审核", "danger"
+	case string(model.OrderPendingAccept):
+		return "待接单", "warning"
+	case string(model.OrderProcessing):
+		// 已通知客户稍后补签 → 待补签（橙色醒目）；其余按金额/收据区分
+		if o.SignatureStatus == string(model.SignaturePendingSign) {
+			return "待补签", "warning"
+		}
+		if o.Amount > 0 && !receiptUploaded {
+			return "处理中·待补收据", "warning"
+		}
+		return "处理中·待处理", "primary"
+	case string(model.OrderCompleted):
+		switch o.SignatureStatus {
+		case model.SignatureSigned:
+			return "已完工·已签字", "success"
+		case model.SignaturePendingSign:
+			return "已完工·待补签", "warning"
+		default:
+			return "已完工", "success"
+		}
+	case string(model.OrderCancelled):
+		switch o.FinishOutcome {
+		case model.FinishOutcomeUnrepairable:
+			return "不能修", "danger"
+		case model.FinishOutcomeCustomerCancelled:
+			return "客户取消", "info"
+		default:
+			return "已取消", "info"
+		}
+	case string(model.OrderRejected):
+		return "已退回", "danger"
+	default:
+		return "未知", "info"
+	}
+}
+
 // OrderListItem 我的工单列表项 (4.6)
 type OrderListItem struct {
 	ID             string     `json:"id"`
@@ -174,6 +229,12 @@ type OrderListItem struct {
 	/** 联系人及电话（"王五 12345678910"，待后端拆分为 contact_name/contact_phone） */
 	Contact string      `json:"contact"`
 	Images  []ImageItem `json:"images"`
+	// V1.5 本质标签（后端派生，前端只渲染）
+	DisplayTag      string `json:"display_tag"`
+	DisplayTagType  string `json:"display_tag_type"`
+	ReceiptUploaded bool   `json:"receipt_uploaded"`
+	SignatureStatus string `json:"signature_status"`
+	FinishOutcome   string `json:"finish_outcome"`
 }
 
 // OrderListResult 我的工单列表 (4.6)
@@ -242,6 +303,12 @@ type OrderDetail struct {
 	CreatedAt        time.Time             `json:"created_at"`
 	SubmittedAt      *time.Time            `json:"submitted_at"`
 	UpdatedAt        time.Time             `json:"updated_at"`
+	// V1.5 本质标签（后端派生，前端只渲染）
+	DisplayTag      string `json:"display_tag"`
+	DisplayTagType  string `json:"display_tag_type"`
+	ReceiptUploaded bool   `json:"receipt_uploaded"`
+	SignatureStatus string `json:"signature_status"`
+	FinishOutcome   string `json:"finish_outcome"`
 }
 
 // UploadImageResult 图片上传响应 (4.9)
@@ -343,11 +410,11 @@ func (s *OrderService) Options(ctx context.Context, userID string) (*OrderOption
 	}, nil
 }
 
-// Create 创建空草稿 (4.2)
+// Create 创建草稿 (4.2)
 //
-// 请求体为空。创建的空草稿: order_no 为空、enterprise_id/category_id/property_id 为空,
-// 企业归属与项目大类/属性在 4.3 更新草稿时设置。
-func (s *OrderService) Create(ctx context.Context, userID string) (*OrderDraftResult, error) {
+// V1.4 (2026-09-30): 请求体可选——携带内容时一次性完成赋值与校验 ("先内容后分配 ID"),
+// 空请求体仍创建空草稿 (兼容旧客户端)。字段校验与 Update 共用 applyDraftFields。
+func (s *OrderService) Create(ctx context.Context, userID string, in UpdateOrderInput) (*OrderDraftResult, error) {
 	count, err := s.orders.CountDraftsByUser(ctx, userID)
 	if err != nil {
 		return nil, s.dbErr("count drafts failed", err)
@@ -360,6 +427,10 @@ func (s *OrderService) Create(ctx context.Context, userID string) (*OrderDraftRe
 		ID:         uuid.New().String(),
 		ReporterID: userID,
 		Status:     string(model.OrderDraft),
+	}
+	// 携带内容时先赋值校验再落库 (校验失败不会产生任何记录)
+	if err := s.applyDraftFields(ctx, order, in); err != nil {
+		return nil, err
 	}
 	if err := s.orders.Create(ctx, order); err != nil {
 		return nil, s.dbErr("create order failed", err)
@@ -383,24 +454,19 @@ func (s *OrderService) Create(ctx context.Context, userID string) (*OrderDraftRe
 	}, nil
 }
 
-// Update 更新草稿 (4.3)
+// applyDraftFields 草稿字段赋值与校验 (4.2 创建 / 4.3 更新共用)
 //
-// 所有字段可选; category_id/property_id 名称快照由后端自动回填;
-// 常见问题不作为工单字段 (前端选中后预填 description);
-// images 传完整列表, 按 status 全量替换。
-func (s *OrderService) Update(ctx context.Context, userID, orderID string, in UpdateOrderInput) (*OrderDraftResult, error) {
-	order, err := s.loadOwnedEditable(ctx, userID, orderID)
-	if err != nil {
-		return nil, err
-	}
-
+// 所有入参字段均为指针: nil 表示不处理, 非 nil 才校验并赋值。
+// 创建与更新共用此处逻辑, 避免两套校验规则漂移。注意: 图片不在此处理
+// (图片必须在工单落库后经 4.9 上传, 避免产生无归属记录)。
+func (s *OrderService) applyDraftFields(ctx context.Context, order *model.RepairOrder, in UpdateOrderInput) error {
 	if in.EnterpriseID != nil {
 		v := strings.TrimSpace(*in.EnterpriseID)
 		if v == "" {
-			return nil, apperrors.ErrInvalidParam.WithMessage("enterprise_id 不能为空")
+			return apperrors.ErrInvalidParam.WithMessage("enterprise_id 不能为空")
 		}
-		if err := s.verifyMembership(ctx, v, userID); err != nil {
-			return nil, err
+		if err := s.verifyMembership(ctx, v, order.ReporterID); err != nil {
+			return err
 		}
 		order.EnterpriseID = &v
 	}
@@ -410,10 +476,10 @@ func (s *OrderService) Update(ctx context.Context, userID, orderID string, in Up
 		v := strings.TrimSpace(*in.CategoryID)
 		cat, err := s.projects.FindActiveCategoryByID(ctx, v)
 		if err != nil {
-			return nil, s.dbErr("find category failed", err)
+			return s.dbErr("find category failed", err)
 		}
 		if cat == nil {
-			return nil, apperrors.ErrInvalidParam.WithMessage("项目大类不存在或已删除")
+			return apperrors.ErrInvalidParam.WithMessage("项目大类不存在或已删除")
 		}
 		order.CategoryID = &v
 		order.CategoryName = cat.Name
@@ -421,7 +487,7 @@ func (s *OrderService) Update(ctx context.Context, userID, orderID string, in Up
 		if order.PropertyID != nil {
 			prop, err := s.projects.FindActivePropertyByID(ctx, *order.PropertyID)
 			if err != nil {
-				return nil, s.dbErr("find property failed", err)
+				return s.dbErr("find property failed", err)
 			}
 			if prop == nil || prop.CategoryID != v {
 				order.PropertyID = nil
@@ -435,17 +501,17 @@ func (s *OrderService) Update(ctx context.Context, userID, orderID string, in Up
 		v := strings.TrimSpace(*in.PropertyID)
 		prop, err := s.projects.FindActivePropertyByID(ctx, v)
 		if err != nil {
-			return nil, s.dbErr("find property failed", err)
+			return s.dbErr("find property failed", err)
 		}
 		if prop == nil {
-			return nil, apperrors.ErrInvalidParam.WithMessage("项目属性不存在或已删除")
+			return apperrors.ErrInvalidParam.WithMessage("项目属性不存在或已删除")
 		}
 		catID := ""
 		if order.CategoryID != nil {
 			catID = *order.CategoryID
 		}
 		if catID == "" || prop.CategoryID != catID {
-			return nil, apperrors.ErrInvalidParam.WithMessage("project_property 必须属于所选项目大类，请先选择大类")
+			return apperrors.ErrInvalidParam.WithMessage("project_property 必须属于所选项目大类，请先选择大类")
 		}
 		order.PropertyID = &v
 		order.PropertyName = prop.Name
@@ -454,28 +520,45 @@ func (s *OrderService) Update(ctx context.Context, userID, orderID string, in Up
 	if in.Description != nil {
 		v := strings.TrimSpace(*in.Description)
 		if err := validateLength("description", v, 1, 500); err != nil {
-			return nil, err
+			return err
 		}
 		order.Description = v
 	}
 	if in.Urgency != nil {
 		if _, ok := urgencyLabels[*in.Urgency]; !ok {
-			return nil, apperrors.ErrInvalidParam.WithMessage("urgency 取值: normal/urgent/very_urgent")
+			return apperrors.ErrInvalidParam.WithMessage("urgency 取值: normal/urgent/very_urgent")
 		}
 		order.Urgency = *in.Urgency
 	}
 	if in.Room != nil {
 		v := strings.TrimSpace(*in.Room)
 		if err := validateLength("room", v, 1, 20); err != nil {
-			return nil, err
+			return err
 		}
 		order.Room = v
 	}
 	if in.Contact != nil {
 		if err := validateLength("contact", strings.TrimSpace(*in.Contact), 0, 40); err != nil {
-			return nil, err
+			return err
 		}
 		order.Contact = strings.TrimSpace(*in.Contact)
+	}
+	return nil
+}
+
+// Update 更新草稿 (4.3)
+//
+// 所有字段可选; category_id/property_id 名称快照由后端自动回填;
+// 常见问题不作为工单字段 (前端选中后预填 description);
+// images 传完整列表, 按 status 全量替换。
+func (s *OrderService) Update(ctx context.Context, userID, orderID string, in UpdateOrderInput) (*OrderDraftResult, error) {
+	order, err := s.loadOwnedEditable(ctx, userID, orderID)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := s.applyDraftFields(ctx, order, in); err != nil {
+		return nil, err
 	}
 
 	if err := s.orders.Update(ctx, order); err != nil {
@@ -609,9 +692,15 @@ func (s *OrderService) List(ctx context.Context, userID, enterpriseID, status st
 	if err != nil {
 		return nil, s.dbErr("list images failed", err)
 	}
+	receiptCounts, err := s.images.CountActiveByOrders(ctx, orderIDs, string(model.ImageReceipt))
+	if err != nil {
+		return nil, s.dbErr("count receipts failed", err)
+	}
 
 	list := make([]OrderListItem, 0, len(orders))
 	for _, o := range orders {
+		receiptUploaded := receiptCounts[o.ID] > 0
+		tag, tagType := ComputeDisplayTag(&o, receiptUploaded)
 		list = append(list, OrderListItem{
 			ID:             o.ID,
 			OrderNo:        o.OrderNo,
@@ -631,6 +720,11 @@ func (s *OrderService) List(ctx context.Context, userID, enterpriseID, status st
 			Room:           o.Room,
 			Contact:        o.Contact,
 			Images:         buildImageItems(imgList[o.ID]),
+			DisplayTag:      tag,
+			DisplayTagType:  tagType,
+			ReceiptUploaded: receiptUploaded,
+			SignatureStatus: o.SignatureStatus,
+			FinishOutcome:   o.FinishOutcome,
 		})
 	}
 
@@ -675,6 +769,7 @@ func (s *OrderService) Detail(ctx context.Context, userID, orderID string) (*Ord
 		return nil, s.dbErr("list timelines failed", err)
 	}
 
+	tagC, tagTypeC := ComputeDisplayTag(order, len(receipts) > 0)
 	return &OrderDetail{
 		ID:               order.ID,
 		OrderNo:          order.OrderNo,
@@ -707,6 +802,11 @@ func (s *OrderService) Detail(ctx context.Context, userID, orderID string) (*Ord
 		CreatedAt:        order.CreatedAt,
 		SubmittedAt:      order.SubmittedAt,
 		UpdatedAt:        order.UpdatedAt,
+		DisplayTag:       tagC,
+		DisplayTagType:   tagTypeC,
+		ReceiptUploaded:  len(receipts) > 0,
+		SignatureStatus:  order.SignatureStatus,
+		FinishOutcome:    order.FinishOutcome,
 	}, nil
 }
 
@@ -902,7 +1002,7 @@ func (s *OrderService) replaceImages(ctx context.Context, orderID, imageType str
 		if u == "" {
 			continue
 		}
-		img, err := s.images.FindByOrderAndURL(ctx, orderID, u)
+		img, err := s.images.FindByOrderAndURL(ctx, orderID, imageType, u)
 		if err != nil {
 			return s.dbErr("find image failed", err)
 		}
@@ -1054,7 +1154,7 @@ func parseOrderMetadata(raw datatypes.JSON) *model.RepairMetadata {
 	if err := json.Unmarshal(raw, &meta); err != nil {
 		return nil
 	}
-	if meta.RepairResult == "" && meta.RepairMethod == "" && meta.WarrantyPeriod == "" && meta.ExtraRemark == "" && meta.RepairDuration == 0 {
+	if meta.RepairResult == "" && meta.RepairMethod == "" && meta.WarrantyPeriod == "" && meta.RepairDuration == 0 {
 		return nil
 	}
 	return &meta

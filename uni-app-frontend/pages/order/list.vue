@@ -260,15 +260,13 @@ export default defineComponent({
     stopCardClick() {
       // no-op
     },
+    /**
+     * 新建工单（V1.4「先内容后分配 ID」）。
+     * 不发起任何建单请求，直接进入编辑页本地起草；
+     * 服务端草稿在用户「保存草稿 / 提交报修」时才创建，避免空草稿占用数据记录。
+     */
     createOrder() {
-      uni.showLoading({ title: '创建中...' })
-      http
-        .post<{ order_id: string }>('/orders', {})
-        .then((data) => {
-          uni.hideLoading()
-          uni.navigateTo({ url: `/pages/order/edit?id=${data.order_id}` })
-        })
-        .catch(() => uni.hideLoading())
+      uni.navigateTo({ url: '/pages/order/edit' })
     },
     editOrder(orderId: string) {
       uni.navigateTo({ url: `/pages/order/edit?id=${orderId}` })

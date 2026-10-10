@@ -23,6 +23,14 @@ const routes = [
         meta: { title: '工单管理', permissions: ['store'] }
       },
       {
+        // 必须注册在 orders/:id 之前，否则会被 :id 抢占匹配（id="create"）
+        path: 'orders/create',
+        name: 'OrderCreate',
+        component: () => import('@/views/orders/create.vue'),
+        // 审核员/业务员也可代单位上报；后端会校验其是否为该单位已审批成员
+        meta: { title: '上报工单', permissions: ['store', 'reviewer'] }
+      },
+      {
         path: 'orders/:id',
         name: 'OrderDetail',
         component: () => import('@/views/orders/detail.vue'),
@@ -64,6 +72,20 @@ const routes = [
         name: 'UserList',
         component: () => import('@/views/users/list.vue'),
         meta: { title: '用户管理', permissions: ['super'] }
+      },
+      {
+        path: 'repairers',
+        name: 'RepairerScope',
+        component: () => import('@/views/repairers/index.vue'),
+        // V1.5 经营范围分配：仅超级管理员（业务员数据权限管控入口）
+        meta: { title: '经营范围', permissions: ['super'] }
+      },
+      {
+        path: 'settings',
+        name: 'Settings',
+        component: () => import('@/views/settings/index.vue'),
+        // 系统设置（完工时限等超管参数）：仅超级管理员
+        meta: { title: '系统设置', permissions: ['super'] }
       }
     ]
   },

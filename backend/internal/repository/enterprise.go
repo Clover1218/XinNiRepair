@@ -67,13 +67,22 @@ func (r *EnterpriseRepository) FindByInviteCode(ctx context.Context, inviteCode 
 }
 
 // ListForAdmin 管理端分页查询企业 (5.8), keyword 企业名模糊, status 为 1=active/0=inactive
-func (r *EnterpriseRepository) ListForAdmin(ctx context.Context, keyword string, status *int, offset, limit int) ([]model.Enterprise, int64, error) {
+//
+// V1.5: scoped=true 时仅返回 scopeIDs 内的企业（维修业务员经营范围）；
+// scoped=true 且 scopeIDs 为空表示无任何可见企业，直接返回空结果。
+func (r *EnterpriseRepository) ListForAdmin(ctx context.Context, keyword string, status *int, scoped bool, scopeIDs []string, offset, limit int) ([]model.Enterprise, int64, error) {
 	base := r.db.WithContext(ctx).Model(&model.Enterprise{})
 	if keyword != "" {
 		base = base.Where("name LIKE ?", "%"+keyword+"%")
 	}
 	if status != nil {
 		base = base.Where("status = ?", *status)
+	}
+	if scoped {
+		if len(scopeIDs) == 0 {
+			return []model.Enterprise{}, 0, nil
+		}
+		base = base.Where("id IN ?", scopeIDs)
 	}
 
 	var total int64

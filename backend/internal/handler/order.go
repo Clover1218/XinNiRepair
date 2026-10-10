@@ -1,6 +1,9 @@
 package handler
 
 import (
+	"errors"
+	"io"
+
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
@@ -31,9 +34,22 @@ func (h *OrderHandler) Options(c *gin.Context) {
 	response.OK(c, options)
 }
 
-// Create 创建空草稿 (POST /orders, 请求体为空)
+// Create 创建草稿 (POST /orders)
+//
+// V1.4 (2026-09-30): 请求体可选。
+//   - 空 body / 空对象 → 创建空草稿 (兼容旧客户端 "先分配 ID 再填内容")
+//   - 携带字段 → "先内容后分配 ID", 一次性完成赋值与校验并返回 order_id
+//
+// 注意: 不接受 images 字段, 图片在拿到 order_id 后经 POST /orders/:order_id/images 上传。
 func (h *OrderHandler) Create(c *gin.Context) {
-	result, err := h.svc.Create(c.Request.Context(), c.GetString("user_id"))
+	var req service.UpdateOrderInput
+	// ShouldBindJSON 对空请求体返回 EOF: 视为创建空草稿, 不报错
+	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+		h.logger.Warn("Create Order: invalid request body", zap.Error(err), zap.String("user_id", c.GetString("user_id")))
+		response.Fail(c, apperrors.ErrInvalidParam.WithMessage("请求体格式错误"))
+		return
+	}
+	result, err := h.svc.Create(c.Request.Context(), c.GetString("user_id"), req)
 	if err != nil {
 		h.logger.Error("Create Order: service error", zap.Error(err), zap.String("user_id", c.GetString("user_id")))
 		response.FailError(c, err)

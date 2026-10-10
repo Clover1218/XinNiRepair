@@ -296,14 +296,18 @@ function handleResize() {
 // ── 初始化 ──
 async function initScope() {
   if (isStore.value) {
-    entOptions.value = [{ value: ALL, label: '全部企业' }]
+    // V1.5：维修业务员（非超管）受经营范围限制，服务端不接受"不指定企业"的统计请求，
+    // 因此不给「全部企业」选项，并默认选中其可见的第一家企业。
+    // 后端 /admin/enterprises 已按经营范围过滤，此处无需再筛。
+    const unlimited = userStore.isSuperAdmin
+    entOptions.value = unlimited ? [{ value: ALL, label: '全部企业' }] : []
     try {
       const res = await adminAPI.getEnterprises({ page: 1, page_size: 100 })
       res.data.list.forEach(e => entOptions.value.push({ value: e.id, label: e.name }))
     } catch {
-      /* 忽略：仅「全部企业」也可用 */
+      /* 忽略：业务员此时无可见企业，后续请求会由服务端给出明确提示 */
     }
-    enterpriseId.value = ALL
+    enterpriseId.value = unlimited ? ALL : entOptions.value[0]?.value || ''
     repOptions.value = [{ value: ALL, label: '全部业务员' }]
     try {
       const res = await adminAPI.getRepairers()

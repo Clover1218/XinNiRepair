@@ -92,6 +92,12 @@ export interface OrderListItem {
   /** V1.4 列表展示：维修操作内容 / 金额（未完工为空/0） */
   repair_content?: string
   amount?: number
+  /** V1.5 本质标签（后端派生，前端只渲染；状态之外的"一眼可读"本质） */
+  display_tag?: string
+  display_tag_type?: string
+  receipt_uploaded?: boolean
+  signature_status?: string
+  finish_outcome?: string
 }
 
 /** 报修人筛选下拉选项（GET /admin/orders/reporters，来源于历史工单报修人） */
@@ -106,8 +112,14 @@ export interface OrderMetadata {
   repair_result?: string
   repair_method?: string
   warranty_period?: string
-  extra_remark?: string
   repair_duration?: number
+}
+
+/** 图片上传结果（收据 / 签字单，后端返回负载） */
+export interface UploadImageResult {
+  id: string
+  url: string
+  file_size?: number
 }
 
 /** 对账信息（完工提交 / 修改对账共用） */
@@ -121,7 +133,7 @@ export interface FinanceInfo {
 
 /** 可执行动作（5.2 available_actions；store 全量，审核员由前端按角色裁剪） */
 export interface AvailableAction {
-  action: 'audit' | 'accept' | 'complete' | 'reject' | 'reopen' | 'update_finance'
+  action: 'audit' | 'accept' | 'complete' | 'reject' | 'reopen' | 'update_finance' | 'sign' | 'defer_sign'
   label: string
   to_status: string
   require_reason?: boolean
@@ -148,6 +160,7 @@ export interface OrderDetail {
   status: OrderStatus
   status_label: string
   reject_reason: string | null
+  remark?: string
   repair_content: string
   quantity: number
   unit_price: number
@@ -167,6 +180,12 @@ export interface OrderDetail {
   accepted_at?: string
   completed_at?: string
   updated_at: string
+  /** V1.5 本质标签（后端派生，前端只渲染；状态之外的"一眼可读"本质） */
+  display_tag?: string
+  display_tag_type?: string
+  receipt_uploaded?: boolean
+  signature_status?: string
+  finish_outcome?: string
 }
 
 /** 分页响应 */
@@ -292,6 +311,40 @@ export interface ProblemOption {
 export interface OrderOptions {
   categories: CategoryOption[]
   enterprises: Array<{ id: string; name: string }>
+  /** 紧急程度候选（value: normal/urgent/very_urgent）；后端固定下发，前端不硬编码 */
+  urgent_levels?: Array<{ value: string; label: string }>
+}
+
+/** 创建/更新草稿响应（4.2 / 4.3） */
+export interface OrderDraftResult {
+  order_id: string
+  status: string
+  created_at?: string
+  updated_at?: string
+}
+
+/** 提交上报响应（4.4，工单号在此时生成） */
+export interface SubmitResult {
+  id: string
+  order_no: string
+  status: string
+  submitted_at: string
+}
+
+/** 系统设置项（超管可调参数） */
+export interface SettingItem {
+  key: string
+  value: string
+  default: string
+  description: string
+  editable: boolean
+  updated_at?: string
+  updated_by?: string
+}
+
+/** 系统设置列表响应 */
+export interface SettingsResult {
+  settings: Record<string, SettingItem>
 }
 
 /** 字典管理：大类（6.5.1，超管） */
@@ -449,4 +502,46 @@ export interface RepairerSummary {
   list: RepairerSummaryRow[]
   range: OrderStatsRange
   updated_at: string
+}
+
+// ────────────────────────────────────────────
+// 维修业务员经营范围（V1.5）
+// ────────────────────────────────────────────
+
+/** 业务员列表项（GET /admin/repairers，含已分配企业明细） */
+export interface RepairerListItem {
+  id: string
+  nickname: string
+  avatar_url: string
+  role: PlatformRole
+  /** 已分配的经营范围企业数；0 表示尚未分配（将无法看到任何企业数据） */
+  scope_count: number
+  /** 已分配企业明细：列表页直接展示名称，便于核对分配是否正确 */
+  enterprises: ScopeEnterpriseItem[]
+}
+
+/** 经营范围中的企业项 */
+export interface ScopeEnterpriseItem {
+  enterprise_id: string
+  enterprise_name: string
+  assigned_at: string
+}
+
+/** 某业务员的经营范围（GET /admin/repairers/:id/enterprises） */
+export interface RepairerScope {
+  repairer_id: string
+  nickname: string
+  enterprises: ScopeEnterpriseItem[]
+  total: number
+  /** false 表示超级管理员（理论上不受范围限制） */
+  scope_limited: boolean
+}
+
+/** 服务某企业的业务员（GET /admin/enterprises/:id/repairers） */
+export interface ScopeRepairerItem {
+  repairer_id: string
+  nickname: string
+  phone: string
+  avatar_url: string
+  assigned_at: string
 }

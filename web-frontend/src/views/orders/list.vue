@@ -65,6 +65,7 @@ const {
   dateRange,
   sortBy,
   sortOrder,
+  essenceFilter,
   page,
   pageSize
 } = storeToRefs(queryStore)
@@ -105,6 +106,12 @@ const fetchList = async () => {
     if (reporterId.value) params.reporter_id = reporterId.value
     if (keyword.value.trim()) params.keyword = keyword.value.trim()
     if (urgency.value) params.urgency = urgency.value
+    // V1.5 本质标签筛选：映射到后端派生字段（finish_outcome / signature_status）
+    if (essenceFilter.value === 'unrepairable' || essenceFilter.value === 'customer_cancelled') {
+      params.finish_outcome = essenceFilter.value
+    } else if (essenceFilter.value === 'pending_sign' || essenceFilter.value === 'signed') {
+      params.signature_status = essenceFilter.value
+    }
     if (dateRange.value) {
       params.date_from = `${dateRange.value[0]}T00:00:00+08:00`
       params.date_to = `${dateRange.value[1]}T23:59:59+08:00`
@@ -430,6 +437,18 @@ onMounted(() => {
           <el-option label="紧急" value="urgent" />
           <el-option label="非常紧急" value="very_urgent" />
         </el-select>
+        <el-select
+          v-model="essenceFilter"
+          placeholder="本质标签"
+          clearable
+          class="filter-input"
+          @change="handleSearch"
+        >
+          <el-option label="不能修" value="unrepairable" />
+          <el-option label="客户取消" value="customer_cancelled" />
+          <el-option label="待补签" value="pending_sign" />
+          <el-option label="已签字" value="signed" />
+        </el-select>
         <el-date-picker
           v-model="dateRange"
           type="daterange"
@@ -494,10 +513,14 @@ onMounted(() => {
             </span>
           </template>
         </el-table-column>
-        <el-table-column prop="status" label="状态" width="110" sortable="custom">
+        <el-table-column prop="status" label="本质" width="130" sortable="custom">
           <template #default="{ row }">
-            <el-tag :type="statusTagType[row.status as OrderStatus]">
-              {{ row.status_label }}
+            <span
+              v-if="row.signature_status === 'pending_sign'"
+              class="pending-sign-badge"
+            >待补签</span>
+            <el-tag v-else :type="(row.display_tag_type as string) || statusTagType[row.status as OrderStatus]">
+              {{ row.display_tag || row.status_label }}
             </el-tag>
           </template>
         </el-table-column>
@@ -674,5 +697,18 @@ onMounted(() => {
 
 :deep(.el-table__row) {
   cursor: pointer;
+}
+
+/* 待补签：醒目橙色徽标 */
+.pending-sign-badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
+  background: linear-gradient(90deg, #ff8c1a, #ff6a00);
+  box-shadow: 0 1px 4px rgba(255, 106, 0, 0.45);
+  letter-spacing: 1px;
 }
 </style>

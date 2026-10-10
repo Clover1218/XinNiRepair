@@ -181,7 +181,7 @@
       <view class="popup-body">
         <view class="popup-title">退回工单</view>
         <view class="popup-label">
-          退回原因<text class="popup-label-req">（必填，10-200字）</text>
+          退回原因<text class="popup-label-req">（必填，2-200字）</text>
         </view>
         <wd-textarea
           v-model="rejectReason"
@@ -634,7 +634,7 @@ export default defineComponent({
     async confirmReject() {
       const reason = this.rejectReason.trim()
       const action = this.filteredActions.find((a) => a.action === 'reject')
-      const minLength = action?.reason_min_length || 10
+      const minLength = action?.reason_min_length || 2
       if (reason.length < minLength) {
         uni.showToast({ title: `退回原因至少${minLength}字`, icon: 'none' })
         return

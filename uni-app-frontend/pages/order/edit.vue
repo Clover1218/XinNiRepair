@@ -1,57 +1,35 @@
 <template>
   <view class="page">
+    <!-- 本地草稿恢复提示条（新建模式） -->
+    <view v-if="draftRestored" class="restore-bar">
+      <text class="restore-text">已为你恢复上次未完成的报修</text>
+      <text class="restore-action" @click.stop="discardRestored">放弃</text>
+    </view>
+
     <!-- ① 发生了什么？ -->
     <view class="section">
       <view class="section-title">① 发生了什么？</view>
 
-      <!-- 设备类型（大类） + 问题类别（属性）：同一行对半分 -->
-      <view class="cat-row">
-        <picker
-          class="cat-picker"
-          mode="selector"
-          :range="categoryOptions"
-          range-key="name"
-          :value="categoryIndex"
-          @change="onCategoryChange"
-        >
-          <view class="form-cell">
-            <view class="cell-label">设备类型</view>
-            <view class="cell-value" :class="{ 'is-placeholder': !form.category_id }">
-              {{ categoryLabel || '请选择' }}
-              <text class="cell-arrow">›</text>
-            </view>
-          </view>
-        </picker>
-
-        <picker
-          class="cat-picker"
-          mode="selector"
-          :range="propertyOptions"
-          range-key="name"
-          :value="propertyIndex"
-          :disabled="propertyOptions.length === 0"
-          @change="onPropertyChange"
-        >
-          <view class="form-cell">
-            <view class="cell-label">问题类别</view>
-            <view class="cell-value" :class="{ 'is-placeholder': !form.property_id }">
-              {{ propertyLabel || (propertyOptions.length === 0 ? '先选类型' : '请选择') }}
-              <text class="cell-arrow">›</text>
-            </view>
-          </view>
-        </picker>
+      <!-- 设备类型（大类） + 问题类别（属性）：点击打开两级弹层 -->
+      <view class="form-cell" @click="openCategoryPopup">
+        <view class="cell-label">设备类型</view>
+        <view class="cell-value" :class="{ 'is-placeholder': !form.category_id }">
+          {{ categorySummary || '请选择设备类型' }}
+          <text class="cell-arrow">›</text>
+        </view>
       </view>
 
       <view class="upload-grid">
         <view v-for="(img, index) in imageList" :key="index" class="upload-item">
           <image
             class="upload-img"
-            :src="img.localPath || img.url"
+            :src="img.preview || img.url"
             mode="aspectFill"
             @click="previewImage(index)"
             @error="onImageError(index)"
           ></image>
           <view class="upload-del" @click.stop="removeImage(index)">×</view>
+          <view v-if="img.failed" class="upload-retry" @click.stop="retryImage(index)">重试</view>
         </view>
         <view v-if="imageList.length < 9" class="upload-add" @click="chooseImage">
           <text class="upload-add-icon">+</text>
@@ -59,17 +37,29 @@
         </view>
       </view>
 
-      <textarea
-        class="desc-textarea"
-        v-model="form.description"
-        placeholder="描述一下遇到的问题"
-        placeholder-class="input-placeholder"
-        maxlength="500"
-        :show-confirm-bar="false"
-      />
+      <view class="desc-wrap">
+        <textarea
+          class="desc-textarea"
+          v-model="form.description"
+          placeholder="描述一下遇到的问题"
+          placeholder-class="input-placeholder"
+          maxlength="500"
+          :show-confirm-bar="false"
+        />
+        <view class="desc-footer">
+          <text
+            v-if="form.description"
+            class="desc-clear-text"
+            @click.stop="clearDescription"
+          >
+            清空
+          </text>
+          <text class="desc-count">{{ form.description.length }}/500</text>
+        </view>
+      </view>
 
       <!-- 常见问题：点击以“追加”方式写入问题名称，不整体替换 -->
-      <view v-if="problemOptions.length > 0" class="issue-chips">
+      <scroll-view v-if="problemOptions.length > 0" class="issue-chips" scroll-y>
         <view
           v-for="p in problemOptions"
           :key="p.id"
@@ -78,7 +68,7 @@
         >
           {{ p.name }}
         </view>
-      </view>
+      </scroll-view>
     </view>
 
     <!-- ② 在哪里？ -->
@@ -101,15 +91,44 @@
         </view>
       </picker>
 
-      <view class="form-cell">
-        <view class="cell-label">位置</view>
-        <input
-          class="cell-input"
-          v-model="form.room"
-          placeholder="如：二楼会议室"
-          placeholder-class="input-placeholder"
-          maxlength="20"
-        />
+      <!-- 多单位时的「切换单位」提示（切换后立即同步全局上下文） -->
+      <view v-if="enterpriseOptions.length > 1" class="ent-hint">
+        <text class="ent-hint-text">默认单位：{{ enterpriseLabel || '未选择' }}，可在下方切换</text>
+        <text class="ent-hint-btn" @click.stop="switchEnterprise">切换单位</text>
+      </view>
+
+      <!-- 位置：手填 + 常驻 chips + 聚焦历史浮层 -->
+      <view class="room-block">
+        <view class="form-cell">
+          <view class="cell-label">位置</view>
+          <input
+            class="cell-input"
+            v-model="form.room"
+            placeholder="如：二楼会议室"
+            placeholder-class="input-placeholder"
+            maxlength="20"
+            @focus="onRoomFocus"
+            @blur="onRoomBlur"
+            @confirm="onRoomBlur"
+          />
+          <view v-if="form.room" class="cell-clear" @click.stop="clearCell('room')">×</view>
+        </view>
+
+        <!-- 聚焦时弹出历史候选（类似淘宝/美团地址历史），随输入过滤 -->
+        <view v-if="roomFocused && roomSuggestions.length > 0" class="room-suggest" @click.stop>
+          <view
+            v-for="r in roomSuggestions"
+            :key="r"
+            class="room-suggest-item"
+            @mousedown.prevent="pickRoom(r)"
+            @click.stop="pickRoom(r)"
+          >
+            <text class="room-suggest-text">{{ r }}</text>
+            <text class="room-suggest-del" @click.stop="removeRoom(r)" @mousedown.stop="removeRoom(r)">
+              ×
+            </text>
+          </view>
+        </view>
       </view>
 
       <view class="form-cell">
@@ -121,6 +140,7 @@
           placeholder-class="input-placeholder"
           maxlength="20"
         />
+        <view v-if="form.contact_name" class="cell-clear" @click.stop="clearCell('contact_name')">×</view>
       </view>
 
       <view class="form-cell">
@@ -133,6 +153,11 @@
           placeholder-class="input-placeholder"
           maxlength="11"
         />
+        <view
+          v-if="form.contact_phone"
+          class="cell-clear"
+          @click.stop="clearCell('contact_phone')"
+        >×</view>
       </view>
     </view>
 
@@ -166,12 +191,41 @@
       </view>
     </view>
   </view>
-  <!-- #ifdef MP-WEIXIN -->
-  <!-- 空 page-container：仅用于拦截左上角“<”返回手势，不包裹内容（避免 show=false 时主页面变空白） -->
-  <page-container :show="containerShow" :overlay="false" @beforeleave="onContainerLeave"></page-container>
-  <!-- #endif -->
 
-  <!-- 返回拦截：三按钮（保存 / 不保存 / 取消留页）。禁用遮罩关闭，仅按钮可关，避免误触丢失草稿 -->
+  <!-- 设备类型 / 问题类别 两级选择弹层 -->
+  <wd-popup v-model="catPopupVisible" position="bottom" round custom-style="height: 60vh;">
+    <view class="cat-popup">
+      <view class="cat-popup-head">
+        <text class="cat-popup-cancel" @click.stop="catPopupVisible = false">关闭</text>
+        <text class="cat-popup-title">选择设备类型</text>
+        <text class="cat-popup-placeholder"></text>
+      </view>
+      <view class="cat-popup-body">
+        <scroll-view class="cat-col" scroll-y :scroll-into-view="catScrollInto">
+          <view
+            v-for="c in categoryOptions"
+            :id="'cat-' + c.id"
+            :key="c.id"
+            class="cat-col-item"
+            :class="{ 'is-active': c.id === catActiveId }"
+            @click="onPopupCategory(c)"
+          >{{ c.name }}</view>
+        </scroll-view>
+        <scroll-view class="cat-col cat-col-right" scroll-y>
+          <view
+            v-for="p in popupPropertyOptions"
+            :key="p.id"
+            class="cat-col-item"
+            :class="{ 'is-active': p.id === catActivePropertyId }"
+            @click="onPopupProperty(p)"
+          >{{ p.name }}</view>
+          <view v-if="popupPropertyOptions.length === 0" class="cat-empty">该类型暂无可选问题类别</view>
+        </scroll-view>
+      </view>
+    </view>
+  </wd-popup>
+
+  <!-- 返回拦截：三按钮（保存 / 不保存 / 取消留页）。仅编辑「已落库草稿」时使用 -->
   <wd-popup v-model="showExitDialog" position="center" round :close-on-click-modal="false" custom-style="width: 86%;">
     <view class="exit-popup">
       <view class="exit-title">是否保存草稿</view>
@@ -189,17 +243,44 @@
 import { defineComponent } from 'vue'
 import { http, uploadOrderImage } from '@/utils/request'
 import { splitContact } from '@/utils/format'
+import {
+  clearLocalDraft,
+  localId,
+  localImageName,
+  MAX_DRAFT_IMAGES,
+  persistImage,
+  pushRoomHistory,
+  readLastRoom,
+  readLocalDraft,
+  readRoomHistory,
+  removeRoomHistory,
+  writeLocalDraft
+} from '@/utils/localDraft'
+import type { LocalDraft, RoomHistoryItem } from '@/utils/localDraft'
+import { useEnterpriseStore } from '@/stores/enterprise'
+import { useUserStore } from '@/stores/user'
 import type { CategoryOption, OptionsResult, OrderDetail, PropertyOption, ProblemOption } from '@/types'
 
+/** 图片项：本地队列与已上传项统一用这一个结构 */
 interface ImageItem {
+  /** 图床 URL（未上传为空） */
   url: string
-  /** 上传前的本地临时路径，用于缩略图即时展示 */
-  localPath?: string
+  /** 本地预览路径（优先展示；上传成功后保留以免闪烁） */
+  preview: string
+  /** 本地持久文件路径，上传时使用 */
+  path: string
+  name: string
+  size: number
+  /** 是否已在服务端落库 */
+  uploaded: boolean
+  /** 上传失败标记（展示「重试」角标） */
+  failed: boolean
 }
 
 export default defineComponent({
   data() {
     return {
+      /** 服务端工单 ID：空串代表「新建未落库」 */
       orderId: '',
       submitting: false,
       saving: false,
@@ -207,13 +288,11 @@ export default defineComponent({
       exiting: false,
       /** 草稿是否已加载完成（加载完成前不拦截返回） */
       loaded: false,
-      /** 微信小程序 page-container 显示态：用于拦截左上角返回键 */
-      containerShow: true,
       /** 加载完成后的表单快照，用于脏检查 */
       snapshot: null as null | { form: Record<string, unknown>; images: string[] },
-      /** 草稿是否已“保存”过：重新打开已有内容的草稿=true；本会话点过“保存草稿”后=true；新建空草稿未保存=false */
+      /** 草稿是否已“保存”过 */
       hasSaved: false,
-      /** 返回拦截三按钮弹窗（保存 / 不保存 / 取消留页）显隐 */
+      /** 返回拦截三按钮弹窗（仅服务端草稿模式）显隐 */
       showExitDialog: false,
       /** 初始化未完成时用户已按返回（已拦截待命），加载完成后补弹询问 */
       backPending: false,
@@ -235,10 +314,30 @@ export default defineComponent({
       },
       imageList: [] as ImageItem[],
       /** 通用常见问题（未选大类/属性时展示；接口待后端提供，本期为空） */
-      generalProblems: [] as ProblemOption[]
+      generalProblems: [] as ProblemOption[],
+      /** 本地草稿是否已恢复展示（顶部提示条） */
+      draftRestored: false,
+      /** 本地草稿写入防抖定时器 */
+      draftTimer: null as ReturnType<typeof setTimeout> | null,
+      /** 两级选择弹层显隐 */
+      catPopupVisible: false,
+      /** 弹层当前选中的大类 / 属性 */
+      catActiveId: '',
+      catActivePropertyId: '',
+      catScrollInto: '',
+      /** 是否正在补传图片队列 */
+      flushing: false,
+      /** 位置历史（当前单位维度，最近使用在前） */
+      roomHistory: [] as RoomHistoryItem[],
+      /** 位置输入框聚焦中：展示完整历史候选浮层 */
+      roomFocused: false
     }
   },
   computed: {
+    /** 是否新建模式（尚未分配服务端 ID） */
+    isNewDraft(): boolean {
+      return !this.orderId
+    },
     enterpriseIndex(): number {
       return this.enterpriseOptions.findIndex((o) => o.id === this.form.enterprise_id)
     },
@@ -246,23 +345,29 @@ export default defineComponent({
       const o = this.enterpriseOptions.find((x) => x.id === this.form.enterprise_id)
       return o ? o.name : ''
     },
-    categoryIndex(): number {
-      return this.categoryOptions.findIndex((c) => c.id === this.form.category_id)
-    },
     categoryLabel(): string {
       const c = this.categoryOptions.find((x) => x.id === this.form.category_id)
       return c ? c.name : ''
-    },
-    propertyIndex(): number {
-      return this.propertyOptions.findIndex((p) => p.id === this.form.property_id)
     },
     propertyLabel(): string {
       const p = this.propertyOptions.find((x) => x.id === this.form.property_id)
       return p ? p.name : ''
     },
+    /** 「大类 · 属性」合并展示 */
+    categorySummary(): string {
+      if (!this.form.category_id) return ''
+      return this.form.property_id
+        ? `${this.categoryLabel} · ${this.propertyLabel}`
+        : this.categoryLabel
+    },
     urgencyLabel(): string {
       const u = this.urgencyOptions.find((o) => o.value === this.form.urgency)
       return u ? u.label : ''
+    },
+    /** 弹层右侧属性列表 */
+    popupPropertyOptions(): PropertyOption[] {
+      const cat = this.categoryOptions.find((c) => c.id === this.catActiveId)
+      return (cat && cat.properties) || []
     },
     /**
      * 常见问题数据源：
@@ -275,34 +380,58 @@ export default defineComponent({
         return (prop && prop.problems) || []
       }
       return this.generalProblems
+    },
+    /** 聚焦浮层候选：随输入过滤（空输入时给全部历史） */
+    roomSuggestions(): string[] {
+      const kw = this.form.room.trim()
+      return this.roomHistory
+        .map((it) => it.room)
+        .filter((r) => (kw ? r.indexOf(kw) >= 0 : true))
+        .slice(0, 8)
+    }
+  },
+  watch: {
+    /** 表单任何变化都做一次本地暂存（新建模式；500ms 防抖） */
+    form: {
+      handler() {
+        this.scheduleLocalSave()
+      },
+      deep: true
+    },
+    /** 单位切换后位置历史要跟着换（历史按「用户 + 单位」隔离） */
+    'form.enterprise_id'() {
+      this.loadRoomHistory()
     }
   },
   onLoad(options: Record<string, string>) {
     this.orderId = options.id || ''
-    if (!this.orderId) {
-      uni.showToast({ title: '参数错误', icon: 'none' })
-      this.exiting = true
-      setTimeout(() => uni.navigateBack(), 800)
-      return
+    if (this.orderId) {
+      this.init()
+    } else {
+      this.initNew()
     }
-    this.init()
+  },
+  onUnload() {
+    // 页面销毁：立即落盘一次并解绑返回拦截，避免强杀丢失内容
+    this.flushLocalDraft()
+    this.disarmReturnGuard()
   },
   /**
    * 返回键拦截（H5 / App 端生效）。
-   * 注意：微信小程序端 onBackPress 只能监听、无法阻止返回，左上角“<”由 page-container 的
-   * @beforeleave 负责拦截，故此处对 MP-WEIXIN 直接放行，避免弹窗出现在已离开的页面上。
+   * 微信小程序端左上角“<”由 wx.enableAlertBeforeUnload 原生弹窗拦截。
    */
   onBackPress() {
     // #ifdef MP-WEIXIN
     return false
     // #endif
-    // 退出流程中放行
     if (this.exiting) return false
     this.decideExit()
     return true
   },
   methods: {
+    /** 编辑已有草稿：加载字典 + 回填详情 */
     async init() {
+      await this.ensureUser()
       try {
         const [opts, detail] = await Promise.all([
           http.get<OptionsResult>('/orders/options'),
@@ -312,33 +441,93 @@ export default defineComponent({
         this.enterpriseOptions = opts.enterprises || []
         this.categoryOptions = opts.categories || []
         this.urgencyOptions = opts.urgent_levels || []
-        // 通用常见问题：后端接口待提供（文档第十一章 #5），若 options 返回则直接使用
         this.generalProblems = ((opts as unknown as Record<string, unknown>).general_problems ||
           []) as ProblemOption[]
         this.applyDetail(detail)
-        // 基于后端原始草稿判断：已有内容的草稿视为“已保存”（重新打开时无须再问）；新建空草稿=false（在自动选企业之前，避免自动选择干扰判定）
         this.hasSaved = !this.isBlankDraft(detail)
         // 仅一个可选单位时自动选中
         if (!this.form.enterprise_id && this.enterpriseOptions.length === 1) {
           this.form.enterprise_id = this.enterpriseOptions[0].id
         }
-        // 快照/基线在自动选企业之后拍摄：自动选择不计入“用户改动”，避免单企业账号误判为已编辑
         this.captureSnapshot()
         this.loaded = true
-        // 初始化期间用户已按过返回（被拦截待命）：加载完成后补一次去留决策
+        this.armReturnGuard()
         if (this.backPending && !this.exiting) {
           this.backPending = false
           this.decideExit()
         }
       } catch (e) {
         console.error('初始化失败', e)
-        // 加载失败：标记为“已保存”，返回时静默退出，避免对残缺表单误存/误删
         this.loaded = true
         this.hasSaved = true
         this.backPending = false
       }
     },
-    /** 回填草稿：contact 单字段按“尾部手机号”拆分为联系人/电话 */
+    /**
+     * 确保本地已有用户信息（默认联系人、位置记忆、本地草稿 key 均依赖它）。
+     * 冷启动/分享直达等场景下 userStore 尚无数据，需在此补齐。
+     */
+    async ensureUser() {
+      const store = useUserStore()
+      if (store.userInfo) return
+      try {
+        const ok = await store.ensureLoggedIn()
+        if (ok) await store.fetchUserInfo()
+      } catch (e) {
+        console.error('加载用户信息失败', e)
+      }
+    },
+    /**
+     * 新建：不发任何建单请求。
+     * 优先恢复本地未完成的草稿，否则按「我的企业上下文 + 报修人信息 + 位置记忆」填默认值。
+     */
+    async initNew() {
+      await this.ensureUser()
+      try {
+        const opts = await http.get<OptionsResult>('/orders/options')
+        this.options = opts
+        this.enterpriseOptions = opts.enterprises || []
+        this.categoryOptions = opts.categories || []
+        this.urgencyOptions = opts.urgent_levels || []
+        this.generalProblems = ((opts as unknown as Record<string, unknown>).general_problems ||
+          []) as ProblemOption[]
+      } catch (e) {
+        console.error('加载字典失败', e)
+      }
+
+      const restored = readLocalDraft()
+      if (restored && !restored.orderId) {
+        this.applyLocalDraft(restored)
+        this.draftRestored = true
+        this.hasSaved = false
+      } else {
+        this.applyDefaultValues()
+        this.hasSaved = false
+      }
+      this.loaded = true
+      this.captureSnapshot()
+    },
+    /** 默认值：报修单位取当前「我的企业」上下文，联系人/电话取报修人，位置取最近一次填写 */
+    applyDefaultValues() {
+      const user = useUserStore().userInfo
+      const entStore = useEnterpriseStore()
+      this.form.enterprise_id = entStore.currentEnterpriseId || ''
+      // 上下文单位不在可选列表中时不强行套用
+      if (this.form.enterprise_id && !this.enterpriseOptions.some((o) => o.id === this.form.enterprise_id)) {
+        this.form.enterprise_id = ''
+      }
+      // 单单位时自动选中，多单位时保持未选让用户主动确认
+      if (!this.form.enterprise_id && this.enterpriseOptions.length === 1) {
+        this.form.enterprise_id = this.enterpriseOptions[0].id
+      }
+      this.form.contact_name = user?.nickname || ''
+      this.form.contact_phone = /^1\d{10}$/.test(user?.phone || '') ? String(user?.phone) : ''
+      if (user && this.form.enterprise_id) {
+        this.form.room = readLastRoom(user.id, this.form.enterprise_id)
+      }
+      this.loadRoomHistory()
+    },
+    /** 回填服务端草稿详情 */
     applyDetail(detail: OrderDetail) {
       const { name, phone } = splitContact(detail.contact)
       this.form.enterprise_id = detail.enterprise_id || ''
@@ -349,31 +538,151 @@ export default defineComponent({
       this.form.room = detail.room || ''
       this.form.contact_name = name
       this.form.contact_phone = phone
-      this.imageList = (detail.images || []).map((img) => ({ url: img.url }))
+      this.imageList = (detail.images || []).map((img) => ({
+        url: img.url,
+        preview: img.url,
+        path: img.url,
+        name: '',
+        size: 0,
+        uploaded: true,
+        failed: false
+      }))
 
       if (this.form.category_id) {
         const cat = this.categoryOptions.find((c) => c.id === this.form.category_id)
         this.propertyOptions = cat ? cat.properties || [] : []
       }
     },
+    /** 回填本地草稿 */
+    applyLocalDraft(draft: LocalDraft) {
+      this.form.enterprise_id = draft.form.enterprise_id || ''
+      this.form.category_id = draft.form.category_id || ''
+      this.form.property_id = draft.form.property_id || ''
+      this.form.description = draft.form.description || ''
+      this.form.urgency = draft.form.urgency || ''
+      this.form.room = draft.form.room || ''
+      this.form.contact_name = draft.form.contact_name || ''
+      this.form.contact_phone = draft.form.contact_phone || ''
+      this.imageList = (draft.images || []).map((img) => ({
+        url: img.url || '',
+        preview: img.preview || img.path || img.url,
+        path: img.path || img.preview || '',
+        name: img.name || '',
+        size: img.size || 0,
+        uploaded: !!img.uploaded,
+        failed: false
+      }))
+      if (this.form.category_id) {
+        const cat = this.categoryOptions.find((c) => c.id === this.form.category_id)
+        this.propertyOptions = cat ? cat.properties || [] : []
+      }
+      // 单位已失效（用户已退出该企业）时清空，避免带出无法提交的数据
+      if (this.form.enterprise_id && !this.enterpriseOptions.some((o) => o.id === this.form.enterprise_id)) {
+        this.form.enterprise_id = ''
+      }
+    },
+    /** 放弃恢复的本地草稿：清空后回到默认值 */
+    discardRestored() {
+      clearLocalDraft()
+      this.resetForm()
+      this.applyDefaultValues()
+      this.draftRestored = false
+      this.hasSaved = false
+      this.captureSnapshot()
+    },
+    resetForm() {
+      this.form.enterprise_id = ''
+      this.form.category_id = ''
+      this.form.property_id = ''
+      this.form.description = ''
+      this.form.urgency = ''
+      this.form.room = ''
+      this.form.contact_name = ''
+      this.form.contact_phone = ''
+      this.imageList = []
+      this.propertyOptions = []
+    },
+    /* ---------- 字典选择 ---------- */
     onEnterpriseChange(e: { detail: { value: number } }) {
       const opt = this.enterpriseOptions[e.detail.value]
       if (opt) this.form.enterprise_id = opt.id
     },
-    /** 切换设备类型（大类）：重置问题类别（属性） */
-    onCategoryChange(e: { detail: { value: number } }) {
-      const opt = this.categoryOptions[e.detail.value]
-      if (!opt) return
-      this.form.category_id = opt.id
-      this.form.property_id = ''
-      this.propertyOptions = opt.properties || []
+    /** 多单位切换：同时更新本单与「我的企业」全局上下文 */
+    switchEnterprise() {
+      const names = this.enterpriseOptions.map((o) => o.name)
+      uni.showActionSheet({
+        itemList: names,
+        success: (res) => {
+          const opt = this.enterpriseOptions[res.tapIndex]
+          if (!opt) return
+          this.form.enterprise_id = opt.id
+          useEnterpriseStore().setCurrent(opt.id)
+          const user = useUserStore().userInfo
+          if (user) {
+            const remembered = readLastRoom(user.id, opt.id)
+            if (remembered) this.form.room = remembered
+          }
+          this.loadRoomHistory()
+          uni.showToast({ title: `已切换默认单位：${opt.name}`, icon: 'none' })
+        },
+        fail: () => {}
+      })
     },
-    onPropertyChange(e: { detail: { value: number } }) {
-      const opt = this.propertyOptions[e.detail.value]
-      if (!opt) return
-      this.form.property_id = opt.id
+    /* ---------- 位置历史 ---------- */
+    /** 载入当前单位维度的位置历史 */
+    loadRoomHistory() {
+      const user = useUserStore().userInfo
+      if (!user || !this.form.enterprise_id) {
+        this.roomHistory = []
+        return
+      }
+      this.roomHistory = readRoomHistory(user.id, this.form.enterprise_id)
     },
-    /** 常见问题：以“追加”方式写入问题名称本身（不整体替换，用户可继续编辑） */
+    onRoomFocus() {
+      this.loadRoomHistory()
+      this.roomFocused = true
+    },
+    /**
+     * blur 晚一拍收起：小程序端点候选时 blur 先于 tap 触发，
+     * 留 250ms 让点击落到浮层上（H5 端另有 mousedown.prevent 兜底）。
+     */
+    onRoomBlur() {
+      setTimeout(() => {
+        this.roomFocused = false
+      }, 250)
+    },
+    /** 选中历史位置 */
+    pickRoom(room: string) {
+      this.form.room = room
+      this.roomFocused = false
+    },
+    /** 删除单条历史 */
+    removeRoom(room: string) {
+      const user = useUserStore().userInfo
+      if (!user || !this.form.enterprise_id) return
+      removeRoomHistory(user.id, this.form.enterprise_id, room)
+      this.loadRoomHistory()
+    },
+    /** 打开两级选择弹层，并定位到当前已选项 */
+    openCategoryPopup() {
+      this.catActiveId = this.form.category_id || (this.categoryOptions[0] && this.categoryOptions[0].id) || ''
+      this.catActivePropertyId = this.form.property_id || ''
+      this.catScrollInto = this.form.category_id ? `cat-${this.form.category_id}` : ''
+      this.catPopupVisible = true
+    },
+    /** 选中大类：属性列表自动切换，实现“选完直接跳到问题类别” */
+    onPopupCategory(c: CategoryOption) {
+      this.catActiveId = c.id
+      this.catActivePropertyId = ''
+    },
+    /** 选中属性：立即回填并关闭弹层 */
+    onPopupProperty(p: PropertyOption) {
+      this.form.category_id = this.catActiveId
+      this.form.property_id = p.id
+      const cat = this.categoryOptions.find((c) => c.id === this.catActiveId)
+      this.propertyOptions = cat ? cat.properties || [] : []
+      this.catPopupVisible = false
+    },
     onProblemPick(p: ProblemOption) {
       const text = (p.name || '').trim()
       if (!text) return
@@ -384,8 +693,16 @@ export default defineComponent({
       const opt = this.urgencyOptions[e.detail.value]
       if (opt) this.form.urgency = opt.value
     },
+    /* ---------- 描述区 ---------- */
+    clearDescription() {
+      this.form.description = ''
+    },
+    clearCell(field: 'room' | 'contact_name' | 'contact_phone') {
+      this.form[field] = ''
+    },
+    /* ---------- 图片 ---------- */
     chooseImage() {
-      const remain = 9 - this.imageList.length
+      const remain = MAX_DRAFT_IMAGES - this.imageList.length
       if (remain <= 0) {
         uni.showToast({ title: '最多上传9张图片', icon: 'none' })
         return
@@ -419,7 +736,7 @@ export default defineComponent({
           if (files.length !== validFiles.length) {
             uni.showToast({ title: '已过滤不支持的图片', icon: 'none' })
           }
-          await this.uploadFiles(validFiles.map((f) => ({ path: f.path, size: f.size })))
+          await this.addImages(validFiles.map((f) => ({ path: f.path, name: f.name, size: f.size })))
         },
         fail: (err) => {
           console.error('选择图片失败', err)
@@ -435,6 +752,7 @@ export default defineComponent({
         success: async (res) => {
           const files = (res.tempFiles || []).map((f) => ({
             path: (f as any).path || '',
+            name: localImageName(this.imageList.length),
             size: (f as any).size || 0
           }))
           if (files.length === 0) return
@@ -443,49 +761,156 @@ export default defineComponent({
             uni.showToast({ title: '单张图片不能超过5MB', icon: 'none' })
             return
           }
-          await this.uploadFiles(validFiles)
+          await this.addImages(validFiles)
         },
         fail: (err) => {
           console.error('选择图片失败', err)
         }
       })
     },
-    /** 批量上传图片到服务器 */
-    async uploadFiles(files: { path: string; size: number }[]) {
-      uni.showLoading({ title: '上传中...' })
-      let uploaded = 0
+    /**
+     * 入队图片并持久化到本地。
+     * 已有服务端 ID（编辑服务端草稿）时维持即时上传；新建模式仅入本地队列，
+     * 待“保存/提交”拿到 ID 后再统一上传（B1 批量延迟上传）。
+     */
+    async addImages(files: { path: string; name?: string; size: number }[]) {
+      uni.showLoading({ title: '处理中...' })
       for (const file of files) {
-        try {
-          const data = await uploadOrderImage(this.orderId, file.path)
-          this.imageList.push({ url: data.url, localPath: file.path })
-          uploaded++
-        } catch (e) {
-          console.error('图片上传失败', e)
-        }
+        const saved = await persistImage(file.path)
+        this.imageList.push({
+          url: '',
+          preview: saved || file.path,
+          path: saved || file.path,
+          name: file.name || localImageName(this.imageList.length),
+          size: file.size || 0,
+          uploaded: false,
+          failed: false
+        })
       }
       uni.hideLoading()
-      if (uploaded > 0) {
-        uni.showToast({ title: `已上传${uploaded}张`, icon: 'success' })
+      this.scheduleLocalSave()
+      if (this.orderId) {
+        await this.flushImageQueue(true)
       }
     },
+    /**
+     * 串行上传本地图片队列。
+     * 单张失败不中断整体流程，失败项标记 failed 供用户重试。
+     */
+    async flushImageQueue(showLoading = true): Promise<{ ok: number; fail: number }> {
+      if (!this.orderId || this.flushing) return { ok: 0, fail: 0 }
+      const pending = this.imageList.filter((i) => !i.uploaded && i.path && i.path.indexOf('http') !== 0)
+      if (pending.length === 0) return { ok: 0, fail: 0 }
+      this.flushing = true
+      const total = pending.length
+      let ok = 0
+      let fail = 0
+      for (let i = 0; i < pending.length; i++) {
+        const item = pending[i]
+        if (showLoading) {
+          uni.showLoading({ title: `上传第 ${i + 1}/${total} 张` })
+        }
+        try {
+          const data = await uploadOrderImage(this.orderId, item.path)
+          item.url = data.url
+          item.uploaded = true
+          item.failed = false
+          ok++
+        } catch (e) {
+          console.error('图片上传失败', e)
+          item.failed = true
+          fail++
+        }
+      }
+      if (showLoading) uni.hideLoading()
+      this.flushing = false
+      if (fail > 0) {
+        uni.showToast({ title: `${fail} 张图片上传失败，可在草稿中重试`, icon: 'none' })
+      }
+      this.scheduleLocalSave()
+      return { ok, fail }
+    },
+    /** 单张重试 */
+    async retryImage(index: number) {
+      const item = this.imageList[index]
+      if (!item || item.uploaded) return
+      if (!this.orderId) {
+        uni.showToast({ title: '请先保存草稿再重试上传', icon: 'none' })
+        return
+      }
+      item.failed = false
+      await this.flushImageQueue(true)
+    },
     previewImage(index: number) {
+      const urls = this.imageList.map((i) => i.url || i.preview).filter(Boolean)
       uni.previewImage({
-        current: this.imageList[index].url,
-        urls: this.imageList.map((i) => i.url)
+        current: this.imageList[index].url || this.imageList[index].preview,
+        urls
       })
     },
     onImageError(index: number) {
       const img = this.imageList[index]
-      if (img && img.localPath) {
-        img.localPath = undefined
+      // 本地预览失败：回退到图床地址；都没有则提示
+      if (img && img.url && img.preview !== img.url) {
+        img.preview = img.url
         return
       }
-      uni.showToast({ title: '图片加载失败，请检查图床域名配置', icon: 'none' })
+      uni.showToast({ title: '图片加载失败，请重新选择', icon: 'none' })
     },
     removeImage(index: number) {
       this.imageList.splice(index, 1)
+      this.scheduleLocalSave()
     },
-    /** 联系人 + 电话 → 单字段 contact（后端拆分前过渡方案，见文档第十一章 #1） */
+    /* ---------- 本地草稿 ---------- */
+    scheduleLocalSave() {
+      if (!this.loaded) return
+      if (this.draftTimer) clearTimeout(this.draftTimer)
+      this.draftTimer = setTimeout(() => this.flushLocalDraft(), 500)
+    },
+    /** 立即写入本地草稿（仅新建模式；已落库的由服务端负责） */
+    flushLocalDraft() {
+      if (this.draftTimer) {
+        clearTimeout(this.draftTimer)
+        this.draftTimer = null
+      }
+      // 注意：退出流程也需要落盘（doExit 先置 exiting 再调用此处），故不能按 exiting 提前返回
+      if (!this.loaded) return
+      // 仅「新建未落库」模式写本地草稿。
+      // 编辑已有草稿时不读写本地草稿：那份本地草稿属于“另一张未提交的新单”，
+      // 若在此清理会误删用户尚未提交的内容（它会在新单保存/放弃/过期时才被处理）。
+      if (!this.isNewDraft) return
+      const empty =
+        !this.form.enterprise_id &&
+        !this.form.category_id &&
+        !this.form.property_id &&
+        !this.form.description &&
+        !this.form.urgency &&
+        !this.form.room &&
+        !this.form.contact_name &&
+        !this.form.contact_phone &&
+        this.imageList.length === 0
+      if (empty) return
+      // 仅在用户真正改动过之后才落盘：默认值/恢复内容本身不算草稿，
+      // 否则一进页面就生成“未完成草稿”，下次会被无谓地提示续填
+      if (!this.isDirty()) return
+      writeLocalDraft({
+        v: 1,
+        localId: localId(),
+        updatedAt: Date.now(),
+        form: JSON.parse(JSON.stringify(this.form)),
+        images: this.imageList.map((i) => ({
+          path: i.path,
+          preview: i.preview,
+          name: i.name,
+          size: i.size,
+          url: i.url,
+          uploaded: i.uploaded
+        })),
+        orderId: this.orderId
+      })
+    },
+    /* ---------- 提交 / 保存 ---------- */
+    /** 联系人 + 电话 → 单字段 contact（后端拆分前过渡方案） */
     contactValue(): string {
       return `${this.form.contact_name.trim()} ${this.form.contact_phone.trim()}`.trim()
     },
@@ -493,7 +918,7 @@ export default defineComponent({
     buildPayload(all = false): Record<string, unknown> {
       const f = this.form
       const payload: Record<string, unknown> = {
-        images: this.imageList.map((i) => i.url)
+        images: this.imageList.filter((i) => i.uploaded).map((i) => i.url)
       }
       if (all || f.enterprise_id) payload.enterprise_id = f.enterprise_id
       if (all || f.category_id) payload.category_id = f.category_id
@@ -505,27 +930,53 @@ export default defineComponent({
       if (all || contact) payload.contact = contact
       return payload
     },
+    /**
+     * 持久化到服务端。
+     * 未分配 ID 时先用完整内容一次性建单（"先内容后分配 ID"），拿到 ID 后再补传本地图片队列。
+     */
+    async persistOrder(all = false): Promise<boolean> {
+      const payload = this.buildPayload(all)
+      try {
+        if (!this.orderId) {
+          const data = await http.post<{ order_id: string }>('/orders', payload)
+          this.orderId = data.order_id
+        } else {
+          await http.put(`/orders/${this.orderId}`, payload)
+        }
+        await this.flushImageQueue(true)
+        await this.rememberRoom()
+        clearLocalDraft()
+        this.draftRestored = false
+        this.hasSaved = true
+        this.captureSnapshot()
+        this.armReturnGuard()
+        return true
+      } catch (e) {
+        console.error('保存失败', e)
+        return false
+      }
+    },
+    /** 位置记忆：保存/提交成功后写入 */
+    async rememberRoom() {
+      const user = useUserStore().userInfo
+      if (user && this.form.enterprise_id) {
+        pushRoomHistory(user.id, this.form.enterprise_id, this.form.room)
+        this.loadRoomHistory()
+      }
+    },
     async saveDraft(exitAfter?: boolean) {
       if (this.saving) return
       this.saving = true
-      try {
-        await http.put(`/orders/${this.orderId}`, this.buildPayload(false))
-        uni.showToast({ title: '已保存草稿', icon: 'success' })
-        // 标记为已保存，并以当前内容重置快照基线（之后无改动则不再询问）
-        this.hasSaved = true
-        this.captureSnapshot()
-        // 返回键场景下：保存后退出
-        if (exitAfter === true) this.doExit()
-      } catch (e) {
-        console.error('保存草稿失败', e)
-      } finally {
-        this.saving = false
-      }
+      const ok = await this.persistOrder(false)
+      this.saving = false
+      if (!ok) return
+      uni.showToast({ title: '已保存草稿', icon: 'success' })
+      if (exitAfter === true) this.doExit()
     },
     /**
      * 删除草稿。
-     * - 来自底部“删除”按钮（fromBack=false）：先二次确认再删。
-     * - 来自返回键拦截（fromBack=true）：外层弹窗已确认“不保存”，不再二次确认。
+     * - 新建未落库：仅清本地草稿（服务端无记录，天然干净）。
+     * - 已落库：调用服务端删除接口 + 清本地。
      */
     async deleteDraft(fromBack = false) {
       if (fromBack !== true) {
@@ -533,7 +984,10 @@ export default defineComponent({
         if (!res.confirm) return false
       }
       try {
-        await http.delete(`/orders/${this.orderId}`)
+        if (this.orderId) {
+          await http.delete(`/orders/${this.orderId}`)
+        }
+        clearLocalDraft()
         uni.showToast({ title: '已删除', icon: 'success' })
         this.doExit()
         return true
@@ -542,17 +996,30 @@ export default defineComponent({
         return false
       }
     },
-    /** 统一退出：解除返回拦截后返回上一页（避免 navigateBack 被 page-container 拦下） */
+    /* ---------- 退出流程 ---------- */
+    /** 统一退出：先落盘本地草稿再返回 */
     doExit() {
       this.exiting = true
-      this.containerShow = false
+      if (this.isNewDraft) this.flushLocalDraft()
+      this.disarmReturnGuard()
       setTimeout(() => uni.navigateBack(), 500)
     },
-    /** 重新武装 page-container：先收起(已 false)再延迟一帧恢复，避免同帧 show 翻转不被微信识别导致后续返回不再拦截 */
-    rearmContainer() {
-      setTimeout(() => {
-        if (!this.exiting) this.containerShow = true
-      }, 80)
+    armReturnGuard() {
+      // #ifdef MP-WEIXIN
+      // 用原生弹窗拦截左上角返回：不引入 page-container 覆盖层，避免其拦截页面滚动
+      const w = typeof wx !== 'undefined' ? (wx as any) : null
+      if (w && typeof w.enableAlertBeforeUnload === 'function') {
+        w.enableAlertBeforeUnload({ message: '离开后未保存的修改将不会保留，确定离开吗？' })
+      }
+      // #endif
+    },
+    disarmReturnGuard() {
+      // #ifdef MP-WEIXIN
+      const w = typeof wx !== 'undefined' ? (wx as any) : null
+      if (w && typeof w.disableAlertBeforeUnload === 'function') {
+        w.disableAlertBeforeUnload()
+      }
+      // #endif
     },
     /** 加载完成后拍摄表单快照，供脏检查使用 */
     captureSnapshot() {
@@ -571,7 +1038,7 @@ export default defineComponent({
       }
       return JSON.stringify(this.form) !== JSON.stringify(this.snapshot.form)
     },
-    /** 后端返回的草稿是否为“空白草稿”：所有可填字段均无内容时才算空白（不依赖前端自动选择，判定最准确） */
+    /** 后端返回的草稿是否为“空白草稿” */
     isBlankDraft(d: OrderDetail): boolean {
       const blank = (v: unknown) => v === '' || v === null || v === undefined
       return (
@@ -586,57 +1053,37 @@ export default defineComponent({
       )
     },
     /**
-     * 返回去留决策（H5/App onBackPress 与小程序 @beforeleave 共用）。
-     * 规则（以“是否已保存”为核心）：
-     * - 已保存且未改动（含重新打开的已填草稿、或本会话点过“保存草稿”）→ 直接退出，不询问。
-     * - 初始化未完成 → 拦截但不弹（避免与 init 回填竞态），记 backPending，加载完成后自动补决策。
-     * - 其余（新建空草稿未保存 / 已填未保存 / 保存后又改了内容）→ 弹三按钮询问：
-     *   保存=走保存逻辑并退出；不保存=走删除逻辑并退出；取消=留在页面。
+     * 返回去留决策。
+     * - 新建未落库：内容已自动暂存本地，静默退出（符合“回来可续填”设计）。
+     * - 已落库草稿且未改动：直接退出。
+     * - 已落库草稿有改动：弹三按钮询问。
      */
     decideExit() {
-      // 初始化未完成：不静默退出、也不弹（表单尚未回填），待命后由 init 补弹
       if (!this.loaded) {
         this.backPending = true
-        this.rearmContainer()
         return
       }
-      // 弹窗已打开：仅拦截本次返回手势（重武装），不重复弹窗，避免直接离开丢草稿
-      if (this.showExitDialog) {
-        this.rearmContainer()
+      if (this.showExitDialog) return
+      if (this.isNewDraft) {
+        this.doExit()
         return
       }
-      // 已保存且未改动：直接退出，不询问
       if (this.hasSaved && !this.isDirty()) {
         this.doExit()
         return
       }
       this.showExitDialog = true
-      this.rearmContainer()
     },
-    /** 返回弹窗：保存并退出（先解除拦截再执行，避免保存期间被返回打断） */
     async onExitSave() {
       this.showExitDialog = false
-      this.containerShow = false
       await this.saveDraft(true)
     },
-    /** 返回弹窗：不保存（删除草稿）并退出 */
     async onExitDiscard() {
       this.showExitDialog = false
-      this.containerShow = false
       await this.deleteDraft(true)
     },
-    /** 返回弹窗：取消，留在页面（恢复 page-container 拦截） */
     onExitCancel() {
       this.showExitDialog = false
-      this.containerShow = true
-    },
-    /** 微信小程序：左上角“<”返回键触发（page-container @beforeleave） */
-    onContainerLeave() {
-      // 无论去留都先收起容器，消费本次返回手势（微信要求 beforeleave 内将 show 置 false）
-      this.containerShow = false
-      // 已在退出流程（保存/不保存/提交/删除后）：放行，等 navigateBack
-      if (this.exiting) return
-      this.decideExit()
     },
     validateForm(): string {
       const f = this.form
@@ -669,7 +1116,7 @@ export default defineComponent({
         })
       })
     },
-    /** 提交：先请求订阅消息授权，再全量保存草稿，最后调用 submit 接口 */
+    /** 提交：授权 → 落库（必要时先建单） → 上传图片 → submit */
     async submitOrder() {
       const err = this.validateForm()
       if (err) {
@@ -680,12 +1127,12 @@ export default defineComponent({
       this.submitting = true
       try {
         await this.requestSubscribeAuth()
-        await http.put(`/orders/${this.orderId}`, this.buildPayload(true))
+        const ok = await this.persistOrder(true)
+        if (!ok) return
         await http.post(`/orders/${this.orderId}/submit`, {})
         uni.showToast({ title: '提交成功', icon: 'success' })
-        // V1.3：提交后返回我的工单列表（onShow 自动刷新）
         this.exiting = true
-        this.containerShow = false
+        this.disarmReturnGuard()
         setTimeout(() => uni.navigateBack(), 600)
       } catch (e) {
         console.error('提交失败', e)
@@ -700,7 +1147,7 @@ export default defineComponent({
 <style lang="scss" scoped>
 .page {
   min-height: 100vh;
-  padding-bottom: 160rpx;
+  padding-bottom: 220rpx;
   box-sizing: border-box;
   background-color: #f5f6f8;
 }
@@ -719,10 +1166,27 @@ export default defineComponent({
   }
 }
 
+/* 本地草稿恢复提示条 */
+.restore-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16rpx 24rpx;
+  background-color: #fff7e6;
+  color: #ad6800;
+  font-size: 24rpx;
+
+  .restore-action {
+    color: #d4380d;
+    padding-left: 24rpx;
+  }
+}
+
 /* ① 图片 + 描述 + 常见问题 */
 .upload-grid {
   display: flex;
   flex-wrap: wrap;
+  margin-top: 8rpx;
 
   .upload-item,
   .upload-add {
@@ -755,6 +1219,18 @@ export default defineComponent({
     border-bottom-left-radius: 16rpx;
   }
 
+  .upload-retry {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    padding: 8rpx 0;
+    background-color: rgba(212, 56, 13, 0.8);
+    color: #ffffff;
+    font-size: 22rpx;
+    text-align: center;
+  }
+
   .upload-add {
     background-color: #f5f6f8;
     border: 2rpx dashed #d9d9d9;
@@ -777,11 +1253,16 @@ export default defineComponent({
   }
 }
 
+.desc-wrap {
+  position: relative;
+  margin-top: 8rpx;
+}
+
 .desc-textarea {
   width: 100%;
   min-height: 180rpx;
-  margin-top: 8rpx;
   padding: 20rpx;
+  padding-bottom: 48rpx;
   box-sizing: border-box;
   background-color: #f7f8fa;
   border-radius: 16rpx;
@@ -790,17 +1271,40 @@ export default defineComponent({
   line-height: 1.6;
 }
 
+.desc-footer {
+  position: absolute;
+  left: 20rpx;
+  right: 20rpx;
+  bottom: 12rpx;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.desc-clear-text {
+  font-size: 24rpx;
+  color: #e64340;
+  line-height: 1;
+}
+
+.desc-count {
+  margin-left: auto;
+  font-size: 22rpx;
+  color: #bbbbbb;
+  line-height: 1;
+}
+
 .input-placeholder {
   color: #bbbbbb;
 }
 
-/* 常见问题 chips：次要样式，不喧宾夺主 */
+/* 常见问题 chips：限高内部滚动，避免撑爆页面导致整页无法滚动 */
 .issue-chips {
-  display: flex;
-  flex-wrap: wrap;
+  max-height: 220rpx;
   margin-top: 20rpx;
 
   .issue-chip {
+    display: inline-block;
     padding: 8rpx 20rpx;
     margin-right: 16rpx;
     margin-bottom: 16rpx;
@@ -839,6 +1343,19 @@ export default defineComponent({
     text-align: left;
   }
 
+  .cell-clear {
+    width: 44rpx;
+    height: 44rpx;
+    border-radius: 50%;
+    background-color: #e6e6e6;
+    color: #ffffff;
+    font-size: 30rpx;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+
   .cell-value {
     flex: 1;
     text-align: left;
@@ -860,20 +1377,127 @@ export default defineComponent({
   }
 }
 
-/* 设备类型 + 问题类别：同一行对半分 */
-.cat-row {
-  display: flex;
-  align-items: stretch;
-  gap: 20rpx;
+/* 位置：手填 + 历史候选 */
+.room-block {
+  position: relative;
+}
 
-  .cat-picker {
-    flex: 1 1 0;
-    min-width: 0;
+/* 聚焦时弹出的历史候选浮层（对齐输入框，覆盖下方内容） */
+.room-suggest {
+  position: absolute;
+  left: 184rpx;
+  right: 0;
+  top: 88rpx;
+  z-index: 30;
+  background-color: #ffffff;
+  border: 1rpx solid #ebedf0;
+  border-radius: 12rpx;
+  overflow: hidden;
+}
+
+.room-suggest-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18rpx 20rpx;
+  border-bottom: 1rpx solid #f5f6f7;
+
+  &:last-child {
+    border-bottom: none;
+  }
+}
+
+.room-suggest-text {
+  flex: 1;
+  font-size: 28rpx;
+  color: #333333;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.room-suggest-del {
+  flex-shrink: 0;
+  width: 40rpx;
+  text-align: center;
+  font-size: 30rpx;
+  color: #c8c9cc;
+  margin-left: 12rpx;
+}
+
+/* 多单位切换提示 */
+.ent-hint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16rpx 0 8rpx;
+  font-size: 24rpx;
+  color: #8a8f99;
+
+  .ent-hint-btn {
+    color: #4a7cf7;
+    flex-shrink: 0;
+  }
+}
+
+/* 设备类型 / 问题类别 两级弹层 */
+.cat-popup {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  box-sizing: border-box;
+
+  .cat-popup-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 28rpx 32rpx;
+    font-size: 30rpx;
+    color: #1a1a1a;
+    border-bottom: 1rpx solid #f2f3f5;
+
+    .cat-popup-cancel {
+      color: #8a8f99;
+      font-size: 28rpx;
+    }
+
+    .cat-popup-placeholder {
+      width: 56rpx;
+    }
   }
 
-  .form-cell {
-    .cell-label {
-      width: 140rpx;
+  .cat-popup-body {
+    flex: 1;
+    display: flex;
+    min-height: 0;
+
+    .cat-col {
+      width: 45%;
+      height: 100%;
+      background-color: #f7f8fa;
+
+      .cat-col-item {
+        padding: 28rpx 32rpx;
+        font-size: 28rpx;
+        color: #333333;
+        border-bottom: 1rpx solid #f2f3f5;
+
+        &.is-active {
+          background-color: #ffffff;
+          color: #4a7cf7;
+        }
+      }
+
+      .cat-empty {
+        padding: 40rpx 32rpx;
+        font-size: 26rpx;
+        color: #bbbbbb;
+      }
+    }
+
+    .cat-col-right {
+      width: 55%;
+      background-color: #ffffff;
     }
   }
 }
@@ -883,6 +1507,7 @@ export default defineComponent({
   bottom: 0;
   left: 0;
   right: 0;
+  z-index: 100;
   display: flex;
   gap: 20rpx;
   padding: 20rpx 24rpx;

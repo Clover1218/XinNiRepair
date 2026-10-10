@@ -167,7 +167,7 @@ func (e *v14TestEnv) cleanup(t *testing.T) {
 }
 
 func (e *v14TestEnv) newOrderViaReport(t *testing.T, description string) (*model.RepairOrder, string) {
-	draft, err := e.orderSvc.Create(e.ctx, e.reporterID)
+	draft, err := e.orderSvc.Create(e.ctx, e.reporterID, UpdateOrderInput{})
 	if err != nil {
 		t.Fatalf("create draft: %v", err)
 	}

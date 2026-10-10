@@ -121,24 +121,30 @@ func main() {
 
 	entRepo := repository.NewEnterpriseRepository(db.DB)
 	projectRepo := repository.NewProjectRepository(db.DB)
+	scopeRepo := repository.NewRepairerEnterpriseRepository(db.DB)
 	entSvc := service.NewEnterpriseService(entRepo, memRepo, logger)
-	accessSvc := service.NewAccessService(memRepo)
+	accessSvc := service.NewAccessService(memRepo, scopeRepo)
 	entH := handler.NewEnterpriseHandler(entSvc, accessSvc, logger)
 
 	orderRepo := repository.NewOrderRepository(db.DB)
 	imgRepo := repository.NewOrderImageRepository(db.DB)
 	tlRepo := repository.NewOrderTimelineRepository(db.DB)
+	settingsRepo := repository.NewSettingsRepository(db.DB)
+	settingsSvc := service.NewSettingsService(settingsRepo, logger)
 	orderSvc := service.NewOrderService(orderRepo, imgRepo, tlRepo, memRepo, projectRepo, imgBed, notifier, logger)
 	orderH := handler.NewOrderHandler(orderSvc, logger)
 
-	adminOrderSvc := service.NewAdminOrderService(orderRepo, imgRepo, tlRepo, accessSvc, imgBed, notifier, logger)
+	adminOrderSvc := service.NewAdminOrderService(orderRepo, imgRepo, tlRepo, accessSvc, imgBed, notifier, settingsSvc, logger)
 	exportSvc := service.NewOrderExportService(orderRepo, tlRepo, cfg.Shop.Name, logger)
 	userAdminSvc := service.NewUserAdminService(authRepo, memRepo, logger)
 	projectSvc := service.NewProjectService(projectRepo, logger)
 	adminH := handler.NewAdminHandler(adminOrderSvc, entSvc, exportSvc, userAdminSvc, accessSvc, logger)
 	projectH := handler.NewProjectHandler(projectSvc, logger)
+	settingsH := handler.NewSettingsHandler(settingsSvc, logger)
+	scopeSvc := service.NewRepairerScopeService(scopeRepo, orderRepo, authRepo, logger)
+	scopeH := handler.NewRepairerScopeHandler(scopeSvc, logger)
 
-	registerRoutes(engine, db, authH, entH, orderH, adminH, projectH, tokenSvc)
+	registerRoutes(engine, db, authH, entH, orderH, adminH, projectH, scopeH, settingsH, tokenSvc)
 
 	// ── 8. 启动 HTTP 服务 ──
 	srv := &http.Server{
@@ -172,7 +178,7 @@ func main() {
 }
 
 // registerRoutes 注册所有 API 路由
-func registerRoutes(r *gin.Engine, db *repository.DB, authH *handler.AuthHandler, entH *handler.EnterpriseHandler, orderH *handler.OrderHandler, adminH *handler.AdminHandler, projectH *handler.ProjectHandler, tokenSvc *service.TokenService) {
+func registerRoutes(r *gin.Engine, db *repository.DB, authH *handler.AuthHandler, entH *handler.EnterpriseHandler, orderH *handler.OrderHandler, adminH *handler.AdminHandler, projectH *handler.ProjectHandler, scopeH *handler.RepairerScopeHandler, settingsH *handler.SettingsHandler, tokenSvc *service.TokenService) {
 	// ── 健康检查 ──
 	r.GET("/health", func(c *gin.Context) {
 		ctx, canc := context.WithTimeout(c.Request.Context(), 2*time.Second)
@@ -212,8 +218,9 @@ func registerRoutes(r *gin.Engine, db *repository.DB, authH *handler.AuthHandler
 		enterprises := v1.Group("/enterprises")
 		enterprises.Use(middleware.JWTAuth(tokenSvc))
 		{
-			// 创建企业: 仅店方角色 (role=1 维修业务员 / role=2 超级管理员, 3.1)
-			enterprises.POST("", middleware.RequirePlatformAdmin(), entH.Create)
+			// 创建企业 (3.1)：V1.5 收紧为仅超级管理员。
+			// 客户单位属平台治理范畴，维修业务员作为服务方不应自行新增客户企业。
+			enterprises.POST("", middleware.RequireSuperAdmin(), entH.Create)
 			enterprises.POST("/join", entH.Join)     // 仅凭邀请码加入 (3.4)
 			enterprises.GET("/join", entH.JoinByGet) // 加入企业 (GET 版, 扫码场景)
 			enterprises.GET("/:enterprise_id", entH.Get)
@@ -251,23 +258,25 @@ func registerRoutes(r *gin.Engine, db *repository.DB, authH *handler.AuthHandler
 			staff := admin.Group("")
 			staff.Use(middleware.RequirePlatformAdmin())
 			{
-				staff.GET("/repairers", adminH.Repairers)                            // 维修员列表 (5.15)
-				staff.GET("/orders/export", adminH.ExportOrders)                     // 导出工单记录 (5.14)
-				staff.GET("/orders/stats/by-enterprise", adminH.OrderStatsByEnterprise)   // 企业维度分组聚合 (5.18)
-				staff.GET("/orders/stats/by-repairer", adminH.OrderStatsByRepairer)      // 维修员维度聚合 (5.19)
-				staff.GET("/orders/stats/repairer-summary", adminH.StatsRepairerSummary)       // 维修员区间汇总 (5.21)
-				staff.GET("/orders/stats/repairer-overview", adminH.StatsRepairerOverview)     // 维修员个人汇总 (5.22; 小程序处理工单统计卡)
-				staff.GET("/enterprises", adminH.ListEnterprises)                              // 企业列表 (5.8)
-				staff.GET("/enterprises/:enterprise_id", adminH.EnterpriseDetail)    // 企业详情 (5.9)
+				staff.GET("/repairers", adminH.Repairers)                                  // 维修员列表 (5.15)
+				staff.GET("/orders/export", adminH.ExportOrders)                           // 导出工单记录 (5.14)
+				staff.GET("/orders/stats/by-enterprise", adminH.OrderStatsByEnterprise)    // 企业维度分组聚合 (5.18)
+				staff.GET("/orders/stats/by-repairer", adminH.OrderStatsByRepairer)        // 维修员维度聚合 (5.19)
+				staff.GET("/orders/stats/repairer-summary", adminH.StatsRepairerSummary)   // 维修员区间汇总 (5.21)
+				staff.GET("/orders/stats/repairer-overview", adminH.StatsRepairerOverview) // 维修员个人汇总 (5.22; 小程序处理工单统计卡)
+				staff.GET("/enterprises", adminH.ListEnterprises)                          // 企业列表 (5.8)
+				staff.GET("/enterprises/:enterprise_id", adminH.EnterpriseDetail)          // 企业详情 (5.9)
+				staff.GET("/my/enterprises", scopeH.MyScope)                               // 当前业务员自身可见范围 (V1.5)
 			}
 
 			// ── 工单处理: 店方角色或单位审核员(限本单位), 服务内按 Operator 校验 ──
-			admin.GET("/orders", adminH.ListOrders)       // 工单列表 (5.1)
-			admin.GET("/orders/stats", adminH.OrderStats) // 工单汇总统计 (5.17, V1.3 C20；须先于 :order_id 注册)
-			admin.GET("/orders/stats/metrics", adminH.StatsMetrics)      // 区间运营指标 (5.20；店方全域/审核员限本单位)
-			admin.GET("/orders/reporters", adminH.OrderReporters) // 报修人候选 (5.1 筛选配套)
+			admin.GET("/orders", adminH.ListOrders)                 // 工单列表 (5.1)
+			admin.GET("/orders/stats", adminH.OrderStats)           // 工单汇总统计 (5.17, V1.3 C20；须先于 :order_id 注册)
+			admin.GET("/orders/stats/metrics", adminH.StatsMetrics) // 区间运营指标 (5.20；店方全域/审核员限本单位)
+			admin.GET("/orders/reporters", adminH.OrderReporters)   // 报修人候选 (5.1 筛选配套)
 			admin.GET("/orders/:order_id", adminH.OrderDetail)
 			admin.POST("/orders/:order_id/audit", adminH.Audit)                  // 审核通过 (5.3)
+			admin.POST("/orders/:order_id/unaudit", adminH.Unaudit)              // 撤回审核 (V1.5 问题 #1/#22)
 			admin.POST("/orders/:order_id/review", adminH.Audit)                 // 兼容旧版 /review (行为同 audit)
 			admin.POST("/orders/:order_id/accept", adminH.Accept)                // 接单 (5.4)
 			admin.POST("/orders/:order_id/reject", adminH.Reject)                // 退回 (5.5)
@@ -275,6 +284,7 @@ func registerRoutes(r *gin.Engine, db *repository.DB, authH *handler.AuthHandler
 			admin.POST("/orders/:order_id/reopen", adminH.Reopen)                // 重新打开 (5.16)
 			admin.POST("/orders/:order_id/finance", adminH.UpdateFinance)        // 修改对账信息 (5.6.1)
 			admin.POST("/orders/:order_id/receipts", adminH.UploadReceipt)       // 上传收据 (5.7)
+			admin.POST("/orders/:order_id/signature", adminH.SignComplete)       // 补签正式完工 (req④)
 			admin.GET("/enterprises/:enterprise_id/members", adminH.ListMembers) // 成员列表 (5.10)
 
 			// ── 用户管理 (第六章, 仅超级管理员) ──
@@ -303,6 +313,16 @@ func registerRoutes(r *gin.Engine, db *repository.DB, authH *handler.AuthHandler
 				super.POST("/problems", projectH.CreateProblem)                   // 新增常见问题
 				super.PUT("/problems/:problem_id", projectH.UpdateProblem)        // 修改常见问题
 				super.DELETE("/problems/:problem_id", projectH.DeleteProblem)     // 软删除常见问题
+
+			// ── 维修业务员经营范围指派 (V1.5, 仅超级管理员) ──
+			// 注: "me" 不可挂在 /repairers/ 下, 会与 /repairers/:id 的通配路由冲突
+			super.GET("/repairers/:repairer_id/enterprises", scopeH.GetScope)           // 某业务员的经营范围
+			super.PUT("/repairers/:repairer_id/enterprises", scopeH.UpdateScope)        // 全量覆盖指派
+			super.GET("/enterprises/:enterprise_id/repairers", scopeH.ListByEnterprise) // 服务该企业的业务员
+
+			// ── 系统设置 (仅超级管理员) ──
+			super.GET("/settings", settingsH.List)   // 列出全部可配置项
+			super.PUT("/settings", settingsH.Update) // 更新单个设置项
 			}
 		}
 	}

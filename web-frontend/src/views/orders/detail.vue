@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox, type UploadRequestOptions, type UploadUserFile } from 'element-plus'
 import { adminAPI } from '@/api/admin'
 import { useUserStore } from '@/stores/user'
-import type { AvailableAction, OrderDetail } from '@/types'
+import type { AvailableAction, OrderDetail, OrderMetadata } from '@/types'
 import { formatDateTime } from '@/utils/format'
 
 const route = useRoute()
@@ -45,7 +45,7 @@ const showMetadata = computed(() => {
   if (!d || d.status !== 'completed') return false
   const m = d.metadata
   if (!m) return false
-  return !!(m.repair_result || m.repair_method || m.warranty_period || m.repair_duration != null || m.extra_remark)
+  return !!(m.repair_result || m.repair_method || m.warranty_period || m.repair_duration != null)
 })
 
 /** 金额格式化：保留两位小数 */
@@ -100,10 +100,10 @@ const runSimpleAction = async (action: AvailableAction) => {
   await fetchDetail()
 }
 
-// ---- 退回（弹窗填写原因，≥10 字） ----
+// ---- 退回（弹窗填写原因，≥2 字） ----
 const rejectDialogVisible = ref(false)
 const rejectReason = ref('')
-const rejectMinLength = ref(10)
+const rejectMinLength = ref(2)
 const rejecting = ref(false)
 
 const handleRejectSubmit = async () => {
@@ -128,7 +128,7 @@ const handleRejectSubmit = async () => {
 }
 
 const openRejectDialog = (action: AvailableAction) => {
-  rejectMinLength.value = action.reason_min_length ?? 10
+  rejectMinLength.value = action.reason_min_length ?? 2
   rejectReason.value = ''
   rejectDialogVisible.value = true
 }
@@ -143,72 +143,257 @@ const completing = ref(false)
 const previewVisible = ref(false)
 const previewUrl = ref('')
 
-// 对账信息（必填）
-const completeQuantity = ref<number | undefined>(undefined)
-const completeUnitPrice = ref<number | undefined>(undefined)
+// 对账信息（必填；需求③：数量默认 1）
+const completeQuantity = ref<number>(1)
+const completeUnitPrice = ref<number>(0)
 const completeRepairContent = ref('')
 // 维修附加信息（metadata）
 const metaRepairResult = ref('')
 const metaRepairMethod = ref('')
 const metaWarrantyPeriod = ref('')
 const metaRepairDuration = ref<number | undefined>(undefined)
-const metaExtraRemark = ref('')
 
 const repairResultOptions = ['完全修复', '部分修复', '无法修复']
 const repairMethodOptions = ['上门维修', '返店维修', '远程协助']
+
+// 结单结果（req② 三按钮）: 完成 / 客户原因取消 / 不能修
+const finishResult = ref<'complete' | 'customer_cancelled' | 'unrepairable'>('complete')
+const finishResultOptions = [
+  { value: 'complete', label: '完成' },
+  { value: 'customer_cancelled', label: '客户原因取消' },
+  { value: 'unrepairable', label: '不能修' }
+] as const
+
+// 签字模式（仅 result=complete 生效）: 已签字 / 稍后补签
+const signMode = ref<'signed' | 'pending_sign'>('signed')
+
+// 补签弹窗状态
+const signDialogVisible = ref(false)
+const signing = ref(false)
+const signFileList = ref<UploadUserFile[]>([])
+const signUrls = ref<string[]>([])
+const signUrlMap = new Map<number, string>()
+const signQuantity = ref<number>(1)
+const signUnitPrice = ref<number>(0)
+const signRepairContent = ref('')
+const signRemark = ref('')
+// 补签补登：维修附加信息（与完工弹窗一致）
+const signMetaRepairResult = ref('')
+const signMetaRepairMethod = ref('')
+const signMetaWarrantyPeriod = ref('')
+const signMetaRepairDuration = ref<number | undefined>(undefined)
+
+const completeButtonLabel = computed(() => {
+  if (finishResult.value === 'customer_cancelled') return '确认客户取消'
+  if (finishResult.value === 'unrepairable') return '确认不能修'
+  return signMode.value === 'pending_sign' ? '暂留处理中（稍后补签）' : '确认完工'
+})
+
+// 维修备注：完成类选填；客户取消/不能修类必填（与「额外备注」语义区分，避免冗余必填）
+const completeRemarkRequired = computed(() => finishResult.value !== 'complete')
+const completeRemarkTitle = computed(() =>
+  completeRemarkRequired.value ? '维修备注（必填，≤200 字）' : '维修备注（选填，≤200 字）'
+)
+const completeRemarkPlaceholder = computed(() => {
+  if (finishResult.value === 'customer_cancelled')
+    return '必填：请说明客户取消的原因，如：客户已自行解决、改由厂家保修、重复报修等'
+  if (finishResult.value === 'unrepairable')
+    return '必填：请说明无法维修的原因，如：配件已停产、设备损坏无维修价值等'
+  return '选填：可简述维修情况，如：已更换电源模块并测试正常'
+})
 
 const buildMetadata = () => ({
   repair_result: metaRepairResult.value || undefined,
   repair_method: metaRepairMethod.value || undefined,
   warranty_period: metaWarrantyPeriod.value || undefined,
-  extra_remark: metaExtraRemark.value || undefined,
   repair_duration: metaRepairDuration.value
 })
 
 const handleCompleteSubmit = async () => {
   const remark = completeRemark.value.trim()
-  if (!remark) {
-    ElMessage.warning('请填写维修备注')
-    return
-  }
   if (remark.length > 200) {
-    ElMessage.warning('备注不能超过 200 字')
+    ElMessage.warning('维修备注不能超过 200 字')
     return
   }
-  const quantity = completeQuantity.value
-  const unitPrice = completeUnitPrice.value
-  if (quantity === undefined || Number.isNaN(Number(quantity)) || quantity < 0) {
-    ElMessage.warning('请填写正确的数量（≥0）')
+  if (completeRemarkRequired.value && !remark) {
+    const tip =
+      finishResult.value === 'customer_cancelled'
+        ? '请填写维修备注：说明客户取消的原因'
+        : '请填写维修备注：说明无法维修的原因'
+    ElMessage.warning(tip)
     return
   }
-  if (unitPrice === undefined || Number.isNaN(Number(unitPrice)) || unitPrice < 0) {
-    ElMessage.warning('请填写正确的单价（≥0）')
-    return
+
+  const isComplete = finishResult.value === 'complete'
+
+  // 客户原因取消 / 不能修：终态，不要求收据/金额/维修内容
+  let quantity = 1
+  let unitPrice = 0
+  let repairContent = ''
+  let receiptsPayload: string[] = []
+  let signModePayload = 'signed'
+  if (isComplete) {
+    quantity = completeQuantity.value ?? 1
+    unitPrice = completeUnitPrice.value ?? 0
+    if (quantity < 0) {
+      ElMessage.warning('数量不能为负')
+      return
+    }
+    if (unitPrice < 0) {
+      ElMessage.warning('单价不能为负')
+      return
+    }
+    signModePayload = signMode.value
+    if (signMode.value === 'signed') {
+      // 已签字：收据/维修内容必填
+      repairContent = completeRepairContent.value.trim()
+      if (!repairContent) {
+        ElMessage.warning('请填写维修操作内容')
+        return
+      }
+      if (repairContent.length > 200) {
+        ElMessage.warning('维修操作内容不能超过 200 字')
+        return
+      }
+      if (receipts.value.length === 0) {
+        ElMessage.warning('请上传至少一张收据图片')
+        return
+      }
+      receiptsPayload = receipts.value
+    } else {
+      // 稍后补签：收据/维修内容选填，仅做记录；上传的收据一并提交，避免信息丢失
+      repairContent = completeRepairContent.value.trim()
+      receiptsPayload = receipts.value
+    }
   }
-  const repairContent = completeRepairContent.value.trim()
-  if (!repairContent) {
-    ElMessage.warning('请填写维修操作内容')
-    return
-  }
-  if (repairContent.length > 200) {
-    ElMessage.warning('维修操作内容不能超过 200 字')
-    return
-  }
+
   completing.value = true
   try {
     await adminAPI.completeOrder(orderId, {
       remark,
-      receipts: receipts.value,
+      receipts: receiptsPayload,
       quantity,
       unit_price: unitPrice,
       repair_content: repairContent,
-      metadata: buildMetadata()
+      metadata: buildMetadata(),
+      result: finishResult.value,
+      sign_mode: signModePayload
     })
-    ElMessage.success('完工成功')
+    const msg =
+      finishResult.value !== 'complete'
+        ? finishResult.value === 'unrepairable'
+          ? '已标记为不能修'
+          : '已标记为客户原因取消'
+        : signModePayload === 'pending_sign'
+          ? '已暂留处理中（待补签）'
+          : '完工成功'
+    ElMessage.success(msg)
     completeDialogVisible.value = false
     await fetchDetail()
   } finally {
     completing.value = false
+  }
+}
+
+const openSignDialog = () => {
+  // 预填已存的收据图片（如稍后补签时曾在完工弹窗上传过），避免信息展示不完全
+  const existingReceipts = detail.value?.receipts ?? []
+  signFileList.value = existingReceipts.map((r, idx) => ({
+    uid: -(idx + 1),
+    name: `receipt-${idx + 1}.jpg`,
+    url: r.url,
+    status: 'success' as const
+  }))
+  signUrls.value = existingReceipts.map(r => r.url)
+  signUrlMap.clear()
+  existingReceipts.forEach((r, idx) => signUrlMap.set(-(idx + 1), r.url))
+  signQuantity.value = detail.value?.quantity ?? 1
+  signUnitPrice.value = detail.value?.unit_price ?? 0
+  signRepairContent.value = detail.value?.repair_content ?? ''
+  // 回显之前已写的维修备注（如稍后补签时曾在完工弹窗填写过）
+  signRemark.value = detail.value?.remark ?? ''
+  signMetaRepairResult.value = detail.value?.metadata?.repair_result ?? ''
+  signMetaRepairMethod.value = detail.value?.metadata?.repair_method ?? ''
+  signMetaWarrantyPeriod.value = detail.value?.metadata?.warranty_period ?? ''
+  signMetaRepairDuration.value = detail.value?.metadata?.repair_duration ?? undefined
+  signDialogVisible.value = true
+}
+
+const beforeSignUpload = (rawFile: File) => {
+  const validTypes = ['image/jpeg', 'image/png', 'image/webp']
+  if (!validTypes.includes(rawFile.type)) {
+    ElMessage.error('仅支持 jpg/png/webp 格式')
+    return false
+  }
+  if (rawFile.size > 5 * 1024 * 1024) {
+    ElMessage.error('单张图片不能超过 5MB')
+    return false
+  }
+  if (signFileList.value.length >= 3) {
+    ElMessage.warning('收据图片/签字单最多上传 3 张')
+    return false
+  }
+  return true
+}
+
+const handleSignUpload = async (options: UploadRequestOptions) => {
+  try {
+    const res = await adminAPI.uploadReceipt(orderId, options.file)
+    signUrls.value.push(res.data.url)
+    signUrlMap.set(options.file.uid, res.data.url)
+    const item = signFileList.value.find(f => f.uid === options.file.uid)
+    if (item) {
+      item.url = res.data.url
+      item.status = 'success'
+    }
+    options.onSuccess(res.data)
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.message || '上传失败')
+    const item = signFileList.value.find(f => f.uid === options.file.uid)
+    if (item) item.status = 'fail'
+  }
+}
+
+const handleSignRemove = (file: UploadUserFile) => {
+  const uid = file.uid
+  if (uid === undefined) return
+  const url = signUrlMap.get(uid)
+  if (url) {
+    signUrls.value = signUrls.value.filter(u => u !== url)
+    signUrlMap.delete(uid)
+  }
+}
+
+const handleSignSubmit = async () => {
+  if (signUrls.value.length === 0) {
+    ElMessage.warning('请先上传客户签字单')
+    return
+  }
+  const remark = signRemark.value.trim()
+  if (remark.length > 200) {
+    ElMessage.warning('维修备注不能超过 200 字')
+    return
+  }
+  const meta: OrderMetadata = {}
+  if (signMetaRepairResult.value) meta.repair_result = signMetaRepairResult.value
+  if (signMetaRepairMethod.value) meta.repair_method = signMetaRepairMethod.value
+  if (signMetaWarrantyPeriod.value) meta.warranty_period = signMetaWarrantyPeriod.value
+  if (signMetaRepairDuration.value !== undefined) meta.repair_duration = signMetaRepairDuration.value
+  signing.value = true
+  try {
+    await adminAPI.signOrder(orderId, {
+      remark,
+      receipts: signUrls.value,
+      quantity: signQuantity.value ?? 1,
+      unit_price: signUnitPrice.value ?? 0,
+      repair_content: signRepairContent.value.trim(),
+      metadata: meta
+    })
+    ElMessage.success('已正式完工')
+    signDialogVisible.value = false
+    await fetchDetail()
+  } finally {
+    signing.value = false
   }
 }
 
@@ -267,25 +452,27 @@ const handleReceiptPreview = (file: UploadUserFile) => {
 
 const openCompleteDialog = () => {
   completeRemark.value = ''
+  finishResult.value = 'complete'
+  signMode.value = 'signed'
   receipts.value = []
   receiptFileList.value = []
   receiptUrlMap.clear()
-  completeQuantity.value = undefined
-  completeUnitPrice.value = undefined
+  completeQuantity.value = 1
+  completeUnitPrice.value = 0
   completeRepairContent.value = ''
   metaRepairResult.value = ''
   metaRepairMethod.value = ''
   metaWarrantyPeriod.value = ''
   metaRepairDuration.value = undefined
-  metaExtraRemark.value = ''
   completeDialogVisible.value = true
 }
 
 // ---- 修改对账信息（completed 状态店方） ----
 const financeDialogVisible = ref(false)
-const financeQuantity = ref<number | undefined>(undefined)
-const financeUnitPrice = ref<number | undefined>(undefined)
+const financeQuantity = ref<number>(1)
+const financeUnitPrice = ref<number>(0)
 const financeRepairContent = ref('')
+const financeRemark = ref('')
 const financeAmount = computed(() => {
   const q = Number(financeQuantity.value)
   const p = Number(financeUnitPrice.value)
@@ -298,19 +485,18 @@ const financeMetaRepairResult = ref('')
 const financeMetaRepairMethod = ref('')
 const financeMetaWarrantyPeriod = ref('')
 const financeMetaRepairDuration = ref<number | undefined>(undefined)
-const financeMetaExtraRemark = ref('')
 const updatingFinance = ref(false)
 
 const openFinanceDialog = () => {
   const d = detail.value
-  financeQuantity.value = d?.quantity ?? undefined
-  financeUnitPrice.value = d?.unit_price ?? undefined
+  financeQuantity.value = d?.quantity ?? 1
+  financeUnitPrice.value = d?.unit_price ?? 0
   financeRepairContent.value = d?.repair_content ?? ''
+  financeRemark.value = d?.remark ?? ''
   financeMetaRepairResult.value = d?.metadata?.repair_result ?? ''
   financeMetaRepairMethod.value = d?.metadata?.repair_method ?? ''
   financeMetaWarrantyPeriod.value = d?.metadata?.warranty_period ?? ''
   financeMetaRepairDuration.value = d?.metadata?.repair_duration ?? undefined
-  financeMetaExtraRemark.value = d?.metadata?.extra_remark ?? ''
   financeDialogVisible.value = true
 }
 
@@ -329,22 +515,28 @@ const handleUpdateFinance = async () => {
     ElMessage.warning('维修操作内容不能超过 200 字')
     return
   }
+  const remark = financeRemark.value.trim()
+  if (remark.length > 200) {
+    ElMessage.warning('维修备注不能超过 200 字')
+    return
+  }
   // 组装非空字段（后端字段可选，至少传一个）
   const data: {
     quantity?: number
     unit_price?: number
     repair_content?: string
+    remark?: string
     metadata?: Record<string, unknown>
   } = {}
   if (quantity !== undefined) data.quantity = quantity
   if (unitPrice !== undefined) data.unit_price = unitPrice
   if (financeRepairContent.value.trim()) data.repair_content = financeRepairContent.value.trim()
+  data.remark = remark
   const meta: Record<string, unknown> = {}
   if (financeMetaRepairResult.value) meta.repair_result = financeMetaRepairResult.value
   if (financeMetaRepairMethod.value) meta.repair_method = financeMetaRepairMethod.value
   if (financeMetaWarrantyPeriod.value) meta.warranty_period = financeMetaWarrantyPeriod.value
   if (financeMetaRepairDuration.value !== undefined) meta.repair_duration = financeMetaRepairDuration.value
-  if (financeMetaExtraRemark.value) meta.extra_remark = financeMetaExtraRemark.value
   if (Object.keys(meta).length) data.metadata = meta
 
   if (Object.keys(data).length === 0) {
@@ -368,6 +560,8 @@ const handleAction = (action: AvailableAction) => {
     openRejectDialog(action)
   } else if (action.action === 'complete') {
     openCompleteDialog()
+  } else if (action.action === 'sign') {
+    openSignDialog()
   } else if (action.action === 'update_finance') {
     openFinanceDialog()
   } else {
@@ -388,8 +582,8 @@ onMounted(fetchDetail)
             返回列表
           </el-button>
           <span class="detail-title">{{ detail?.order_no }}</span>
-          <el-tag v-if="detail" :type="statusTagType[detail.status]" class="detail-status">
-            {{ detail.status_label }}
+          <el-tag v-if="detail" :type="(detail.display_tag_type as string) || statusTagType[detail.status]" class="detail-status">
+            {{ detail.display_tag || detail.status_label }}
           </el-tag>
         </div>
       </template>
@@ -495,6 +689,12 @@ onMounted(fetchDetail)
                 <span class="info-value">{{ detail.repair_content || '-' }}</span>
               </div>
             </div>
+            <div v-if="detail.remark" class="info-row">
+              <div class="info-cell info-cell--full">
+                <span class="info-label">维修备注</span>
+                <span class="info-value">{{ detail.remark }}</span>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -520,10 +720,6 @@ onMounted(fetchDetail)
               <div class="info-cell">
                 <span class="info-label">维修时长</span>
                 <span class="info-value">{{ detail.metadata?.repair_duration != null ? `${detail.metadata.repair_duration} 分钟` : '-' }}</span>
-              </div>
-              <div class="info-cell info-cell--full">
-                <span class="info-label">额外备注</span>
-                <span class="info-value">{{ detail.metadata?.extra_remark || '-' }}</span>
               </div>
             </div>
           </div>
@@ -582,12 +778,12 @@ onMounted(fetchDetail)
       </template>
     </el-card>
 
-    <!-- 操作区（按钮由 visibleActions 驱动） -->
+    <!-- 操作区（按钮由 visibleActions 驱动；退回/完工/补签等均在同行展示） -->
     <div v-if="visibleActions.length" class="action-bar">
       <el-button
         v-for="action in visibleActions"
         :key="action.action"
-        :type="action.action === 'reject' ? 'danger' : 'primary'"
+        :type="action.action === 'reject' ? 'danger' : action.action === 'sign' ? 'warning' : 'primary'"
         size="large"
         @click="handleAction(action)"
       >
@@ -605,7 +801,7 @@ onMounted(fetchDetail)
             :rows="4"
             :maxlength="200"
             show-word-limit
-            placeholder="请输入退回原因，至少 10 个字"
+            :placeholder="`请输入退回原因，至少 ${rejectMinLength} 个字`"
           />
         </el-form-item>
       </el-form>
@@ -620,7 +816,94 @@ onMounted(fetchDetail)
     <!-- 完工弹窗 -->
     <el-dialog v-model="completeDialogVisible" title="完工" width="640px">
       <el-form label-position="top">
-        <div class="complete-block-title">维修备注（必填，≤200 字）</div>
+        <el-form-item label="结单结果">
+          <el-radio-group v-model="finishResult">
+            <el-radio-button
+              v-for="opt in finishResultOptions"
+              :key="opt.value"
+              :value="opt.value"
+            >{{ opt.label }}</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+
+        <template v-if="finishResult === 'complete'">
+          <el-form-item label="客户签字">
+            <el-radio-group v-model="signMode">
+              <el-radio-button value="signed">客户已签字</el-radio-button>
+              <el-radio-button value="pending_sign">暂时无法签字，稍后补签</el-radio-button>
+            </el-radio-group>
+          </el-form-item>
+
+          <template v-if="signMode === 'signed' || signMode === 'pending_sign'">
+            <el-alert
+              v-if="signMode === 'pending_sign'"
+              type="warning"
+              :closable="false"
+              show-icon
+              title="该单会暂留处理中，不会扣钱，可随时补传签字单后正式完工"
+              description="选择稍后补签后，工单保持「待补签」状态，金额等可现在填也可后续补登，不影响客户，也不计入已完工。"
+            />
+            <div class="complete-block-title">对账信息（必填）</div>
+            <div class="finance-row">
+              <el-form-item label="数量（≥0）">
+                <el-input-number v-model="completeQuantity" :min="0" :precision="0" controls-position="right" />
+              </el-form-item>
+              <el-form-item label="单价（元，≥0）">
+                <el-input-number v-model="completeUnitPrice" :min="0" :precision="2" controls-position="right" />
+              </el-form-item>
+            </div>
+            <el-form-item label="维修操作内容（必填，≤200 字）">
+              <el-input
+                v-model="completeRepairContent"
+                type="textarea"
+                :rows="2"
+                :maxlength="200"
+                show-word-limit
+                placeholder="如：更换台式机电源模块，长城600W"
+              />
+            </el-form-item>
+
+            <div class="complete-block-title">收据图片（最多 3 张）</div>
+            <el-form-item>
+              <el-upload
+                v-model:file-list="receiptFileList"
+                list-type="picture-card"
+                accept=".jpg,.jpeg,.png,.webp"
+                :http-request="handleReceiptUpload"
+                :before-upload="beforeReceiptUpload"
+                :on-remove="handleReceiptRemove"
+                :on-preview="handleReceiptPreview"
+              >
+                <el-icon><Plus /></el-icon>
+              </el-upload>
+            </el-form-item>
+
+            <div class="complete-block-title">维修附加信息（可选）</div>
+            <div class="finance-row">
+              <el-form-item label="维修结果">
+                <el-select v-model="metaRepairResult" placeholder="请选择" clearable class="full-width">
+                  <el-option v-for="opt in repairResultOptions" :key="opt" :label="opt" :value="opt" />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="维修方式">
+                <el-select v-model="metaRepairMethod" placeholder="请选择" clearable class="full-width">
+                  <el-option v-for="opt in repairMethodOptions" :key="opt" :label="opt" :value="opt" />
+                </el-select>
+              </el-form-item>
+            </div>
+            <div class="finance-row">
+              <el-form-item label="保修期">
+                <el-input v-model="metaWarrantyPeriod" placeholder="如：3个月" class="full-width" />
+              </el-form-item>
+              <el-form-item label="维修时长（分钟）">
+                <el-input-number v-model="metaRepairDuration" :min="0" :precision="0" controls-position="right" class="full-width" />
+              </el-form-item>
+            </div>
+          </template>
+        </template>
+
+        <!-- 维修备注：移动到对账信息/收据图片之后；取消/不能修类无对账块时也展示 -->
+        <div class="complete-block-title">{{ completeRemarkTitle }}</div>
         <el-form-item>
           <el-input
             v-model="completeRemark"
@@ -628,22 +911,53 @@ onMounted(fetchDetail)
             :rows="3"
             :maxlength="200"
             show-word-limit
-            placeholder="请输入维修过程及结果，如：已更换电源模块，恢复正常使用"
+            :placeholder="completeRemarkPlaceholder"
           />
         </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="completeDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="completing" @click="handleCompleteSubmit">
+          {{ completeButtonLabel }}
+        </el-button>
+      </template>
+    </el-dialog>
 
-        <div class="complete-block-title">对账信息（必填）</div>
+    <!-- 补签正式完工弹窗 -->
+    <el-dialog v-model="signDialogVisible" title="上传签字单，正式完工" width="640px">
+      <el-form label-position="top">
+        <div class="complete-block-title">收据图片 / 签字单（必传，最多 3 张）</div>
+        <el-form-item>
+          <el-upload
+            v-model:file-list="signFileList"
+            list-type="picture-card"
+            accept=".jpg,.jpeg,.png,.webp"
+            :http-request="handleSignUpload"
+            :before-upload="beforeSignUpload"
+            :on-remove="handleSignRemove"
+            :on-preview="handleReceiptPreview"
+          >
+            <el-icon><Plus /></el-icon>
+          </el-upload>
+        </el-form-item>
+        <el-alert
+          type="success"
+          :closable="false"
+          show-icon
+          title="上传签字单并确认后，工单将正式完工（写完工时间），可在此补登金额。"
+        />
+        <div class="complete-block-title">补登对账信息（可选）</div>
         <div class="finance-row">
           <el-form-item label="数量（≥0）">
-            <el-input-number v-model="completeQuantity" :min="0" :precision="0" controls-position="right" />
+            <el-input-number v-model="signQuantity" :min="0" :precision="0" controls-position="right" />
           </el-form-item>
           <el-form-item label="单价（元，≥0）">
-            <el-input-number v-model="completeUnitPrice" :min="0" :precision="2" controls-position="right" />
+            <el-input-number v-model="signUnitPrice" :min="0" :precision="2" controls-position="right" />
           </el-form-item>
         </div>
-        <el-form-item label="维修操作内容（必填，≤200 字）">
+        <el-form-item label="维修操作内容（≤200 字）">
           <el-input
-            v-model="completeRepairContent"
+            v-model="signRepairContent"
             type="textarea"
             :rows="2"
             :maxlength="200"
@@ -652,56 +966,44 @@ onMounted(fetchDetail)
           />
         </el-form-item>
 
-        <div class="complete-block-title">收据图片（最多 3 张）</div>
-        <el-form-item>
-          <el-upload
-            v-model:file-list="receiptFileList"
-            list-type="picture-card"
-            accept=".jpg,.jpeg,.png,.webp"
-            :http-request="handleReceiptUpload"
-            :before-upload="beforeReceiptUpload"
-            :on-remove="handleReceiptRemove"
-            :on-preview="handleReceiptPreview"
-          >
-            <el-icon><Plus /></el-icon>
-          </el-upload>
-        </el-form-item>
-
-        <div class="complete-block-title">维修附加信息（可选）</div>
+        <div class="complete-block-title">维修附加信息（可选，与完工弹窗一致）</div>
         <div class="finance-row">
           <el-form-item label="维修结果">
-            <el-select v-model="metaRepairResult" placeholder="请选择" clearable class="full-width">
+            <el-select v-model="signMetaRepairResult" placeholder="请选择" clearable class="full-width">
               <el-option v-for="opt in repairResultOptions" :key="opt" :label="opt" :value="opt" />
             </el-select>
           </el-form-item>
           <el-form-item label="维修方式">
-            <el-select v-model="metaRepairMethod" placeholder="请选择" clearable class="full-width">
+            <el-select v-model="signMetaRepairMethod" placeholder="请选择" clearable class="full-width">
               <el-option v-for="opt in repairMethodOptions" :key="opt" :label="opt" :value="opt" />
             </el-select>
           </el-form-item>
         </div>
         <div class="finance-row">
           <el-form-item label="保修期">
-            <el-input v-model="metaWarrantyPeriod" placeholder="如：3个月" class="full-width" />
+            <el-input v-model="signMetaWarrantyPeriod" placeholder="如：3个月" class="full-width" />
           </el-form-item>
           <el-form-item label="维修时长（分钟）">
-            <el-input-number v-model="metaRepairDuration" :min="0" :precision="0" controls-position="right" class="full-width" />
+            <el-input-number v-model="signMetaRepairDuration" :min="0" :precision="0" controls-position="right" class="full-width" />
           </el-form-item>
         </div>
-        <el-form-item label="额外备注">
+
+        <div class="complete-block-title">维修备注（选填，≤200 字）</div>
+        <el-form-item>
           <el-input
-            v-model="metaExtraRemark"
+            v-model="signRemark"
             type="textarea"
             :rows="2"
             :maxlength="200"
-            placeholder="选填"
+            show-word-limit
+            placeholder="选填：可补充完工说明，如：已当面交付并签字确认"
           />
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="completeDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="completing" @click="handleCompleteSubmit">
-          确认完工
+        <el-button @click="signDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="signing" @click="handleSignSubmit">
+          确认正式完工
         </el-button>
       </template>
     </el-dialog>
@@ -709,20 +1011,16 @@ onMounted(fetchDetail)
     <!-- 修改对账信息弹窗 -->
     <el-dialog v-model="financeDialogVisible" title="修改对账信息" width="560px">
       <el-form label-position="top">
-        <el-form-item label="工单号">
-          <span class="finance-order-no">{{ detail?.order_no }}</span>
-        </el-form-item>
+        <div class="complete-block-title">对账信息</div>
         <div class="finance-row">
-          <el-form-item label="数量">
+          <el-form-item label="数量（≥0）">
             <el-input-number v-model="financeQuantity" :min="0" :precision="0" controls-position="right" class="full-width" />
           </el-form-item>
-          <el-form-item label="单价（元）">
+          <el-form-item label="单价（元，≥0）">
             <el-input-number v-model="financeUnitPrice" :min="0" :precision="2" controls-position="right" class="full-width" />
           </el-form-item>
-          <el-form-item label="金额（只读预览）">
-            <span class="finance-amount">{{ financeAmount }}</span>
-          </el-form-item>
         </div>
+        <div class="finance-amount-line">金额（只读预览）：{{ financeAmount }}</div>
         <el-form-item label="维修操作内容（≤200 字）">
           <el-input
             v-model="financeRepairContent"
@@ -732,7 +1030,8 @@ onMounted(fetchDetail)
             show-word-limit
           />
         </el-form-item>
-        <el-divider content-position="left">维修附加信息</el-divider>
+
+        <div class="complete-block-title">维修附加信息（可选）</div>
         <div class="finance-row">
           <el-form-item label="维修结果">
             <el-select v-model="financeMetaRepairResult" placeholder="请选择" clearable class="full-width">
@@ -753,12 +1052,16 @@ onMounted(fetchDetail)
             <el-input-number v-model="financeMetaRepairDuration" :min="0" :precision="0" controls-position="right" class="full-width" />
           </el-form-item>
         </div>
-        <el-form-item label="额外备注">
+
+        <div class="complete-block-title">维修备注（选填，≤200 字）</div>
+        <el-form-item>
           <el-input
-            v-model="financeMetaExtraRemark"
+            v-model="financeRemark"
             type="textarea"
-            :rows="2"
+            :rows="3"
             :maxlength="200"
+            show-word-limit
+            placeholder="选填：可补充/修正完工说明，如：已当面交付并签字确认"
           />
         </el-form-item>
       </el-form>
@@ -946,9 +1249,10 @@ onMounted(fetchDetail)
   width: 100%;
 }
 
-.finance-order-no {
-  color: #303133;
-  font-weight: 600;
+.finance-amount-line {
+  color: #606266;
+  font-size: 14px;
+  margin: 0 0 10px;
 }
 
 .finance-amount {

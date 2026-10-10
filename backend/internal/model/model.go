@@ -87,8 +87,9 @@ const (
 type ImageType string
 
 const (
-	ImageFault   ImageType = "fault"   // 故障图（报修时，≤9 张）
-	ImageReceipt ImageType = "receipt" // 收据图（完工凭证，1-3 张）
+	ImageFault     ImageType = "fault"     // 故障图（报修时，≤9 张）
+	ImageReceipt   ImageType = "receipt"   // 收据图（完工凭证，1-3 张）
+	ImageSignature ImageType = "signature" // 客户签字单（补签/正式完工凭证，0-1 张）
 )
 
 // ImageStatus 图片状态 (temporary=刚上传未确认, active=草稿确认/正式, deleted=替换下架/软删除)
@@ -98,6 +99,23 @@ const (
 	ImageTemporary ImageStatus = "temporary"
 	ImageActive    ImageStatus = "active"
 	ImageDeleted   ImageStatus = "deleted"
+)
+
+// ────────────────────────────────────────────
+// 本质标签派生字段取值（V1.5，不新增状态机状态）
+// ────────────────────────────────────────────
+
+// SignatureStatus 客户签字状态。仅 completed 态有意义；processing/其它态恒为 none。
+const (
+	SignatureNone        = "none"
+	SignatureSigned      = "signed"          // 客户已签字确认
+	SignaturePendingSign = "pending_sign"    // 已通知客户下次补签确认
+)
+
+// FinishOutcome cancelled 终态的细分成因（与状态机解耦，便于展示/筛选"不能修"等本质）。
+const (
+	FinishOutcomeUnrepairable      = "unrepairable"       // 不能修（师傅到场判定）
+	FinishOutcomeCustomerCancelled = "customer_cancelled" // 客户原因取消
 )
 
 // ActionType 操作类型 (order_timeline.action)
@@ -114,6 +132,16 @@ const (
 	ActionCancel        ActionType = "cancel"   // 取消：draft/reported/pending_accept → cancelled
 	ActionUploadReceipt ActionType = "upload_receipt"
 	ActionUpdateFinance ActionType = "update_finance" // 修改对账信息 (5.6.1)
+	// V1.5 新增
+	ActionUnaudit ActionType = "unaudit" // 撤回审核：pending_accept → reported（未接单时，问题 #1/#22）
+	ActionSign    ActionType = "sign"    // 客户补签：上传签字单并置 signed（正式完工）
+	ActionDeferSign ActionType = "defer_sign" // 稍后补签：完成结单但暂不写 completed_at，留待补签
+)
+
+// SignMode 完工登记中「客户签字」子模式（仅 result=complete 时生效）。
+const (
+	SignModeSigned      = "signed"       // 客户已当场签字：processing → completed + signature_status=signed
+	SignModePendingSign = "pending_sign" // 暂无法签字：保持 processing + signature_status=pending_sign，待补签
 )
 
 // NotifyChannel 通知渠道
@@ -141,13 +169,14 @@ const (
 // 退回是独立状态 rejected（C19）：退回操作将状态置为 rejected（见 OrderReject 业务规则），
 // 与草稿 draft 区分，便于筛选/统计与前端明确展示「已退回」。
 var ValidTransitions = map[OrderStatus][]OrderStatus{
-	OrderDraft:         {OrderReported, OrderCancelled},                  // 提交 / 取消
-	OrderReported:      {OrderPendingAccept, OrderRejected, OrderCancelled}, // 审核通过 / 退回 / 取消
-	OrderPendingAccept: {OrderProcessing, OrderRejected, OrderCancelled},    // 接单 / 退回 / 取消
-	OrderProcessing:    {OrderCompleted, OrderRejected},                     // 完工 / 退回
-	OrderRejected:      {OrderReported, OrderCancelled},                  // 重新提交（报修人修改后）/ 取消
-	OrderCompleted:     {OrderProcessing},                                // 重新打开（维修业务员）
-	OrderCancelled:     {},                                               // 终态
+	OrderDraft:    {OrderReported, OrderCancelled},                     // 提交 / 取消
+	OrderReported: {OrderPendingAccept, OrderRejected, OrderCancelled}, // 审核通过 / 退回 / 取消
+	// V1.5: 新增撤回审核（问题 #1/#22）—— 未接单时可撤销审核让报修人重新修改
+	OrderPendingAccept: {OrderProcessing, OrderRejected, OrderCancelled, OrderReported}, // 接单 / 退回 / 取消 / 撤回审核
+	OrderProcessing:    {OrderCompleted, OrderRejected, OrderCancelled},                 // 完工 / 退回 / 结单取消(不能修·客户原因取消)
+	OrderRejected:      {OrderReported, OrderCancelled},                                 // 重新提交（报修人修改后）/ 取消
+	OrderCompleted:     {OrderProcessing},                                               // 重新打开（维修业务员）
+	OrderCancelled:     {},                                                              // 终态
 }
 
 // AllowedTransition 检查状态流转是否合法
@@ -226,6 +255,34 @@ type Membership struct {
 
 	Enterprise Enterprise `gorm:"foreignKey:EnterpriseID"`
 	User       User       `gorm:"foreignKey:UserID"`
+}
+
+// ────────────────────────────────────────────
+// 维修业务员经营范围 (repairer_enterprises)
+// V1.5: 业务员可服务的客户企业指派。与 memberships 语义互斥
+//       (memberships=我属于该单位; 本表=店方授权我服务该客户), 不可混用。
+// ────────────────────────────────────────────
+
+// RepairerScopeStatus 经营范围指派状态
+type RepairerScopeStatus string
+
+const (
+	RepairerScopeActive  RepairerScopeStatus = "active"
+	RepairerScopeRevoked RepairerScopeStatus = "revoked"
+)
+
+// RepairerEnterprise 维修业务员经营范围指派
+type RepairerEnterprise struct {
+	ID           string              `gorm:"primaryKey;type:uuid"`
+	RepairerID   string              `gorm:"type:uuid;not null;uniqueIndex:uq_repairer_ent"`
+	EnterpriseID string              `gorm:"type:uuid;not null;uniqueIndex:uq_repairer_ent;index:idx_repairer_ent_ent"`
+	Status       RepairerScopeStatus `gorm:"type:varchar(20);not null;default:'active'"`
+	CreatedBy    *string             `gorm:"type:uuid"`
+	CreatedAt    time.Time           `gorm:"autoCreateTime"`
+	RevokedAt    *time.Time          `gorm:"type:timestamptz"`
+
+	Repairer   User       `gorm:"foreignKey:RepairerID"`
+	Enterprise Enterprise `gorm:"foreignKey:EnterpriseID"`
 }
 
 // ────────────────────────────────────────────
@@ -324,10 +381,15 @@ type RepairOrder struct {
 
 	// ── 完工/对账 (V1.3 保留字段, 财务对账在范围内) ──
 	RepairContent string         `gorm:"type:varchar(500)"`                                                        // 具体维修内容
+	Remark        string         `gorm:"type:varchar(500);not null;default:''"`                                    // 维修备注（结单原因/说明），详情展示与补签回显
 	Quantity      int            `gorm:"type:integer;not null;default:1"`                                          // 数量
 	UnitPrice     float64        `gorm:"type:decimal(10,2);not null;default:0"`                                    // 单价（元）
 	Amount        float64        `gorm:"type:decimal(10,2) GENERATED ALWAYS AS (quantity * unit_price) STORED;->"` // 金额生成列, 只读
 	Metadata      datatypes.JSON `gorm:"type:jsonb;not null;default:'{}'"`                                         // 维修结果/方式/保修期/时长/额外备注
+
+	// ── 本质标签派生字段（V1.5，不新增状态机状态）──
+	SignatureStatus string `gorm:"type:varchar(20);not null;default:'none'"` // none/signed/pending_sign
+	FinishOutcome   string `gorm:"type:varchar(20)"`                         // cancelled 细分成因: unrepairable/customer_cancelled
 
 	// ── 关联 ──
 	Enterprise Enterprise      `gorm:"foreignKey:EnterpriseID"`
@@ -345,7 +407,6 @@ type RepairMetadata struct {
 	RepairResult   string `json:"repair_result"`   // 维修结果
 	RepairMethod   string `json:"repair_method"`   // 维修方式
 	WarrantyPeriod string `json:"warranty_period"` // 保修期
-	ExtraRemark    string `json:"extra_remark"`    // 额外备注
 	RepairDuration int    `json:"repair_duration"` // 维修时长（分钟）
 }
 
@@ -384,3 +445,19 @@ type OrderTimeline struct {
 func (OrderTimeline) TableName() string {
 	return "order_timeline"
 }
+
+// ────────────────────────────────────────────
+// 系统设置 (system_settings, 超管可调参数)
+// ────────────────────────────────────────────
+
+// SystemSetting 系统设置键值对（超管维护，当前承载「完工后二次修改时限」等闸门阈值）
+type SystemSetting struct {
+	Key         string    `gorm:"primaryKey;type:varchar(50)"`
+	Value       string    `gorm:"type:text;not null;default:''"`
+	Description string    `gorm:"type:varchar(200);not null;default:''"`
+	UpdatedAt   time.Time `gorm:"type:timestamptz;not null;default:now()"`
+	UpdatedBy   *string   `gorm:"type:uuid"`
+}
+
+// TableName 指定表名
+func (SystemSetting) TableName() string { return "system_settings" }

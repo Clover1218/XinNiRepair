@@ -2,6 +2,11 @@
 
 > 供 AI 编码助手使用的项目指南。修改代码前请先阅读本文，遵守既有架构与约定。
 
+## 0. 你的风格
+
+任何不确定的实现，都应该先通过询问向我确认。
+如果顺手发现其他BUG，也应该先说明向我确认再修复。
+
 ## 1. 项目简介
 
 面向电脑维修店的报修系统，包含三端：
@@ -93,7 +98,7 @@ npx vue-tsc --noEmit         # 类型检查
 
 ## 6. 业务与领域要点
 
-- **工单状态机**：draft(草稿) → reported(已上报) → pending_accept(待接单) → processing(处理中) → completed(已处理/完成)；`reject` 退回（原因≥10字，回 draft，退回非独立状态）、`cancelled`(已取消) 终态、completed 可 `reopen`(重新打开)→processing。审核通过由单位审核员执行：写 `audited_at/audited_by`（`reviewed_at` 已废弃）。
+- **工单状态机**：draft(草稿) → reported(已上报) → pending_accept(待接单) → processing(处理中) → completed(已处理/完成)；`reject` 退回（原因≥2字，回 draft，退回非独立状态）、`cancelled`(已取消) 终态、completed 可 `reopen`(重新打开)→processing。审核通过由单位审核员执行：写 `audited_at/audited_by`（`reviewed_at` 已废弃）。
 - **角色（双层模型）**：全局 users.role 0=普通用户 / 1=维修业务员（原平台管理员，店方：接单/处理/完工/收据与费用登记）/ 2=超级管理员（另管项目字典）；单位内 memberships.role 0=普通成员 / 1=单位审核员（成员审批 + 本单位工单审核 reported→pending_accept/退回 + 汇总统计）；membership 状态 pending/approved/rejected/removed。
 - **企业邀请**：邀请码 + 有效期（刷新接口），成员加入支持 `auto_approve`（免审核）开关，企业设置更新走 `PUT /api/v1/enterprises/:id`（name + auto_approve，局部更新）。
 - **项目字典（库表存储，替代 JSON）**：`project_categories` / `project_properties` / `project_problems` 三表（软删除 `deleted_at` + `sort_order` 排序；大类↔属性一对多，**常见问题直接隶属属性**（property↔problem 一对多，2026-09-07 修订），同属性内 name 唯一）；工单存 `category_id`/`property_id` + 名称快照（`category_name`/`property_name`），常见问题仅作描述快捷填充、不落库。

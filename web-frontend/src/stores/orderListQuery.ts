@@ -20,6 +20,8 @@ export const useOrderListQueryStore = defineStore('orderListQuery', {
     dateRange: null as [string, string] | null,
     sortBy: 'submitted_at',
     sortOrder: 'desc' as 'asc' | 'desc',
+    /** V1.5 本质标签筛选：unrepairable/customer_cancelled/pending_sign/signed（映射到 finish_outcome / signature_status） */
+    essenceFilter: '' as '' | 'unrepairable' | 'customer_cancelled' | 'pending_sign' | 'signed',
     /** 首次进入默认全部条件；后续进入沿用上次条件 */
     touched: false
   }),
@@ -45,6 +47,7 @@ export const useOrderListQueryStore = defineStore('orderListQuery', {
       this.dateRange = null
       this.sortBy = 'submitted_at'
       this.sortOrder = 'desc'
+      this.essenceFilter = ''
     }
   }
 })

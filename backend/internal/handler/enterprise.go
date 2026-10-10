@@ -23,10 +23,23 @@ func NewEnterpriseHandler(svc *service.EnterpriseService, access *service.Access
 	return &EnterpriseHandler{svc: svc, access: access, logger: logger}
 }
 
-// requireManage 校验操作者有权限管理该企业: 店方角色(role>=1) 或该企业单位审核员; 不满足则已写响应返回 false
-func (h *EnterpriseHandler) requireManage(c *gin.Context, enterpriseID string) bool {
-	if err := h.access.CanManageEnterprise(c.Request.Context(), enterpriseID, c.GetString("user_id"), c.GetInt("role")); err != nil {
-		h.logger.Warn("Enterprise access denied", zap.Error(err),
+// requireAdminister 校验企业信息**写操作**权限 (V1.5)：
+// 仅超级管理员或该单位单位审核员。维修业务员只能查看、不能维护客户企业信息。
+func (h *EnterpriseHandler) requireAdminister(c *gin.Context, enterpriseID string) bool {
+	if err := h.access.AssertCanAdministerEnterprise(c.Request.Context(), opOf(c), enterpriseID); err != nil {
+		h.logger.Warn("Enterprise administer denied", zap.Error(err),
+			zap.String("enterprise_id", enterpriseID), zap.String("user_id", c.GetString("user_id")))
+		response.FailError(c, err)
+		return false
+	}
+	return true
+}
+
+// requireView 校验企业**读操作**权限 (V1.5)：
+// 超管不限；维修业务员限经营范围；单位审核员限本单位。
+func (h *EnterpriseHandler) requireView(c *gin.Context, enterpriseID string) bool {
+	if err := h.access.AssertCanViewEnterprise(c.Request.Context(), opOf(c), enterpriseID); err != nil {
+		h.logger.Warn("Enterprise view denied", zap.Error(err),
 			zap.String("enterprise_id", enterpriseID), zap.String("user_id", c.GetString("user_id")))
 		response.FailError(c, err)
 		return false
@@ -73,7 +86,7 @@ func (h *EnterpriseHandler) Get(c *gin.Context) {
 // Update 更新企业设置 (PUT /enterprises/:enterprise_id; 单位审核员或店方角色)
 // 权限细分: 免审批开关两者均可; 企业名称仅店方角色(role>=1)可改, 单位审核员改名称由 service 层拒绝。
 func (h *EnterpriseHandler) Update(c *gin.Context) {
-	if !h.requireManage(c, c.Param("enterprise_id")) {
+	if !h.requireAdminister(c, c.Param("enterprise_id")) {
 		return
 	}
 	var req struct {
@@ -135,7 +148,7 @@ func (h *EnterpriseHandler) JoinByGet(c *gin.Context) {
 
 // ListMembers 成员列表 (GET /enterprises/:enterprise_id/members; 单位审核员或店方角色)
 func (h *EnterpriseHandler) ListMembers(c *gin.Context) {
-	if !h.requireManage(c, c.Param("enterprise_id")) {
+	if !h.requireView(c, c.Param("enterprise_id")) {
 		return
 	}
 	page, pageSize, err := parsePageParams(c)
@@ -164,7 +177,7 @@ func (h *EnterpriseHandler) ListMembers(c *gin.Context) {
 
 // Approve 批量审核通过 (PUT /enterprises/:enterprise_id/members/approve; 单位审核员或店方角色)
 func (h *EnterpriseHandler) Approve(c *gin.Context) {
-	if !h.requireManage(c, c.Param("enterprise_id")) {
+	if !h.requireAdminister(c, c.Param("enterprise_id")) {
 		return
 	}
 	userIDs, ok := h.bindUserIDs(c)
@@ -182,7 +195,7 @@ func (h *EnterpriseHandler) Approve(c *gin.Context) {
 
 // Reject 批量拒绝申请 (PUT /enterprises/:enterprise_id/members/reject; 单位审核员或店方角色)
 func (h *EnterpriseHandler) Reject(c *gin.Context) {
-	if !h.requireManage(c, c.Param("enterprise_id")) {
+	if !h.requireAdminister(c, c.Param("enterprise_id")) {
 		return
 	}
 	userIDs, ok := h.bindUserIDs(c)
@@ -200,7 +213,7 @@ func (h *EnterpriseHandler) Reject(c *gin.Context) {
 
 // Remove 移除成员 (DELETE /enterprises/:enterprise_id/members/:user_id; 单位审核员或店方角色)
 func (h *EnterpriseHandler) Remove(c *gin.Context) {
-	if !h.requireManage(c, c.Param("enterprise_id")) {
+	if !h.requireAdminister(c, c.Param("enterprise_id")) {
 		return
 	}
 	if err := h.svc.Remove(c.Request.Context(), c.Param("enterprise_id"), c.Param("user_id")); err != nil {
@@ -212,9 +225,13 @@ func (h *EnterpriseHandler) Remove(c *gin.Context) {
 }
 
 // SetMemberRole 设置成员单位内身份 (PUT /enterprises/:enterprise_id/members/:user_id/role; V1.2 新增)
-// 权限: 仅维修业务员/超级管理员 (role>=1), 由路由层 RequirePlatformAdmin 保证;
-// 单位审核员无权提升/降级他人为审核员。
+// 权限 (V1.5 收紧): 路由层 RequirePlatformAdmin 仅要求 role>=1，维修业务员同样满足，
+// 但设置单位审核员属于客户企业内部治理，业务员不应介入。
+// 此处追加要求：超级管理员 或 该单位单位审核员。
 func (h *EnterpriseHandler) SetMemberRole(c *gin.Context) {
+	if !h.requireAdminister(c, c.Param("enterprise_id")) {
+		return
+	}
 	var req struct {
 		Role string `json:"role" binding:"required"`
 	}
@@ -234,7 +251,7 @@ func (h *EnterpriseHandler) SetMemberRole(c *gin.Context) {
 
 // RefreshCode 刷新邀请码 (POST /enterprises/:enterprise_id/refresh/code; 单位审核员或店方角色)
 func (h *EnterpriseHandler) RefreshCode(c *gin.Context) {
-	if !h.requireManage(c, c.Param("enterprise_id")) {
+	if !h.requireAdminister(c, c.Param("enterprise_id")) {
 		return
 	}
 	var req struct {
