@@ -21,6 +21,11 @@ const roleLabel = computed(() => {
 
 const menus = computed<Array<{ path: string; title: string; icon: string }>>(() => {
   const items: Array<{ path: string; title: string; icon: string }> = []
+  const has = (predicate: (p: string) => boolean) => items.some(i => predicate(i.path))
+
+  // 所有角色统一的首页入口（按角色渲染待办队列）
+  items.push({ path: '/', title: '首页', icon: 'HomeFilled' })
+
   if (userStore.isStoreStaff) {
     items.push(
       { path: '/orders', title: '工单管理', icon: 'Tickets' },
@@ -39,13 +44,17 @@ const menus = computed<Array<{ path: string; title: string; icon: string }>>(() 
         { path: '/settings', title: '系统设置', icon: 'Setting' }
       )
     }
-  } else if (userStore.hasReviewerRole) {
-    // 单位审核员：登录后独立展示“单位审核”与“企业管理”两个入口
-    items.push({ path: '/review', title: '单位审核', icon: 'Checked' })
-    // 审核员也可直接上报本单位的故障
-    items.push({ path: '/orders/create', title: '上报工单', icon: 'EditPen' })
+  }
+  // 兼任多角色时追加审核员专属入口（按 path 去重，避免重复菜单）
+  if (userStore.hasReviewerRole) {
+    if (!has(p => p === '/review')) {
+      items.push({ path: '/review', title: '单位审核', icon: 'Checked' })
+    }
+    if (!has(p => p === '/orders/create')) {
+      items.push({ path: '/orders/create', title: '上报工单', icon: 'EditPen' })
+    }
     const first = userStore.reviewerEnterprises[0]
-    if (first) {
+    if (first && !has(p => p.startsWith('/enterprises/'))) {
       items.push({
         path: `/enterprises/${first.enterprise_id}`,
         title: '企业管理',
@@ -53,7 +62,9 @@ const menus = computed<Array<{ path: string; title: string; icon: string }>>(() 
       })
     }
     // 统计（限本单位，隐藏企业对比/维修员业绩）
-    items.push({ path: '/stats', title: '统计', icon: 'DataAnalysis' })
+    if (!has(p => p === '/stats')) {
+      items.push({ path: '/stats', title: '统计', icon: 'DataAnalysis' })
+    }
   }
   return items
 })
@@ -99,8 +110,10 @@ const handleLogout = async () => {
         </div>
       </el-header>
       <el-main class="main">
-        <!-- fullPath 作 key：/enterprises/:id 切换单位时重挂载详情页（审核员多单位场景） -->
-        <router-view :key="route.fullPath" />
+        <!-- path 作 key：/enterprises/:id 切换单位时重挂载详情页（审核员多单位场景）。
+             刻意不包含 query —— 工单管理会把 Tab 写进 ?status=xxx，若连 query 一起重挂载
+             会导致每次切 Tab 整页重建（失去滚动位置与筛选组件状态）。 -->
+        <router-view :key="route.path" />
       </el-main>
     </el-container>
   </el-container>

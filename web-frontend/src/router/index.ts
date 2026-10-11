@@ -16,11 +16,18 @@ const routes = [
     meta: { requiresAuth: true },
     children: [
       {
+        // 首页（登录落地页）：按角色展示待办队列，区块「详情 →」直达工单管理并自带筛选
+        path: '',
+        name: 'Home',
+        component: () => import('@/views/home/index.vue'),
+        meta: { title: '首页', permissions: ['store', 'reviewer'] }
+      },
+      {
         path: 'orders',
         name: 'OrderList',
         component: () => import('@/views/orders/list.vue'),
-        // 店方专用列表；单位审核员请走 /review（独立视图）
-        meta: { title: '工单管理', permissions: ['store'] }
+        // 按角色自动切换：店方看全域（默认待接单），单位审核员看本单位（默认待审核）
+        meta: { title: '工单管理', permissions: ['store', 'reviewer'] }
       },
       {
         // 必须注册在 orders/:id 之前，否则会被 :id 抢占匹配（id="create"）
@@ -120,8 +127,8 @@ router.beforeEach(to => {
     return { path: '/login', query: { redirect: to.fullPath } }
   }
 
-  // 已登录访问登录页 / 根路径 → 按角色落地
-  if ((to.path === '/login' || to.path === '/') && userStore.token) {
+  // 已登录访问登录页 → 按角色落地（首页 '/' 本身可访问，不参与重定向，否则 landingPath='/' 会构成死循环）
+  if (to.path === '/login' && userStore.token) {
     return userStore.landingPath
   }
 

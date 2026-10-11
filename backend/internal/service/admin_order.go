@@ -283,8 +283,11 @@ func (s *AdminOrderService) ListOrders(ctx context.Context, op Operator, f repos
 		}
 	}
 
-	// 维修业务员（非超管）查看「处理中」时只能看到自己接的工单（repairer_id = 自己）
-	if op.IsPlainRepairer() && statusSliceContains(f.Status, string(model.OrderProcessing)) {
+	// 维修业务员（非超管）查看「处理中」时只能看到自己接的工单（repairer_id = 自己）。
+	// 仅在把 processing 作为唯一筛选项时收敛：若调用方显式请求了包含 processing 的多个状态
+	// （例如「未完成」= 待审核+待接单+处理中），此时再强制 repairer_id 会把其余状态的工单
+	// 静默吞掉，导致聚合页看起来"少数据"。
+	if op.IsPlainRepairer() && len(f.Status) == 1 && f.Status[0] == string(model.OrderProcessing) {
 		f.RepairerID = op.UserID
 	}
 

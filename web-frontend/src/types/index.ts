@@ -98,6 +98,12 @@ export interface OrderListItem {
   receipt_uploaded?: boolean
   signature_status?: string
   finish_outcome?: string
+  /** 报修位置/房间号（V1.3 卡片展示） */
+  room?: string
+  /** 联系方式（V1.3 卡片展示；含客户手机号） */
+  contact?: string
+  /** 故障图缩略图（V1.3 卡片展示，取首图） */
+  images?: OrderImage[]
 }
 
 /** 报修人筛选下拉选项（GET /admin/orders/reporters，来源于历史工单报修人） */

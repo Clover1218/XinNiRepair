@@ -88,11 +88,17 @@ export const useUserStore = defineStore('user', {
         this.isStoreStaff ||
         this.reviewerEnterprises.some(e => e.enterprise_id === enterpriseId)
     },
-    /** 登录后落地页 */
+    /** 登录后落地页：统一为首页（按角色渲染待办队列；兼任多角色时区块取并集） */
     landingPath(): string {
-      if (this.isStoreStaff) return '/orders'
-      if (this.hasReviewerRole) return '/review'
+      if (this.isStoreStaff || this.hasReviewerRole) return '/'
       return '/login'
+    },
+    /** 兼任多角色时的可见 Tab 集合来源（门店方/审核员） */
+    activeViewRoles(): Array<'store' | 'reviewer'> {
+      const roles: Array<'store' | 'reviewer'> = []
+      if (this.isStoreStaff) roles.push('store')
+      if (this.hasReviewerRole) roles.push('reviewer')
+      return roles
     }
   }
 })
