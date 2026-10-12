@@ -107,6 +107,7 @@
           v-for="item in list"
           :key="item.id"
           :item="item"
+          :hide-enterprise="cardHideEnterprise"
           @click="goOrderDetail(item.id)"
         >
           <!-- 被退回提示条（金额已由 order-card 内置显示，此处不重复渲染） -->
@@ -351,6 +352,15 @@ export default defineComponent({
       return isStoreStaff() || isUnitReviewer()
     },
     /**
+     * 卡片是否隐藏企业名：
+     * - 管理模式：顶部「企业」筛选选定了具体企业（fEnterpriseId 非空）时隐藏；
+     * - 普通模式：企业下拉选定了具体企业（enterpriseFilterIndex !== 0）时隐藏；
+     * 二者在「全部企业」时均不隐藏（卡片可能来自不同企业，顶部无上下文）。
+     */
+    cardHideEnterprise(): boolean {
+      return this.manageMode ? !!this.fEnterpriseId : this.enterpriseFilterIndex !== 0
+    },
+    /**
      * 管理模式状态 Tab（移植自 Web 端 views/orders/list.vue）：
      * 同一套状态只换标签——pending_accept 对维修员是「待接单」、对审核员是「已审核通过」。
      */
@@ -442,30 +452,7 @@ export default defineComponent({
     crumbs(): { key: string; label: string; clear: () => void }[] {
       const out: { key: string; label: string; clear: () => void }[] = []
       if (!this.manageMode) return out
-      if (this.fEnterpriseId) {
-        const e = this.enterpriseOptions.find((x) => x.id === this.fEnterpriseId)
-        out.push({
-          key: 'ent',
-          label: `企业：${e?.name ?? ''}`,
-          clear: () => {
-            this.fEnterpriseId = ''
-            this.fReporterId = ''
-            this.loadReporterOptions()
-            this.loadList(true)
-          }
-        })
-      }
-      if (this.fReporterId) {
-        const r = this.reporterOptions.find((x) => x.id === this.fReporterId)
-        out.push({
-          key: 'rep',
-          label: `用户：${r?.nickname ?? ''}`,
-          clear: () => {
-            this.fReporterId = ''
-            this.loadList(true)
-          }
-        })
-      }
+      // 企业 / 用户 已常驻显示在顶部 filter-scope 选择器，此处不再重复成面包屑气泡（避免信息重复）。
       if (this.fCategoryId) {
         const c = this.categoryOptions.find((x) => x.id === this.fCategoryId)
         out.push({
@@ -1010,8 +997,6 @@ export default defineComponent({
 .scope-picker.is-disabled {
   background: var(--xn-bg-soft);
   opacity: 0.55;
-}
-  flex-shrink: 0;
 }
 .scope-sort {
   display: inline-flex;

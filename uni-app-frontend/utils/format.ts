@@ -16,6 +16,26 @@ export function formatDate(value?: string | null): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
 }
 
+/**
+ * 列表卡片时间（视觉降噪，配合浅灰 12px 元信息行）：
+ * - 今天 → HH:mm
+ * - 昨天 → 昨天
+ * - 其余 → MM-DD HH:mm
+ */
+export function formatListTime(value?: string | null): string {
+  if (!value) return ''
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return value
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`
+  const startOfDay = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime()
+  const dayMs = 86400000
+  const dayDiff = Math.floor((startOfDay(new Date()) - startOfDay(d)) / dayMs)
+  if (dayDiff <= 0) return hm // 今天（含未来时间戳兜底）
+  if (dayDiff === 1) return '昨天'
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${hm}`
+}
+
 /** 手机号脱敏：138****8000 */
 export function maskPhone(phone?: string): string {
   if (!phone || phone.length < 7) return phone || ''

@@ -19,20 +19,33 @@
         <text class="oc-cat">{{ problemType || '未分类' }}</text>
       </view>
 
-      <!-- 第三/四行：图标化元信息。企业 · 地点 一行；报修人 + 时间 一行 -->
+      <!--
+        元信息（浅灰 #9CA3AF / 12px 视觉降噪）：
+        - 隐藏企业名（顶部已选定具体企业）：报修人 · 地点 · 时间 合并一行
+        - 否则：企业 · 地点 一行；报修人 + 时间 一行
+      -->
       <view class="oc-meta">
-        <view class="oc-line">
-          <wd-icon name="shop" size="26rpx" color="#9ca3af"></wd-icon>
-          <text class="oc-val oc-val-flex">{{ enterpriseName }}</text>
-          <text class="oc-sep">|</text>
-          <wd-icon name="location" size="26rpx" color="#9ca3af"></wd-icon>
-          <text class="oc-val oc-val-flex">{{ location || '未填地点' }}</text>
-        </view>
-        <view class="oc-line">
-          <wd-icon name="user" size="26rpx" color="#9ca3af"></wd-icon>
+        <view v-if="hideEnterprise" class="oc-line oc-line-compact">
+          <wd-icon name="user" size="22rpx" color="#9ca3af"></wd-icon>
           <text class="oc-val">{{ reporterName || '—' }}</text>
+          <wd-icon name="location" size="22rpx" color="#9ca3af"></wd-icon>
+          <text class="oc-val oc-val-flex">{{ location || '未填地点' }}</text>
           <text class="oc-time">{{ timeText }}</text>
         </view>
+        <template v-else>
+          <view class="oc-line">
+            <wd-icon name="shop" size="26rpx" color="#9ca3af"></wd-icon>
+            <text class="oc-val oc-val-flex">{{ enterpriseName }}</text>
+            <text class="oc-sep">|</text>
+            <wd-icon name="location" size="26rpx" color="#9ca3af"></wd-icon>
+            <text class="oc-val oc-val-flex">{{ location || '未填地点' }}</text>
+          </view>
+          <view class="oc-line">
+            <wd-icon name="user" size="26rpx" color="#9ca3af"></wd-icon>
+            <text class="oc-val">{{ reporterName || '—' }}</text>
+            <text class="oc-time">{{ timeText }}</text>
+          </view>
+        </template>
       </view>
     </view>
 
@@ -46,7 +59,7 @@
 <script lang="ts">
 import { defineComponent, type PropType } from 'vue'
 import type { AdminOrderListItem, OrderListItem } from '@/types'
-import { statusPill, formatAmount, formatDateTime, splitContact } from '@/utils/format'
+import { statusPill, formatAmount, formatListTime, splitContact } from '@/utils/format'
 
 /**
  * 统一工单卡片（对齐 Web 端 components/OrderCardC.vue）
@@ -73,6 +86,11 @@ export default defineComponent({
     item: {
       type: Object as PropType<AdminOrderListItem | OrderListItem>,
       required: true
+    },
+    /** 是否隐藏企业名：顶部已选定具体企业时由父组件传入 true（避免与顶部筛选重复） */
+    hideEnterprise: {
+      type: Boolean as PropType<boolean>,
+      default: false
     }
   },
   emits: ['click'],
@@ -82,7 +100,7 @@ export default defineComponent({
       return statusPill(this.item as any)
     },
     timeText(): string {
-      return formatDateTime(this.item.submitted_at || this.item.created_at)
+      return formatListTime(this.item.submitted_at || this.item.created_at)
     },
     images(): string[] {
       return (this.item.images || []).map((img) => img.url).filter(Boolean)
@@ -231,11 +249,11 @@ export default defineComponent({
   letter-spacing: 2rpx;
 }
 
-/* 图标化元信息 */
+/* 图标化元信息：浅灰 #9CA3AF + 12px（设计 token --xn-text-400）视觉降噪 */
 .oc-meta {
   margin-top: 16rpx;
-  font-size: 26rpx;
-  color: var(--xn-text-500);
+  font-size: 24rpx;
+  color: var(--xn-text-400);
 }
 .oc-line {
   display: flex;
@@ -247,8 +265,12 @@ export default defineComponent({
 .oc-line + .oc-line {
   margin-top: 12rpx;
 }
+/* 隐藏企业名时的合并单行：报修人 · 地点 · 时间 */
+.oc-line-compact {
+  gap: 10rpx;
+}
 .oc-val {
-  color: var(--xn-text-500);
+  color: inherit;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
