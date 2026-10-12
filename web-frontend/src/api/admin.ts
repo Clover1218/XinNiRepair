@@ -11,7 +11,7 @@ import type {
   MemberItem,
   OrderDetail,
   OrderDraftResult,
-  OrderListItem,
+  OrderListResult,
   OrderMetadata,
   OrderOptions,
   OrderStats,
@@ -46,10 +46,6 @@ export interface OrderListParams {
   reporter_id?: string
   sort_by?: string
   sort_order?: string
-  /** V1.5 本质标签筛选：按客户签字状态 signed/pending_sign/none */
-  signature_status?: string
-  /** V1.5 本质标签筛选：按 cancelled 终态成因 unrepairable/customer_cancelled */
-  finish_outcome?: string
 }
 
 export interface EnterpriseListParams {
@@ -69,8 +65,10 @@ export interface OrderDraftInput {
   room?: string
   /** 联系人+电话，约定格式「姓名 空格 电话」 */
   contact?: string
-  /** 仅 update 生效：完整的图片 URL 列表（全量替换） */
+  /** 完整图片 URL 列表（全量替换，旧版兼容；新代码统一用 image_ids） */
   images?: string[]
+  /** 仅 update 生效：已上传图片的 id 列表；服务端做 diff（新→active、移除→deleted） */
+  image_ids?: string[]
 }
 
 export interface MemberListParams {
@@ -84,7 +82,7 @@ export interface MemberListParams {
 export const adminAPI = {
   // 5.1 工单列表（管理后台；单位审核员必须携带 enterprise_id，后端按 Operator 校验）
   getOrders: (params: OrderListParams) =>
-    client.get<PageResult<OrderListItem>>('/admin/orders', { params }),
+    client.get<OrderListResult>('/admin/orders', { params }),
 
   // 5.1 配套：报修人筛选下拉候选（按企业域+昵称模糊；来源于历史工单报修人）
   getReporters: (params: { enterprise_id?: string; keyword?: string }) =>
@@ -132,7 +130,7 @@ export const adminAPI = {
     orderId: string,
     data: {
       remark: string
-      receipts: string[]
+      receipt_ids: string[]
       quantity: number
       unit_price: number
       repair_content: string
@@ -147,7 +145,7 @@ export const adminAPI = {
     orderId: string,
     data: {
       remark?: string
-      receipts?: string[]
+      receipt_ids?: string[]
       quantity: number
       unit_price: number
       repair_content?: string
@@ -414,6 +412,21 @@ export const adminAPI = {
     formData.append('file', file)
     return client.post<{ id: string; url: string; sort_order: number; file_size: number }>(
       `/orders/${orderId}/images`,
+      formData,
+      { headers: { 'Content-Type': 'multipart/form-data' } }
+    )
+  },
+
+  /**
+   * 4.5 预上传故障图片（multipart/form-data）。不要求 order_id：图片尚未绑定工单
+   * （如新建单尚未落库）时调用，后端写入「未绑定哨兵」的 temporary 记录，
+   * 提交建单/保存草稿时由 updateOrder(image_ids) 关联为 active。
+   */
+  uploadOrderImageFree: (file: File) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    return client.post<{ id: string; url: string; sort_order: number; file_size: number }>(
+      `/orders/images`,
       formData,
       { headers: { 'Content-Type': 'multipart/form-data' } }
     )

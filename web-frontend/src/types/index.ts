@@ -154,6 +154,12 @@ export interface OrderDetail {
   order_no: string
   enterprise_id: string
   enterprise_name: string
+  /** 报修人摘要（5.2 详情返回，前端用于现场卡展示姓名 + 电话） */
+  reporter?: {
+    id: string
+    nickname: string
+    avatar_url: string
+  }
   category_id: string
   category_name: string
   property_id: string
@@ -201,6 +207,11 @@ export interface PageResult<T> {
   page: number
   page_size: number
   total_pages: number
+}
+
+/** 工单列表响应（含状态 Tab 实时角标计数 status_counts，key 为状态值 + 聚合键 unfinished） */
+export interface OrderListResult extends PageResult<OrderListItem> {
+  status_counts: Record<string, number>
 }
 
 /** 企业列表项（5.8） */

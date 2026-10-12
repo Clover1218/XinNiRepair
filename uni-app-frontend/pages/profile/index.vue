@@ -7,7 +7,7 @@
         text="登"
         shape="round"
         size="large"
-        bg-color="#4d80f0"
+        bg-color="#0f766e"
         color="#ffffff"
       ></wd-avatar>
       <view class="not-logged-info">
@@ -26,7 +26,7 @@
           :text="avatarText"
           shape="round"
           size="large"
-          bg-color="#4d80f0"
+          bg-color="#0f766e"
           color="#ffffff"
         ></wd-avatar>
         <view class="user-info">
@@ -69,6 +69,19 @@
         </view>
       </view>
 
+      <!-- 管理入口：仅店方 / 单位审核员可见。
+           注：统计页、Excel 导出、超管四件套（项目字典/用户管理/经营范围/系统设置）
+           本期均不移植小程序，故此处不提供对应入口。 -->
+      <template v-if="showManageEntry">
+        <view class="ent-title"><text>管理</text></view>
+        <view class="link-list">
+          <view class="link-item" @click="goEnterpriseManage">
+            <text>企业管理</text>
+            <text class="link-arrow">›</text>
+          </view>
+        </view>
+      </template>
+
       <!-- 协议入口 -->
       <view class="link-list">
         <view class="link-item" @click="openAgreement('user')">
@@ -94,6 +107,7 @@ import { defineComponent } from 'vue'
 import { useUserStore } from '@/stores/user'
 import { useEnterpriseStore } from '@/stores/enterprise'
 import { maskPhone, roleLabel, memberStatusLabel } from '@/utils/format'
+import { isStoreStaff, reviewerEnterprises } from '@/utils/auth'
 import type { EnterpriseBrief, PlatformRole } from '@/types'
 
 const ROLE_TEXT: Record<number, string> = {
@@ -138,6 +152,10 @@ export default defineComponent({
     },
     platformRoleText(): string {
       return ROLE_TEXT[this.platformRoleValue] || '普通用户'
+    },
+    /** 是否有管理身份（店方或单位审核员） */
+    showManageEntry(): boolean {
+      return isStoreStaff() || reviewerEnterprises().length > 0
     }
   },
   onShow() {
@@ -169,6 +187,33 @@ export default defineComponent({
     goJoin() {
       uni.navigateTo({ url: '/pages/enterprise/join' })
     },
+    /**
+     * 企业管理入口（按角色分流）：
+     * - 店方 → 企业列表
+     * - 单位审核员 → 直达本单位详情；多单位时弹出选择器
+     */
+    goEnterpriseManage() {
+      const units = reviewerEnterprises()
+      if (isStoreStaff()) {
+        uni.navigateTo({ url: '/pages/admin/enterprise/list' })
+        return
+      }
+      if (units.length === 1) {
+        uni.navigateTo({ url: `/pages/admin/enterprise/detail?id=${units[0].enterprise_id}` })
+        return
+      }
+      if (units.length > 1) {
+        uni.showActionSheet({
+          itemList: units.map((u) => u.enterprise_name),
+          success: (res) => {
+            const target = units[res.tapIndex]
+            if (target) {
+              uni.navigateTo({ url: `/pages/admin/enterprise/detail?id=${target.enterprise_id}` })
+            }
+          }
+        })
+      }
+    },
     /** V1.2：切换企业 = 纯本地上下文切换（approved 才可切换） */
     onSwitchEnterprise(ent: EnterpriseBrief) {
       if (ent.status !== 'approved') {
@@ -199,7 +244,7 @@ export default defineComponent({
 .not-logged-in {
   display: flex;
   align-items: center;
-  background: linear-gradient(135deg, #4d80f0 0%, #6ea1ff 100%);
+  background: linear-gradient(135deg, #0f766e 0%, #1aa392 100%);
   border-radius: 20rpx;
   padding: 40rpx 32rpx;
   color: #ffffff;
@@ -228,7 +273,7 @@ export default defineComponent({
 .user-card {
   display: flex;
   align-items: center;
-  background: linear-gradient(135deg, #4d80f0 0%, #6ea1ff 100%);
+  background: linear-gradient(135deg, #0f766e 0%, #1aa392 100%);
   border-radius: 20rpx;
   padding: 40rpx 32rpx;
   color: #ffffff;
@@ -301,7 +346,7 @@ export default defineComponent({
     }
 
     &.staff {
-      background: rgba(77, 128, 240, 0.12);
+      background: rgba(15, 118, 110, 0.12);
     }
   }
 
@@ -343,7 +388,7 @@ export default defineComponent({
   .ent-add {
     font-size: 26rpx;
     font-weight: 400;
-    color: #4d80f0;
+    color: #0f766e;
   }
 }
 
@@ -356,8 +401,8 @@ export default defineComponent({
     border: 2rpx solid transparent;
 
     &.current {
-      border-color: #4d80f0;
-      background-color: rgba(77, 128, 240, 0.04);
+      border-color: #0f766e;
+      background-color: rgba(15, 118, 110, 0.04);
     }
 
     .ent-name-wrap {
@@ -372,7 +417,7 @@ export default defineComponent({
 
       .ent-check {
         margin-left: 12rpx;
-        color: #4d80f0;
+        color: #0f766e;
         font-size: 28rpx;
         font-weight: 700;
       }

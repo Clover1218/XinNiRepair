@@ -126,7 +126,8 @@ type UpdateOrderInput struct {
 	Urgency      *string   `json:"urgency"`
 	Room         *string   `json:"room"`
 	Contact      *string   `json:"contact"`
-	Images       *[]string `json:"images"` // 完整的图片 URL 列表 (全量替换)
+	Images       *[]string `json:"images"`   // 完整的图片 URL 列表 (全量替换, 旧版兼容)
+	ImageIDs     *[]string `json:"image_ids"` // 预上传图片记录 ID 列表 (提交时关联: 新→active, 移除→deleted)
 }
 
 // OrderDraftResult 创建/更新草稿响应 (4.2/4.3)
@@ -173,23 +174,18 @@ func ComputeDisplayTag(o *model.RepairOrder, receiptUploaded bool) (tag, tagType
 	case string(model.OrderPendingAccept):
 		return "待接单", "warning"
 	case string(model.OrderProcessing):
-		// 已通知客户稍后补签 → 待补签（橙色醒目）；其余按金额/收据区分
+		// 稍后补签（客户未当场签字）→ 待补签（橙色醒目）；其余统一展示为「处理中」，不附加冗余词
 		if o.SignatureStatus == string(model.SignaturePendingSign) {
 			return "待补签", "warning"
 		}
-		if o.Amount > 0 && !receiptUploaded {
-			return "处理中·待补收据", "warning"
-		}
-		return "处理中·待处理", "primary"
+		return "处理中", "primary"
 	case string(model.OrderCompleted):
-		switch o.SignatureStatus {
-		case model.SignatureSigned:
-			return "已完工·已签字", "success"
-		case model.SignaturePendingSign:
-			return "已完工·待补签", "warning"
-		default:
-			return "已完工", "success"
+		// 已完工即展示为「已完工」（已签字不再附加「·已签字」等冗余字）；
+		// 仅当仍处于待补签状态时显示「待补签」（理论上完工后必签字，此处作兜底）。
+		if o.SignatureStatus == string(model.SignaturePendingSign) {
+			return "待补签", "warning"
 		}
+		return "已完工", "success"
 	case string(model.OrderCancelled):
 		switch o.FinishOutcome {
 		case model.FinishOutcomeUnrepairable:
@@ -447,6 +443,14 @@ func (s *OrderService) Create(ctx context.Context, userID string, in UpdateOrder
 		return nil, s.dbErr("create timeline failed", err)
 	}
 
+	// 预上传图片关联：新建单携带的 image_ids 此时已由前端预上传（order_id=未绑定哨兵），
+	// 建单成功后翻成 active 并回填真实 order_id；不在列表内的原 active 图片置 deleted。
+	if in.ImageIDs != nil {
+		if err := s.AssociateImages(ctx, order.ID, string(model.ImageFault), *in.ImageIDs); err != nil {
+			return nil, err
+		}
+	}
+
 	return &OrderDraftResult{
 		OrderID:   order.ID,
 		Status:    order.Status,
@@ -565,8 +569,12 @@ func (s *OrderService) Update(ctx context.Context, userID, orderID string, in Up
 		return nil, s.dbErr("update order failed", err)
 	}
 
-	// 图片全量替换 (status 流程)
-	if in.Images != nil {
+	// 图片关联 (优先 image_ids: 提交时 diff 关联；兼容旧版 images URL 全量替换)
+	if in.ImageIDs != nil {
+		if err := s.AssociateImages(ctx, order.ID, string(model.ImageFault), *in.ImageIDs); err != nil {
+			return nil, err
+		}
+	} else if in.Images != nil {
 		if len(*in.Images) > maxFaultImages {
 			return nil, apperrors.ErrImageTooMany
 		}
@@ -839,13 +847,29 @@ func (s *OrderService) Cancel(ctx context.Context, userID, orderID, reason strin
 //
 // 上传成功后插入 order_images 记录: status=temporary, image_type=fault;
 // sort_order 默认 -1 (由 4.3 更新草稿统一设置)。格式支持 jpg/png/webp (V1.4)。
+// UploadImage 图片上传 (4.9)
+//
+// 上传成功后插入 order_images 记录: status=temporary。
+// - orderID 非空：校验工单归属与 draft/rejected 状态，记录直接绑定该工单。
+// - orderID 为空（预上传）：写入 order_id=未绑定哨兵的 temporary 记录，不计入工单真实图片数，
+//   待建单/保存时由 AssociateImages 翻成 active 并回填真实 order_id。
 func (s *OrderService) UploadImage(ctx context.Context, userID, orderID, filename string, size int64, content io.Reader, sortOrder int) (*UploadImageResult, error) {
-	order, err := s.loadOwnedOrder(ctx, userID, orderID)
-	if err != nil {
-		return nil, err
-	}
-	if order.Status != string(model.OrderDraft) && order.Status != string(model.OrderRejected) {
-		return nil, apperrors.ErrOrderCannotEdit
+	unbound := orderID == ""
+	if !unbound {
+		order, err := s.loadOwnedOrder(ctx, userID, orderID)
+		if err != nil {
+			return nil, err
+		}
+		if order.Status != string(model.OrderDraft) && order.Status != string(model.OrderRejected) {
+			return nil, apperrors.ErrOrderCannotEdit
+		}
+		count, err := s.images.CountActive(ctx, orderID, string(model.ImageFault))
+		if err != nil {
+			return nil, s.dbErr("count images failed", err)
+		}
+		if count >= maxFaultImages {
+			return nil, apperrors.ErrImageTooMany
+		}
 	}
 
 	if size <= 0 || size > maxImageSize {
@@ -859,14 +883,6 @@ func (s *OrderService) UploadImage(ctx context.Context, userID, orderID, filenam
 	head = head[:n]
 	if !validImageFormat(head, filename) {
 		return nil, apperrors.ErrImageInvalid.WithMessage("仅支持 jpg/png/webp 格式")
-	}
-
-	count, err := s.images.CountNotDeleted(ctx, orderID, string(model.ImageFault))
-	if err != nil {
-		return nil, s.dbErr("count images failed", err)
-	}
-	if count >= maxFaultImages {
-		return nil, apperrors.ErrImageTooMany
 	}
 
 	upload, err := s.imagebed.Upload(ctx, filename, io.MultiReader(bytes.NewReader(head), content))
@@ -887,6 +903,9 @@ func (s *OrderService) UploadImage(ctx context.Context, userID, orderID, filenam
 		Status:    string(model.ImageTemporary),
 		SortOrder: sortOrder,
 		FileSize:  int(size),
+	}
+	if unbound {
+		img.OrderID = model.UnboundImageOrderID
 	}
 	if err := s.images.Create(ctx, img); err != nil {
 		return nil, s.dbErr("create image record failed", err)
@@ -1026,6 +1045,32 @@ func (s *OrderService) replaceImages(ctx context.Context, orderID, imageType str
 				return s.dbErr("update image failed", err)
 			}
 		}
+	}
+	return nil
+}
+
+// AssociateImages 提交时图片关联 (status 流程, 供 4.3/4.4 故障图)。
+//
+// 与设计一致：上传阶段仅产生 temporary 记录（含未绑定哨兵），不计入工单真实图片数；
+// 此处做"原表 vs 现表" diff：
+//   - 现表 imageIDs 中的记录：temporary→active 并回填 order_id 与 sort_order（已是 active 则仅更新排序）。
+//   - 原表该工单下 active 但不在 imageIDs 中的记录：置 deleted（被用户移除的旧图）。
+// 仅 active 计入工单图片数，temporary/deleted 不计。
+func (s *OrderService) AssociateImages(ctx context.Context, orderID, imageType string, imageIDs []string) error {
+	if len(imageIDs) > maxFaultImages {
+		return apperrors.ErrImageTooMany
+	}
+	for idx, id := range imageIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if err := s.images.ActivateOne(ctx, orderID, imageType, id, idx); err != nil {
+			return s.dbErr("activate image failed", err)
+		}
+	}
+	if err := s.images.SoftDeleteActiveExcept(ctx, orderID, imageType, imageIDs); err != nil {
+		return s.dbErr("soft delete images failed", err)
 	}
 	return nil
 }

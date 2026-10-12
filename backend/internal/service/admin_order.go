@@ -29,6 +29,9 @@ import (
 // maxReceiptImages 同一工单收据图上限 (5.7)
 const maxReceiptImages = 3
 
+// pendingSignFilterValue 工单列表「待补签」筛选伪状态值（非状态机状态，实为按签字状态 pending_sign 筛选）
+const pendingSignFilterValue = "pending_sign"
+
 // ────────────────────────────────────────────
 // 输出结构
 // ────────────────────────────────────────────
@@ -83,6 +86,9 @@ type AdminOrderList struct {
 	Page       int              `json:"page"`
 	PageSize   int              `json:"page_size"`
 	TotalPages int              `json:"total_pages"`
+	// StatusCounts 各状态实时计数（角标用）：key 为状态值（reported/pending_accept/...），
+	// 另含聚合键 "unfinished"（待审核+待接单+处理中）。不含 f.Status 自身，角标互不影响。
+	StatusCounts map[string]int64 `json:"status_counts"`
 }
 
 // AdminAction 管理端可执行动作 (5.2)
@@ -237,6 +243,22 @@ func (s *AdminOrderService) ListRepairers(ctx context.Context) ([]RepairerWithSc
 // 鉴权: 店方角色 (role>=1) 可查全部; 单位审核员 (role=0 + membership.role=1)
 // 必须传 enterprise_id 且限定于其有权限的单位。
 func (s *AdminOrderService) ListOrders(ctx context.Context, op Operator, f repository.OrderAdminFilter, page, pageSize int) (*AdminOrderList, error) {
+	// 「待补签」是跨状态的派生筛选（按客户签字状态 = pending_sign），并非状态机状态。
+	// 必须在 status 合法性校验之前抽离，否则会被当作非法状态拒绝。
+	pendingSignFilter := false
+	realStatuses := make([]string, 0, len(f.Status))
+	for _, st := range f.Status {
+		if st == pendingSignFilterValue {
+			pendingSignFilter = true
+			continue
+		}
+		realStatuses = append(realStatuses, st)
+	}
+	f.Status = realStatuses
+	if pendingSignFilter {
+		f.SignatureStatus = string(model.SignaturePendingSign)
+	}
+
 	for _, st := range f.Status {
 		if _, ok := statusLabels[st]; !ok {
 			return nil, apperrors.ErrInvalidParam.WithMessage("status 取值: draft/reported/pending_accept/processing/completed/cancelled")
@@ -258,13 +280,22 @@ func (s *AdminOrderService) ListOrders(ctx context.Context, op Operator, f repos
 		return nil, apperrors.ErrInvalidParam.WithMessage("sort_order 取值: asc/desc")
 	}
 
-	// 单位审核员限定本单位
+	// 单位审核员数据权限：
+	// - 指定 enterprise_id → 校验为该单位审核员（仅看本单位）
+	// - 未指定（选择「全部企业」）→ 按其所担任审核员的所有单位做 IN 收敛，不信任客户端传入清单
 	if !op.IsStoreStaff() {
-		if f.EnterpriseID == "" {
-			return nil, apperrors.ErrWrongEnterprise.WithMessage("单位审核员需指定 enterprise_id 并仅可查看本单位工单")
-		}
-		if err := s.access.CanManageEnterprise(ctx, f.EnterpriseID, op.UserID, op.Role); err != nil {
-			return nil, err
+		if f.EnterpriseID != "" {
+			if err := s.access.CanManageEnterprise(ctx, f.EnterpriseID, op.UserID, op.Role); err != nil {
+				return nil, err
+			}
+		} else {
+			ids, err := s.access.ReviewerEnterpriseIDs(ctx, op.UserID)
+			if err != nil {
+				return nil, err
+			}
+			// 空切片 → 无可看单位，applyScope 返回 visible=false，列表/计数返回空结果（不泄漏数据）
+			f.ScopeLimited = true
+			f.ScopeEnterpriseIDs = ids
 		}
 	}
 
@@ -289,6 +320,40 @@ func (s *AdminOrderService) ListOrders(ctx context.Context, op Operator, f repos
 	// 静默吞掉，导致聚合页看起来"少数据"。
 	if op.IsPlainRepairer() && len(f.Status) == 1 && f.Status[0] == string(model.OrderProcessing) {
 		f.RepairerID = op.UserID
+	}
+
+	// 状态 Tab 实时角标：按"其它筛选条件"分组计数（忽略当前 Tab 状态 + 忽略 processing 专属 repairer 特例）
+	countFilter := f
+	countFilter.Status = nil
+	countFilter.RepairerID = ""
+	countFilter.SignatureStatus = "" // 角标反映各状态自身数量，不受「待补签」派生筛选影响
+	byStatusCounts, cErr := s.orders.CountByStatusForAdmin(ctx, countFilter)
+	if cErr != nil {
+		return nil, s.dbErr("count orders by status failed", cErr)
+	}
+	unfinishedCount := byStatusCounts[string(model.OrderReported)] +
+		byStatusCounts[string(model.OrderPendingAccept)] +
+		byStatusCounts[string(model.OrderProcessing)]
+	// "all"：忽略状态筛选（保留其它筛选）的工单总数，供「全部」角标使用，
+	// 避免「全部」角标随当前选中状态而变成与某状态相同的数字。
+	allCount := int64(0)
+	for k, c := range byStatusCounts {
+		if k == pendingSignFilterValue { // 派生计数，不计入「全部」
+			continue
+		}
+		allCount += c
+	}
+	statusCounts := map[string]int64{
+		"all":                            allCount,
+		string(model.OrderDraft):         byStatusCounts[string(model.OrderDraft)],
+		string(model.OrderReported):      byStatusCounts[string(model.OrderReported)],
+		string(model.OrderPendingAccept): byStatusCounts[string(model.OrderPendingAccept)],
+		string(model.OrderProcessing):    byStatusCounts[string(model.OrderProcessing)],
+		string(model.OrderCompleted):     byStatusCounts[string(model.OrderCompleted)],
+		string(model.OrderCancelled):     byStatusCounts[string(model.OrderCancelled)],
+		string(model.OrderRejected):      byStatusCounts[string(model.OrderRejected)],
+		"unfinished":                     unfinishedCount,
+		"pending_sign":                   byStatusCounts[pendingSignFilterValue],
 	}
 
 	orders, total, err := s.orders.ListForAdmin(ctx, f, (page-1)*pageSize, pageSize)
@@ -355,11 +420,12 @@ func (s *AdminOrderService) ListOrders(ctx context.Context, op Operator, f repos
 		totalPages++
 	}
 	return &AdminOrderList{
-		List:       list,
-		Total:      total,
-		Page:       page,
-		PageSize:   pageSize,
-		TotalPages: totalPages,
+		List:         list,
+		Total:        total,
+		Page:         page,
+		PageSize:     pageSize,
+		TotalPages:   totalPages,
+		StatusCounts: statusCounts,
 	}, nil
 }
 
@@ -1039,7 +1105,7 @@ func (s *AdminOrderService) Reject(ctx context.Context, op Operator, orderID, re
 // CompleteOrderInput 完工登记入参 (5.6, req②/④)
 type CompleteOrderInput struct {
 	Remark        string
-	Receipts      []string
+	ReceiptIDs    []string
 	Quantity      int
 	UnitPrice     float64
 	RepairContent string
@@ -1122,10 +1188,10 @@ func (s *AdminOrderService) Complete(ctx context.Context, op Operator, orderID, 
 		switch signMode {
 		case model.SignModeSigned:
 			// 客户已当场签字：收据/对账必填，写 completed_at，进入时限闸门
-			if len(in.Receipts) == 0 {
-				return apperrors.ErrInvalidParam.WithMessage("receipts 不能为空")
-			}
-			if len(in.Receipts) > maxReceiptImages {
+		if len(in.ReceiptIDs) == 0 {
+			return apperrors.ErrInvalidParam.WithMessage("receipt_ids 不能为空")
+		}
+		if len(in.ReceiptIDs) > maxReceiptImages {
 				return apperrors.ErrImageTooMany.WithMessage("收据最多 3 张")
 			}
 			if in.Quantity < 1 {
@@ -1148,13 +1214,13 @@ func (s *AdminOrderService) Complete(ctx context.Context, op Operator, orderID, 
 			if err := s.setOrderMetadata(ctx, order, in.Metadata); err != nil {
 				return err
 			}
-			if err := s.orders.Update(ctx, order); err != nil {
-				return s.dbErr("update order failed", err)
-			}
-			if err := s.replaceImages(ctx, order.ID, string(model.ImageReceipt), in.Receipts); err != nil {
-				return err
-			}
-			s.logger.Info("order completed with signature",
+		if err := s.orders.Update(ctx, order); err != nil {
+			return s.dbErr("update order failed", err)
+		}
+		if err := s.associateReceiptImages(ctx, order.ID, in.ReceiptIDs); err != nil {
+			return err
+		}
+		s.logger.Info("order completed with signature",
 				zap.String("order_id", order.ID), zap.String("operator_id", op.UserID))
 			if s.notifier != nil {
 				s.notifier.NotifyOrderComplete(ctx, order, op.UserID)
@@ -1185,12 +1251,12 @@ func (s *AdminOrderService) Complete(ctx context.Context, op Operator, orderID, 
 			if err := s.orders.Update(ctx, order); err != nil {
 				return s.dbErr("update order failed", err)
 			}
-			// 收据选填：传了就替换，没传保持原样
-			if len(in.Receipts) > 0 {
-				if len(in.Receipts) > maxReceiptImages {
+			// 收据选填：传了就激活(即时上传的 temporary 经 diff 变 active), 没传保持原样
+			if len(in.ReceiptIDs) > 0 {
+				if len(in.ReceiptIDs) > maxReceiptImages {
 					return apperrors.ErrImageTooMany.WithMessage("收据最多 3 张")
 				}
-				if err := s.replaceImages(ctx, order.ID, string(model.ImageReceipt), in.Receipts); err != nil {
+				if err := s.associateReceiptImages(ctx, order.ID, in.ReceiptIDs); err != nil {
 					return err
 				}
 			}
@@ -1375,7 +1441,7 @@ func (s *AdminOrderService) UploadReceipt(ctx context.Context, op Operator, orde
 		return nil, apperrors.ErrImageInvalid.WithMessage("仅支持 jpg/png/webp 格式")
 	}
 
-	count, err := s.images.CountNotDeleted(ctx, orderID, string(model.ImageReceipt))
+	count, err := s.images.CountActive(ctx, orderID, string(model.ImageReceipt))
 	if err != nil {
 		return nil, s.dbErr("count receipts failed", err)
 	}
@@ -1416,7 +1482,7 @@ func (s *AdminOrderService) UploadReceipt(ctx context.Context, op Operator, orde
 
 // SignCompleteInput 补签正式完工入参 (req④)
 type SignCompleteInput struct {
-	Receipts      []string
+	ReceiptIDs    []string
 	Quantity      int
 	UnitPrice     float64
 	RepairContent string
@@ -1474,12 +1540,12 @@ func (s *AdminOrderService) SignComplete(ctx context.Context, op Operator, order
 	if err := s.orders.Update(ctx, order); err != nil {
 		return s.dbErr("update order failed", err)
 	}
-	// 收据选填：传了就替换，没传保持原样
-	if len(in.Receipts) > 0 {
-		if len(in.Receipts) > maxReceiptImages {
+	// 收据选填：传了就激活(即时上传的 temporary 经 diff 变 active), 没传保持原样
+	if len(in.ReceiptIDs) > 0 {
+		if len(in.ReceiptIDs) > maxReceiptImages {
 			return apperrors.ErrImageTooMany.WithMessage("收据最多 3 张")
 		}
-		if err := s.replaceImages(ctx, order.ID, string(model.ImageReceipt), in.Receipts); err != nil {
+		if err := s.associateReceiptImages(ctx, order.ID, in.ReceiptIDs); err != nil {
 			return err
 		}
 	}
@@ -1489,6 +1555,30 @@ func (s *AdminOrderService) SignComplete(ctx context.Context, op Operator, order
 		s.notifier.NotifyOrderComplete(ctx, order, op.UserID)
 	}
 	return s.appendAdminTimeline(ctx, order, op.UserID, string(model.ActionSign), from, string(model.OrderCompleted), remark, ip)
+}
+
+// associateReceiptImages 提交/补签时收据图关联 (status 流程, 与故障图 OrderService.AssociateImages 一致):
+// 上传阶段 UploadReceipt 仅产生 temporary 记录; 此处做 diff: 现表 receiptIDs → active(回填 sort_order),
+// 原表 active 但不在 receiptIDs 中的收据 → deleted。仅 active 计入工单收据数。
+func (s *AdminOrderService) associateReceiptImages(ctx context.Context, orderID string, receiptIDs []string) error {
+	if len(receiptIDs) > maxReceiptImages {
+		return apperrors.ErrImageTooMany.WithMessage("收据最多 3 张")
+	}
+	kept := make([]string, 0, len(receiptIDs))
+	for idx, id := range receiptIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if err := s.images.ActivateOne(ctx, orderID, string(model.ImageReceipt), id, idx); err != nil {
+			return s.dbErr("activate receipt failed", err)
+		}
+		kept = append(kept, id)
+	}
+	if err := s.images.SoftDeleteActiveExcept(ctx, orderID, string(model.ImageReceipt), kept); err != nil {
+		return s.dbErr("soft delete receipts failed", err)
+	}
+	return nil
 }
 
 // ────────────────────────────────────────────
@@ -1577,45 +1667,6 @@ func (s *AdminOrderService) loadOrder(ctx context.Context, orderID string) (*mod
 		return nil, apperrors.ErrOrderNotFound
 	}
 	return order, nil
-}
-
-// replaceImages 图片全量替换 (status 流程, 复用于收据图)
-func (s *AdminOrderService) replaceImages(ctx context.Context, orderID, imageType string, urls []string) error {
-	if err := s.images.MarkAllDeleted(ctx, orderID, imageType); err != nil {
-		return s.dbErr("mark images deleted failed", err)
-	}
-
-	for idx, raw := range urls {
-		u := strings.TrimSpace(raw)
-		if u == "" {
-			continue
-		}
-		img, err := s.images.FindByOrderAndURL(ctx, orderID, imageType, u)
-		if err != nil {
-			return s.dbErr("find image failed", err)
-		}
-		if img == nil {
-			if err := s.images.Create(ctx, &model.OrderImage{
-				ID:        uuid.New().String(),
-				OrderID:   orderID,
-				ImageUrl:  u,
-				ImageType: imageType,
-				Status:    string(model.ImageActive),
-				SortOrder: idx,
-			}); err != nil {
-				return s.dbErr("create image failed", err)
-			}
-			continue
-		}
-		if img.Status != string(model.ImageActive) || img.SortOrder != idx {
-			img.Status = string(model.ImageActive)
-			img.SortOrder = idx
-			if err := s.images.Update(ctx, img); err != nil {
-				return s.dbErr("update image failed", err)
-			}
-		}
-	}
-	return nil
 }
 
 // appendAdminTimeline 追加管理端操作时间轴

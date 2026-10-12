@@ -112,7 +112,8 @@ export const STATUS_LABELS: Record<string, string> = {
   processing: '处理中',
   rejected: '已退回',
   completed: '已处理',
-  cancelled: '已取消'
+  cancelled: '已取消',
+  pending_sign: '待补签'
 }
 
 /** 时间轴/日志动作中文（V1.2：含 audit/reopen/update_finance；review 兼容旧值展示为审核通过） */
@@ -250,15 +251,76 @@ export function urgencyTagType(s?: string): 'default' | 'primary' | 'success' | 
  */
 const TAG_TYPE_COLOR: Record<'default' | 'primary' | 'success' | 'warning' | 'danger', string> = {
   default: '#999999',
-  primary: '#4d80f0',
+  primary: '#0f766e',
   success: '#07c160',
   warning: '#ff9f0a',
   danger: '#fa5151'
 }
 
+/**
+ * 工单状态 -> 颜色（苍岭绿状态六色体系，与 Web 端 style.css 的 --st-* 一一对应）。
+ *
+ * ⚠️ 关键点：pending_accept(橙 #ea580c) 与 processing(蓝 #2563eb) 必须是**两个不同色**。
+ * 旧实现走 wd-tag 的 `primary`，把这两者压成同一个蓝，扫读时无法分辨。
+ * 注：红色 #dc2626 在体系里专指「已退回」，因此金额等正数值不得用红。
+ */
+const STATUS_COLOR: Record<string, string> = {
+  draft: '#64748b',
+  reported: '#f59e0b',
+  pending_accept: '#ea580c',
+  processing: '#2563eb',
+  completed: '#0f766e',
+  cancelled: '#64748b',
+  rejected: '#dc2626'
+}
+
 /** 工单状态 -> 纯文字颜色 */
 export function statusColor(s?: string): string {
-  return TAG_TYPE_COLOR[statusTagType(s)]
+  return (s && STATUS_COLOR[s]) || '#64748b'
+}
+
+/**
+ * 工单状态 -> 胶囊 class（与 Web 端 OrderCardC.vue / detail.vue 的 .st-* 同名，
+ * 便于两端 CSS 复用）。
+ * 需配合在页面/组件内定义 .st-amber / .st-orange / .st-blue / .st-teal /
+ * .st-red / .st-gray / .st-pending-sign 七组样式（底色即 STATUS_COLOR）。
+ */
+export function statusPillClass(s?: string): string {
+  switch (s) {
+    case 'reported':
+      return 'st-amber'
+    case 'pending_accept':
+      return 'st-orange'
+    case 'processing':
+      return 'st-blue'
+    case 'completed':
+      return 'st-teal'
+    case 'rejected':
+      return 'st-red'
+    default:
+      return 'st-gray' // draft / cancelled
+  }
+}
+
+/**
+ * 状态胶囊「文案 + class」，与 Web 端 `statusView()` 逻辑一致：
+ * 1) signature_status === 'pending_sign' 优先，文案固定「待补签」，用渐变胶囊；
+ * 2) 否则取后端派生标签 display_tag，回退 status_label。
+ */
+export function statusPill(row?: {
+  status?: string
+  status_label?: string
+  display_tag?: string
+  signature_status?: string
+}): { text: string; cls: string } {
+  if (!row) return { text: '未知', cls: 'st-gray' }
+  if (row.signature_status === 'pending_sign' || row.status === 'pending_sign') {
+    return { text: '待补签', cls: 'st-pending-sign' }
+  }
+  return {
+    text: row.display_tag || row.status_label || statusLabel(row.status),
+    cls: statusPillClass(row.status)
+  }
 }
 
 /** 成员状态 -> 纯文字颜色 */

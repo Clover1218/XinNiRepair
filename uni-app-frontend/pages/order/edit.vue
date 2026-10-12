@@ -241,7 +241,7 @@
 
 <script lang="ts">
 import { defineComponent } from 'vue'
-import { http, uploadOrderImage } from '@/utils/request'
+import { http, uploadOrderImage, uploadOrderImageFree } from '@/utils/request'
 import { splitContact } from '@/utils/format'
 import {
   clearLocalDraft,
@@ -263,6 +263,8 @@ import type { CategoryOption, OptionsResult, OrderDetail, PropertyOption, Proble
 
 /** 图片项：本地队列与已上传项统一用这一个结构 */
 interface ImageItem {
+  /** 服务端图片记录 ID（预上传返回的 temp_id；未上传为空） */
+  id?: string
   /** 图床 URL（未上传为空） */
   url: string
   /** 本地预览路径（优先展示；上传成功后保留以免闪烁） */
@@ -539,6 +541,7 @@ export default defineComponent({
       this.form.contact_name = name
       this.form.contact_phone = phone
       this.imageList = (detail.images || []).map((img) => ({
+        id: img.id,
         url: img.url,
         preview: img.url,
         path: img.url,
@@ -564,6 +567,7 @@ export default defineComponent({
       this.form.contact_name = draft.form.contact_name || ''
       this.form.contact_phone = draft.form.contact_phone || ''
       this.imageList = (draft.images || []).map((img) => ({
+        id: img.id || '',
         url: img.url || '',
         preview: img.preview || img.path || img.url,
         path: img.path || img.preview || '',
@@ -769,15 +773,16 @@ export default defineComponent({
       })
     },
     /**
-     * 入队图片并持久化到本地。
-     * 已有服务端 ID（编辑服务端草稿）时维持即时上传；新建模式仅入本地队列，
-     * 待“保存/提交”拿到 ID 后再统一上传（B1 批量延迟上传）。
+     * 选择图片后「立即预上传」：本地落盘做预览，同时调用上传接口写入 temporary 记录（未绑定哨兵）。
+     * 上传成功拿到服务端 id/url；失败标记 failed 供用户重试。
+     * 真正的「计入工单」发生在保存/提交时（persistOrder 传递 image_ids，后端 diff 关联）。
      */
     async addImages(files: { path: string; name?: string; size: number }[]) {
       uni.showLoading({ title: '处理中...' })
       for (const file of files) {
         const saved = await persistImage(file.path)
-        this.imageList.push({
+        const item: ImageItem = {
+          id: '',
           url: '',
           preview: saved || file.path,
           path: saved || file.path,
@@ -785,61 +790,40 @@ export default defineComponent({
           size: file.size || 0,
           uploaded: false,
           failed: false
-        })
+        }
+        this.imageList.push(item)
+        await this.uploadOne(item)
       }
       uni.hideLoading()
       this.scheduleLocalSave()
-      if (this.orderId) {
-        await this.flushImageQueue(true)
-      }
     },
     /**
-     * 串行上传本地图片队列。
-     * 单张失败不中断整体流程，失败项标记 failed 供用户重试。
+     * 上传单张图片（带 order_id 走普通接口，无则走预上传接口）。
+     * 成功填充 id/url/preview 并置 uploaded；失败置 failed。
      */
-    async flushImageQueue(showLoading = true): Promise<{ ok: number; fail: number }> {
-      if (!this.orderId || this.flushing) return { ok: 0, fail: 0 }
-      const pending = this.imageList.filter((i) => !i.uploaded && i.path && i.path.indexOf('http') !== 0)
-      if (pending.length === 0) return { ok: 0, fail: 0 }
-      this.flushing = true
-      const total = pending.length
-      let ok = 0
-      let fail = 0
-      for (let i = 0; i < pending.length; i++) {
-        const item = pending[i]
-        if (showLoading) {
-          uni.showLoading({ title: `上传第 ${i + 1}/${total} 张` })
-        }
-        try {
-          const data = await uploadOrderImage(this.orderId, item.path)
-          item.url = data.url
-          item.uploaded = true
-          item.failed = false
-          ok++
-        } catch (e) {
-          console.error('图片上传失败', e)
-          item.failed = true
-          fail++
-        }
+    async uploadOne(item: ImageItem) {
+      if (!item.path || item.path.indexOf('http') === 0) return
+      try {
+        const data = this.orderId
+          ? await uploadOrderImage(this.orderId, item.path)
+          : await uploadOrderImageFree(item.path)
+        item.id = data.id
+        item.url = data.url
+        item.preview = data.url
+        item.uploaded = true
+        item.failed = false
+        this.scheduleLocalSave()
+      } catch (e) {
+        item.failed = true
+        console.error('图片上传失败', e)
       }
-      if (showLoading) uni.hideLoading()
-      this.flushing = false
-      if (fail > 0) {
-        uni.showToast({ title: `${fail} 张图片上传失败，可在草稿中重试`, icon: 'none' })
-      }
-      this.scheduleLocalSave()
-      return { ok, fail }
     },
     /** 单张重试 */
     async retryImage(index: number) {
       const item = this.imageList[index]
       if (!item || item.uploaded) return
-      if (!this.orderId) {
-        uni.showToast({ title: '请先保存草稿再重试上传', icon: 'none' })
-        return
-      }
       item.failed = false
-      await this.flushImageQueue(true)
+      await this.uploadOne(item)
     },
     previewImage(index: number) {
       const urls = this.imageList.map((i) => i.url || i.preview).filter(Boolean)
@@ -899,6 +883,7 @@ export default defineComponent({
         updatedAt: Date.now(),
         form: JSON.parse(JSON.stringify(this.form)),
         images: this.imageList.map((i) => ({
+          id: i.id,
           path: i.path,
           preview: i.preview,
           name: i.name,
@@ -914,11 +899,11 @@ export default defineComponent({
     contactValue(): string {
       return `${this.form.contact_name.trim()} ${this.form.contact_phone.trim()}`.trim()
     },
-    /** 构造提交参数：images 恒为完整列表，其余字段按需传 */
+    /** 构造提交参数：仅传已上传图片的 image_ids（预上传记录），其余字段按需传 */
     buildPayload(all = false): Record<string, unknown> {
       const f = this.form
       const payload: Record<string, unknown> = {
-        images: this.imageList.filter((i) => i.uploaded).map((i) => i.url)
+        image_ids: this.imageList.filter((i) => i.uploaded && i.id).map((i) => i.id as string)
       }
       if (all || f.enterprise_id) payload.enterprise_id = f.enterprise_id
       if (all || f.category_id) payload.category_id = f.category_id
@@ -943,7 +928,6 @@ export default defineComponent({
         } else {
           await http.put(`/orders/${this.orderId}`, payload)
         }
-        await this.flushImageQueue(true)
         await this.rememberRoom()
         clearLocalDraft()
         this.draftRestored = false

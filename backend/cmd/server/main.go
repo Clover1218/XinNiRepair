@@ -248,6 +248,8 @@ func registerRoutes(r *gin.Engine, db *repository.DB, authH *handler.AuthHandler
 			orders.POST("/:order_id/submit", orderH.Submit)
 			orders.POST("/:order_id/cancel", orderH.Cancel)
 			orders.POST("/:order_id/images", orderH.UploadImage)
+			// 预上传（无 order_id）：图片尚未绑定工单时调用，记录写入未绑定哨兵，提交时再关联
+			orders.POST("/images", orderH.UploadImage)
 		}
 
 		// 管理后台接口 (第五章+第六章): 双层角色控制

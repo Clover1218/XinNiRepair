@@ -30,7 +30,7 @@
         </view>
         <switch
           :checked="ent.auto_approve === true"
-          color="#4d80f0"
+          color="#0f766e"
           style="transform: scale(0.8);"
           @change="onAutoApproveChange"
         />
@@ -560,7 +560,7 @@ export default defineComponent({
       .stat-num {
         font-size: 40rpx;
         font-weight: 700;
-        color: #4d80f0;
+        color: #0f766e;
       }
 
       .stat-label {
@@ -623,7 +623,7 @@ export default defineComponent({
       font-size: 44rpx;
       font-weight: 700;
       letter-spacing: 6rpx;
-      color: #4d80f0;
+      color: #0f766e;
     }
 
     .code-actions {
@@ -728,7 +728,7 @@ export default defineComponent({
     .qr-popup-code {
       margin-top: 12rpx;
       font-size: 28rpx;
-      color: #4d80f0;
+      color: #0f766e;
       letter-spacing: 2rpx;
     }
 

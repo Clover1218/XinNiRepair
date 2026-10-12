@@ -50,7 +50,7 @@ export default defineComponent({
     // 本地已有 token：直接进入首页（token 有效性由首页 onShow/请求层 401 静默续期兜底）
     const token = uni.getStorageSync('token')
     if (token) {
-      uni.switchTab({ url: '/pages/service/index' })
+      uni.switchTab({ url: '/pages/home/index' })
     }
   },
   methods: {
@@ -89,7 +89,7 @@ export default defineComponent({
         }
         uni.showToast({ title: '登录成功', icon: 'success' })
         setTimeout(() => {
-          uni.switchTab({ url: '/pages/service/index' })
+          uni.switchTab({ url: '/pages/home/index' })
         }, 500)
       } catch (e) {
         // 错误信息已由请求封装统一 Toast
@@ -123,7 +123,7 @@ export default defineComponent({
   height: 176rpx;
   border-radius: 40rpx;
   background-color: #ffffff;
-  box-shadow: 0 12rpx 40rpx rgba(77, 128, 240, 0.15);
+  box-shadow: 0 12rpx 40rpx rgba(15, 118, 110, 0.15);
 }
 
 .login-title {
@@ -156,6 +156,6 @@ export default defineComponent({
 }
 
 .agreement-link {
-  color: #4d80f0;
+  color: #0f766e;
 }
 </style>

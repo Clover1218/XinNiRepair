@@ -219,6 +219,78 @@ func (r *OrderRepository) ListForAdmin(ctx context.Context, f OrderAdminFilter, 
 	return orders, total, nil
 }
 
+// CountByStatusForAdmin 按状态分组统计工单数，用于前端状态 Tab 的实时数量角标。
+//
+// 与 ListForAdmin 共用同一套筛选条件（经营范围 / 企业 / 大类 / 属性 / 报修人 / 关键字 /
+// 紧急度 / 提交时间范围），但**故意忽略 f.Status**：使各 Tab 角标互不影响，
+// 角标反映的是"在其它筛选条件下、若切到该状态会有多少条"。
+// 注意：f.RepairerID 的「处理中仅看自己」特例在此清零，避免污染其它 Tab 计数
+// （该特例仅作用于 plain repairer 把 processing 作为唯一筛选时，属边缘场景）。
+func (r *OrderRepository) CountByStatusForAdmin(ctx context.Context, f OrderAdminFilter) (map[string]int64, error) {
+	scopeCond, scopeArgs, visible := applyScope(f)
+	if !visible {
+		return map[string]int64{}, nil
+	}
+	base := r.db.WithContext(ctx).Model(&model.RepairOrder{}).
+		Joins("JOIN users ON users.id = repair_orders.reporter_id")
+	if scopeCond != "" {
+		base = base.Where(scopeCond, scopeArgs...)
+	}
+	if f.Urgency != "" {
+		base = base.Where("repair_orders.urgency = ?", f.Urgency)
+	}
+	if f.Keyword != "" {
+		like := "%" + f.Keyword + "%"
+		base = base.Where("repair_orders.order_no LIKE ?", like)
+	}
+	if f.EnterpriseID != "" {
+		base = base.Where("repair_orders.enterprise_id = ?", f.EnterpriseID)
+	}
+	if f.CategoryID != "" {
+		base = base.Where("repair_orders.category_id = ?", f.CategoryID)
+	}
+	if f.PropertyID != "" {
+		base = base.Where("repair_orders.property_id = ?", f.PropertyID)
+	}
+	if f.DateFrom != nil {
+		base = base.Where("repair_orders.submitted_at >= ?", *f.DateFrom)
+	}
+	if f.DateTo != nil {
+		base = base.Where("repair_orders.submitted_at <= ?", *f.DateTo)
+	}
+	if f.ReporterID != "" {
+		base = base.Where("repair_orders.reporter_id = ?", f.ReporterID)
+	}
+	if f.SignatureStatus != "" {
+		base = base.Where("repair_orders.signature_status = ?", f.SignatureStatus)
+	}
+	if f.FinishOutcome != "" {
+		base = base.Where("repair_orders.finish_outcome = ?", f.FinishOutcome)
+	}
+
+	// 派生计数「pending_sign」：在其它筛选条件下、忽略状态，signature_status=pending_sign 的工单总量
+	// （「待补签」跨处理中/已完工，供列表角标；注意不计入「all」求和，避免重复计数）。
+	var pendingSignCount int64
+	if err := base.Session(&gorm.Session{}).
+		Where("repair_orders.signature_status = ?", string(model.SignaturePendingSign)).
+		Count(&pendingSignCount).Error; err != nil {
+		return nil, err
+	}
+
+	var rows []OrderStatusCount
+	if err := base.Select("repair_orders.status as status, COUNT(*) as count").
+		Group("repair_orders.status").
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	result := make(map[string]int64, len(rows)+1)
+	for _, row := range rows {
+		result[row.Status] = row.Count
+	}
+	result["pending_sign"] = pendingSignCount
+	return result, nil
+}
+
 // ── 5.17 本单位工单汇总统计 (V1.3 C20) ──
 
 // OrderStatsAggregate 汇总统计的行级聚合结果（service 层再补零/组装配 DTO）
@@ -964,11 +1036,47 @@ func (r *OrderImageRepository) CountNotDeleted(ctx context.Context, orderID, ima
 	return count, err
 }
 
+// CountActive 统计工单下指定类型的 active 图片数（用于上传数量上限校验）。
+// 不计入提交前的 temporary 草稿记录，避免「即时上传→取消弹窗→重开」产生孤儿
+// temporary 记录堆积而误触「最多 N 张」上限；提交时的 diff 会以 active 为基准对账。
+func (r *OrderImageRepository) CountActive(ctx context.Context, orderID, imageType string) (int64, error) {
+	var count int64
+	err := r.db.WithContext(ctx).Model(&model.OrderImage{}).
+		Where("order_id = ? AND image_type = ? AND status = ?", orderID, imageType, model.ImageActive).
+		Count(&count).Error
+	return count, err
+}
+
 // MarkAllDeleted 将工单下指定类型未删除的图片全部标记为 deleted
 func (r *OrderImageRepository) MarkAllDeleted(ctx context.Context, orderID, imageType string) error {
 	return r.db.WithContext(ctx).Model(&model.OrderImage{}).
 		Where("order_id = ? AND image_type = ? AND status <> ?", orderID, imageType, model.ImageDeleted).
 		Update("status", model.ImageDeleted).Error
+}
+
+// ActivateOne 单条图片关联：将 id 指向的 temporary 记录（须属于该工单或未绑定哨兵）翻为 active，
+// 回填 order_id 与 sort_order；已是 active 则仅更新排序（幂等）。用于提交时 diff 关联。
+func (r *OrderImageRepository) ActivateOne(ctx context.Context, orderID, imageType, id string, sortOrder int) error {
+	return r.db.WithContext(ctx).Model(&model.OrderImage{}).
+		Where("id = ? AND image_type = ? AND status IN ? AND (order_id = ? OR order_id = ?)",
+			id, imageType,
+			[]string{string(model.ImageTemporary), string(model.ImageActive)},
+			orderID, model.UnboundImageOrderID).
+		Updates(map[string]interface{}{
+		"order_id":   orderID,
+		"status":     string(model.ImageActive),
+		"sort_order": sortOrder,
+	}).Error
+}
+
+// SoftDeleteActiveExcept 将工单下 active 但不在 keepIDs 中的图片置为 deleted（用户移除的旧图）。
+func (r *OrderImageRepository) SoftDeleteActiveExcept(ctx context.Context, orderID, imageType string, keepIDs []string) error {
+	q := r.db.WithContext(ctx).Model(&model.OrderImage{}).
+		Where("order_id = ? AND image_type = ? AND status = ?", orderID, imageType, model.ImageActive)
+	if len(keepIDs) > 0 {
+		q = q.Where("id NOT IN ?", keepIDs)
+	}
+	return q.Update("status", model.ImageDeleted).Error
 }
 
 // CountActiveByOrders 统计多个工单下指定类型的 active 图片数, 返回 map[orderID]count (5.1 image_count)

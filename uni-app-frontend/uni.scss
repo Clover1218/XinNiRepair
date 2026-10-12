@@ -74,3 +74,35 @@ $uni-color-subtitle: #555555; // 二级标题颜色
 $uni-font-size-subtitle:26px;
 $uni-color-paragraph: #3F536E; // 文章段落颜色
 $uni-font-size-paragraph:15px;
+
+/* ============ 苍岭绿设计体系（移植自 Web 端 web-frontend/src/style.css） ============
+   与 App.vue 中注入的 CSS 变量一一对应：
+   组件内优先使用 var(--xn-*)（运行时可切），此处 SCSS 常量仅供不可使用 CSS 变量的场景。
+   ================================================================================ */
+
+/* 中性 / 背景 */
+$xn-bg: #f4f6f8;
+$xn-surface: #ffffff;
+$xn-border: #e5e7eb;
+$xn-border-soft: #f0f2f5;
+$xn-selected: #e8ecf0;
+$xn-tag-bg: #eef2f4;
+
+/* 主色 */
+$xn-primary: #0f766e;
+$xn-primary-deep: #1e4d40;
+$xn-primary-soft: #e7f3f1;
+
+/* 文字 */
+$xn-text-900: #111827;
+$xn-text-700: #374151;
+$xn-text-500: #6b7280;
+$xn-text-400: #9ca3af;
+
+/* 状态六色 */
+$xn-st-amber: #f59e0b;   // reported 待审核
+$xn-st-orange: #ea580c;  // pending_accept 待接单
+$xn-st-blue: #2563eb;    // processing 处理中
+$xn-st-teal: #0f766e;    // completed 已完成
+$xn-st-red: #dc2626;     // rejected 已退回
+$xn-st-gray: #64748b;    // draft 草稿 / cancelled 已取消

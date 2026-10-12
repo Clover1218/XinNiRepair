@@ -47,14 +47,16 @@ const menus = computed<Array<{ path: string; title: string; icon: string }>>(() 
   }
   // 兼任多角色时追加审核员专属入口（按 path 去重，避免重复菜单）
   if (userStore.hasReviewerRole) {
-    if (!has(p => p === '/review')) {
-      items.push({ path: '/review', title: '单位审核', icon: 'Checked' })
+    // 工单管理：审核员复用与店方同一模块（自带"本单位"限定 + "待审核"默认 Tab + 待审核行就地审核/退回）
+    if (!has(p => p === '/orders')) {
+      items.push({ path: '/orders', title: '工单管理', icon: 'Tickets' })
     }
     if (!has(p => p === '/orders/create')) {
       items.push({ path: '/orders/create', title: '上报工单', icon: 'EditPen' })
     }
     const first = userStore.reviewerEnterprises[0]
-    if (first && !has(p => p.startsWith('/enterprises/'))) {
+    // 去重：店方已加「企业管理」列表页（精确 '/enterprises'）或任一企业详情（'/enterprises/' 前缀）时不再追加
+    if (first && !has(p => p === '/enterprises' || p.startsWith('/enterprises/'))) {
       items.push({
         path: `/enterprises/${first.enterprise_id}`,
         title: '企业管理',
@@ -84,7 +86,7 @@ const handleLogout = async () => {
   <el-container class="layout">
     <el-aside width="220px" class="aside">
       <div class="logo">
-        <el-icon :size="24" color="#409eff"><Tools /></el-icon>
+        <el-icon :size="24" color="#0F766E"><Tools /></el-icon>
         <span class="logo-title">报修系统</span>
       </div>
       <el-menu :default-active="activeMenu" router class="menu">
@@ -155,6 +157,7 @@ const handleLogout = async () => {
 
 .menu :deep(.el-menu-item) {
   color: rgba(255, 255, 255, 0.68);
+  position: relative;
 }
 
 .menu :deep(.el-menu-item:hover) {
@@ -163,8 +166,18 @@ const handleLogout = async () => {
 }
 
 .menu :deep(.el-menu-item.is-active) {
-  background-color: #409eff;
+  background-color: rgba(15, 118, 110, 0.18);
   color: #fff;
+}
+
+.menu :deep(.el-menu-item.is-active)::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--xn-primary);
 }
 
 .header {
@@ -172,14 +185,14 @@ const handleLogout = async () => {
   align-items: center;
   justify-content: space-between;
   background-color: #fff;
-  border-bottom: 1px solid #e4e7ed;
+  border-bottom: 1px solid var(--xn-border);
   flex-shrink: 0;
 }
 
 .page-title {
   font-size: 16px;
   font-weight: 600;
-  color: #303133;
+  color: var(--xn-text-900);
 }
 
 .user-area {
@@ -190,11 +203,11 @@ const handleLogout = async () => {
 
 .user-name {
   font-size: 14px;
-  color: #606266;
+  color: var(--xn-text-500);
 }
 
 .main {
-  background-color: #f5f7fa;
+  background-color: var(--xn-bg);
   padding: 16px;
   overflow-y: auto;
 }

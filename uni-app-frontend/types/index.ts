@@ -181,7 +181,11 @@ export interface PaginationResult<T> { list: T[]; pagination: Pagination }
 
 /* ==================== 管理端：工单 ==================== */
 
-/** 管理端可用动作（V1.2：删除 review，新增 audit/reopen/update_finance） */
+/**
+ * 管理端可用动作
+ * V1.2：audit/accept/complete/reject/reopen/update_finance
+ * V1.5：新增 sign（补签正式完工）、defer_sign（稍后补签）
+ */
 export type AvailableActionKey =
   | 'audit'
   | 'accept'
@@ -189,6 +193,8 @@ export type AvailableActionKey =
   | 'reject'
   | 'reopen'
   | 'update_finance'
+  | 'sign'
+  | 'defer_sign'
 
 export interface AvailableAction {
   action: AvailableActionKey
@@ -225,8 +231,94 @@ export interface AdminOrderListItem {
   contact?: string
   /** 故障图（用于卡片缩略图预览） */
   images?: OrderImage[]
+  /* ── V1.4 / V1.5 后端派生字段 ── */
+  /** 展示标签（后端 ComputeDisplayTag 派生，如「待补签」「已完工」） */
+  display_tag?: string
+  display_tag_type?: string
+  /** 签字状态：已签字 / 待补签 */
+  signature_status?: 'signed' | 'pending_sign' | string
+  /** 是否已有收据图 */
+  receipt_uploaded?: boolean
+  /** 结单结果（complete / customer_cancelled / unrepairable） */
+  finish_outcome?: string
+  /** 完工金额（V1.4 起列表返回，用于卡片展示） */
+  amount?: number
+  /** 维修操作内容 */
+  repair_content?: string
   /** 当前用户对该工单的可执行操作（后端按状态生成，前端按角色裁剪后渲染按钮） */
   available_actions?: AvailableAction[]
+}
+
+/** 管理端工单列表响应（含各状态数量角标） */
+export interface AdminOrderListResult extends PageResult<AdminOrderListItem> {
+  /**
+   * 状态计数。key 为状态值（reported/pending_accept/processing/completed/cancelled），
+   * 外加聚合键 'all'（全量）与 'unfinished'（未完成），
+   * 以及派生键 'pending_sign'（待补签，按 signature_status 统计，非工单 status）。
+   */
+  status_counts: Record<string, number>
+}
+
+/** 管理端工单列表查询参数 */
+export interface AdminOrderListParams {
+  page?: number
+  page_size?: number
+  status?: string
+  urgency?: string
+  keyword?: string
+  enterprise_id?: string
+  category_id?: string
+  property_id?: string
+  date_from?: string
+  date_to?: string
+  reporter_id?: string
+  sort_by?: string
+  sort_order?: string
+}
+
+/** 报修人候选（GET /admin/orders/reporters） */
+export interface ReporterOption {
+  id: string
+  nickname: string
+  avatar_url?: string
+}
+
+/* ==================== 完工 / 补签 / 对账 入参 ==================== */
+
+/** 结单结果三值 */
+export type FinishResult = 'complete' | 'customer_cancelled' | 'unrepairable'
+
+/** 完工登记入参 */
+export interface CompleteOrderInput {
+  remark?: string
+  receipt_ids?: string[]
+  quantity: number
+  unit_price: number
+  repair_content: string
+  metadata?: OrderMetadata
+  /** 结单结果，默认 complete */
+  result?: FinishResult
+  /** 签字模式：signed=已签字；pending_sign=稍后补签（保持 processing） */
+  sign_mode?: 'signed' | 'pending_sign'
+}
+
+/** 补签正式完工入参 */
+export interface SignOrderInput {
+  remark?: string
+  receipt_ids?: string[]
+  quantity?: number
+  unit_price?: number
+  repair_content?: string
+  metadata?: OrderMetadata
+}
+
+/** 修改对账入参 */
+export interface UpdateFinanceInput {
+  quantity?: number
+  unit_price?: number
+  repair_content?: string
+  metadata?: OrderMetadata
+  remark?: string
 }
 
 /** 维修员个人汇总（5.22 GET /admin/orders/stats/repairer-overview；处理工单页顶部统计卡） */
@@ -250,11 +342,22 @@ export interface RepairerOverview {
 export interface AdminOrderDetail extends OrderDetail {
   reporter?: { id: string; nickname: string; avatar_url: string }
   auditor_id?: string
+  auditor_name?: string
   repairer_id?: string
+  repairer_name?: string
   audited_at?: string | null
   accepted_at?: string | null
   completed_at?: string | null
   available_actions: AvailableAction[]
+  /* ── V1.5 签字与结单结果 ── */
+  /** 签字状态：signed 已签字 / pending_sign 待补签 */
+  signature_status?: 'signed' | 'pending_sign' | string
+  /** 结单结果 */
+  finish_outcome?: string
+  /** 展示标签（后端派生） */
+  display_tag?: string
+  /** 备注 */
+  remark?: string
 }
 
 /* ==================== 企业 / 成员 ==================== */

@@ -101,6 +101,12 @@ const (
 	ImageDeleted   ImageStatus = "deleted"
 )
 
+// UnboundImageOrderID 未绑定工单的图片哨兵值（合法 UUID 全 0）。
+// 预上传（order_id 尚未确定，如新建单尚未落库）时 order_images.order_id 写入该值；
+// 提交建单/保存草稿时再经由 AssociateImages 把 temporary 翻成 active 并回填真实 order_id。
+// 仅 active 图片计入工单真实图片数，temporary 永不计。
+const UnboundImageOrderID = "00000000-0000-0000-0000-000000000000"
+
 // ────────────────────────────────────────────
 // 本质标签派生字段取值（V1.5，不新增状态机状态）
 // ────────────────────────────────────────────

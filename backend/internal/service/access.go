@@ -87,6 +87,24 @@ func (a *AccessService) MemberOfEnterprise(ctx context.Context, enterpriseID, us
 	return m != nil && m.Status == string(model.MemberApproved), nil
 }
 
+// ReviewerEnterpriseIDs 取用户担任"已审批单位审核员"的所有企业 ID。
+// 供列表/统计在「全部企业」场景下按其所负责单位做 IN 收敛——
+// 单位审核员无全量企业权限，未显式指定 enterprise_id 时，由服务端据此计算可见范围，
+// 不信任客户端传入的企业清单。
+func (a *AccessService) ReviewerEnterpriseIDs(ctx context.Context, userID string) ([]string, error) {
+	ms, err := a.mems.FindApprovedByUser(ctx, userID)
+	if err != nil {
+		return nil, apperrors.ErrDatabaseError.WithError(err)
+	}
+	ids := make([]string, 0, len(ms))
+	for _, m := range ms {
+		if m.Role == model.EnterpriseRoleReviewer {
+			ids = append(ids, m.EnterpriseID)
+		}
+	}
+	return ids, nil
+}
+
 // CanManageEnterprise 校验对本单位的管理权限:
 // 店方角色(role>=1) 或 该单位单位审核员(approved) 均可; 否则返回错误。
 func (a *AccessService) CanManageEnterprise(ctx context.Context, enterpriseID, userID string, role int) error {

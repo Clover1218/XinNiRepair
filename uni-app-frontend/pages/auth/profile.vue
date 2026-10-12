@@ -164,7 +164,7 @@ export default defineComponent({
         // V1.2 问题1：注册成功即登录（userStore.register 已写 token + 同步企业），直接进入首页
         uni.showToast({ title: '注册成功', icon: 'success' })
         setTimeout(() => {
-          uni.switchTab({ url: '/pages/service/index' })
+          uni.switchTab({ url: '/pages/home/index' })
         }, 500)
       } catch (err: any) {
         console.error('注册失败', err)
@@ -227,7 +227,7 @@ export default defineComponent({
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 2rpx dashed #4d80f0;
+  border: 2rpx dashed #0f766e;
   line-height: 1;
 }
 
@@ -248,13 +248,13 @@ export default defineComponent({
 
 .avatar-plus {
   font-size: 48rpx;
-  color: #4d80f0;
+  color: #0f766e;
   line-height: 1;
 }
 
 .avatar-tip {
   font-size: 20rpx;
-  color: #4d80f0;
+  color: #0f766e;
   margin-top: 8rpx;
 }
 
@@ -311,7 +311,7 @@ export default defineComponent({
 
 .phone-tab.active {
   background: #ffffff;
-  color: #4d80f0;
+  color: #0f766e;
   font-weight: 600;
   box-shadow: 0 2rpx 8rpx rgba(0, 0, 0, 0.06);
 }
@@ -326,7 +326,7 @@ export default defineComponent({
   background: #f5f7fa;
   border-radius: 16rpx;
   font-size: 28rpx;
-  color: #4d80f0;
+  color: #0f766e;
   line-height: 88rpx;
   padding: 0 24rpx;
   box-sizing: border-box;

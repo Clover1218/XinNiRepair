@@ -9,3 +9,15 @@ export function formatDateTime(value: string | null | undefined): string {
     `${pad(date.getHours())}:${pad(date.getMinutes())}`
   )
 }
+
+/** 将 ISO 时间格式化为 MM-DD HH:mm（窄侧栏用，避免撑破布局），空值返回 '-' */
+export function formatShortDateTime(value: string | null | undefined): string {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return (
+    `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
+    `${pad(date.getHours())}:${pad(date.getMinutes())}`
+  )
+}

@@ -31,7 +31,7 @@ const handleLogin = async () => {
 
     ElMessage.success('登录成功')
     const redirect = (route.query.redirect as string) || ''
-    // 单位审核员落地「单位审核」，店方角色落地「工单管理」；指定 redirect 时优先跳转
+    // 店方与单位审核员登录后统一落地首页（/，按角色渲染待办队列）；指定 redirect 时优先跳转
     router.push(redirect.startsWith('/') ? redirect : userStore.landingPath)
   } finally {
     loading.value = false

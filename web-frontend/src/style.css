@@ -1,3 +1,51 @@
+/* ============================================================
+   全局色彩体系 · 苍岭绿（Teal）+ 冷灰
+   主色仅用于主按钮 / 金额 / 侧栏选中 / 已完成状态等"重要交互"，
+   大面积使用冷灰留白，状态用橙/蓝/绿/红四色区分（非绿色深浅）。
+   ============================================================ */
+:root {
+  /* —— 自有设计 token —— */
+  --xn-bg: #f4f6f8;
+  --xn-surface: #ffffff;
+  --xn-primary: #0f766e;
+  --xn-primary-deep: #1e4d40;
+  --xn-primary-soft: #e7f3f1;
+  --xn-border: #e5e7eb;
+  --xn-border-soft: #f0f2f5;
+  --xn-selected: #e8ecf0;
+  --xn-tag-bg: #eef2f4;
+  --xn-text-900: #111827;
+  --xn-text-700: #374151;
+  --xn-text-500: #6b7280;
+  --xn-text-400: #9ca3af;
+  /* 状态色 */
+  --st-amber: #f59e0b;
+  --st-orange: #ea580c;
+  --st-blue: #2563eb;
+  --st-teal: #0f766e;
+  --st-red: #dc2626;
+  --st-gray: #64748b;
+
+  /* —— Element Plus 主题覆盖（苍岭绿主色） —— */
+  --el-color-primary: #0f766e;
+  --el-color-primary-light-3: #2c9b8e; /* hover */
+  --el-color-primary-light-5: #5cb3a8;
+  --el-color-primary-light-7: #8fcfc6;
+  --el-color-primary-light-8: #b7e0d9;
+  --el-color-primary-light-9: #e7f3f1;
+  --el-color-primary-dark-2: #0c5f58; /* pressed/active */
+  --el-border-color: #e5e7eb;
+  --el-border-color-light: #e5e7eb;
+  --el-border-color-lighter: #f0f2f5;
+  --el-border-color-extra-light: #f4f6f8;
+  --el-fill-color-light: #f4f6f8;
+  --el-fill-color-lighter: #f8fafc;
+  --el-text-color-primary: #111827;
+  --el-text-color-regular: #374151;
+  --el-text-color-secondary: #6b7280;
+  --el-text-color-placeholder: #9ca3af;
+}
+
 html,
 body,
 #app {
@@ -12,8 +60,8 @@ body {
     'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial,
     sans-serif;
   font-size: 14px;
-  color: #303133;
-  background-color: #f5f7fa;
+  color: #111827;
+  background-color: var(--xn-bg);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -23,6 +71,6 @@ body {
 }
 
 a {
-  color: #409eff;
+  color: var(--xn-primary);
   text-decoration: none;
 }

@@ -311,7 +311,7 @@ func (h *AdminHandler) Reject(c *gin.Context) {
 func (h *AdminHandler) Complete(c *gin.Context) {
 	var req struct {
 		Remark        string               `json:"remark"`
-		Receipts      []string             `json:"receipts"`
+		ReceiptIDs    []string             `json:"receipt_ids"`
 		Quantity      int                  `json:"quantity"`
 		UnitPrice     float64              `json:"unit_price"`
 		RepairContent string               `json:"repair_content"`
@@ -326,7 +326,7 @@ func (h *AdminHandler) Complete(c *gin.Context) {
 	}
 	in := service.CompleteOrderInput{
 		Remark:        req.Remark,
-		Receipts:      req.Receipts,
+		ReceiptIDs:    req.ReceiptIDs,
 		Quantity:      req.Quantity,
 		UnitPrice:     req.UnitPrice,
 		RepairContent: req.RepairContent,
@@ -412,7 +412,7 @@ func (h *AdminHandler) UploadReceipt(c *gin.Context) {
 // SignComplete 补签正式完工 (POST /admin/orders/:order_id/signature, req④)
 func (h *AdminHandler) SignComplete(c *gin.Context) {
 	var req struct {
-		Receipts      []string             `json:"receipts"`
+		ReceiptIDs    []string             `json:"receipt_ids"`
 		Quantity      int                  `json:"quantity"`
 		UnitPrice     float64              `json:"unit_price"`
 		RepairContent string               `json:"repair_content"`
@@ -425,7 +425,7 @@ func (h *AdminHandler) SignComplete(c *gin.Context) {
 		return
 	}
 	in := service.SignCompleteInput{
-		Receipts:      req.Receipts,
+		ReceiptIDs:    req.ReceiptIDs,
 		Quantity:      req.Quantity,
 		UnitPrice:     req.UnitPrice,
 		RepairContent: req.RepairContent,

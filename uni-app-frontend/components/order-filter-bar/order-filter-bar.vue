@@ -119,7 +119,7 @@ export default defineComponent({
     color: #666666;
 
     &.active {
-      color: #4d80f0;
+      color: #0f766e;
       font-weight: 600;
 
       &::after {
@@ -131,7 +131,7 @@ export default defineComponent({
         width: 48rpx;
         height: 6rpx;
         border-radius: 6rpx;
-        background-color: #4d80f0;
+        background-color: #0f766e;
       }
     }
   }

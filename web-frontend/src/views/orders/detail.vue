@@ -5,7 +5,7 @@ import { ElMessage, ElMessageBox, type UploadRequestOptions, type UploadUserFile
 import { adminAPI } from '@/api/admin'
 import { useUserStore } from '@/stores/user'
 import type { AvailableAction, OrderDetail, OrderMetadata } from '@/types'
-import { formatDateTime } from '@/utils/format'
+import { formatDateTime, formatShortDateTime } from '@/utils/format'
 
 const route = useRoute()
 const router = useRouter()
@@ -14,44 +14,160 @@ const orderId = route.params.id as string
 const loading = ref(false)
 const detail = ref<OrderDetail | null>(null)
 
-// 状态中文映射（时间轴流转展示用；卡片文案以后端 status_label 为准）
-const statusLabelMap: Record<string, string> = {
-  draft: '草稿',
-  reported: '已上报',
-  pending_accept: '待接单',
-  processing: '处理中',
-  completed: '已处理',
-  cancelled: '已取消'
-}
-
-const statusTagType: Record<string, string> = {
-  draft: 'info',
-  reported: 'danger',
-  pending_accept: 'warning',
-  processing: 'primary',
-  completed: 'success',
-  cancelled: 'info'
-}
-
 const imageUrls = computed(() => detail.value?.images.map(i => i.url) ?? [])
 const receiptUrls = computed(() => detail.value?.receipts.map(r => r.url) ?? [])
 
-/** 对账信息是否展示（completed 状态） */
-const showFinance = computed(() => detail.value?.status === 'completed')
+// ── 新增：详情页状态胶囊（四色体系，不用 green 深浅区分） ──
+const detailStatusClassMap: Record<string, string> = {
+  draft: 'st-gray',
+  reported: 'st-amber',
+  pending_accept: 'st-orange',
+  processing: 'st-blue',
+  completed: 'st-teal',
+  cancelled: 'st-gray',
+  rejected: 'st-red'
+}
+function statusViewOf(d?: OrderDetail | null) {
+  if (!d) return { text: '', cls: 'st-gray' }
+  if (d.signature_status === 'pending_sign') return { text: '待补签', cls: 'st-pending-sign' }
+  return { text: d.display_tag || d.status_label, cls: detailStatusClassMap[d.status] || 'st-gray' }
+}
 
-/** 附加信息是否展示（completed 状态且有 metadata 数据） */
-const showMetadata = computed(() => {
+// 是否为店方（维修员/超管），决定对账信息卡可见性（金额敏感，审核员隐藏）
+const isStoreStaff = computed(() => userStore.isStoreStaff)
+
+/** 对账信息卡：有对账数据（数量/单价/金额/维修内容/备注/收据/附加信息）才展示，且仅店方可见 */
+const hasFinanceData = computed(() => {
   const d = detail.value
-  if (!d || d.status !== 'completed') return false
-  const m = d.metadata
-  if (!m) return false
-  return !!(m.repair_result || m.repair_method || m.warranty_period || m.repair_duration != null)
+  if (!d) return false
+  return (
+    (d.amount && d.amount > 0) ||
+    (d.quantity && d.quantity > 0) ||
+    d.unit_price > 0 ||
+    !!d.repair_content ||
+    !!d.remark ||
+    (d.receipts && d.receipts.length > 0) ||
+    !!(d.metadata &&
+      (d.metadata.repair_result ||
+        d.metadata.repair_method ||
+        d.metadata.warranty_period ||
+        d.metadata.repair_duration != null))
+  )
+})
+/** 早期状态（草稿/待审核/待接单）尚未产生费用，强制隐藏对账信息卡 */
+const noFinanceStatuses = ['draft', 'reported', 'pending_accept']
+const showFinance = computed(
+  () =>
+    isStoreStaff.value &&
+    hasFinanceData.value &&
+    !noFinanceStatuses.includes(detail.value?.status ?? '')
+)
+const financeEditVisible = computed(() =>
+  visibleActions.value.some(a => a.action === 'update_finance')
+)
+
+/** 故障描述折叠（超 60 字折叠，点「查看全文」展开） */
+const descExpanded = ref(false)
+const isLongDesc = computed(() => (detail.value?.description?.length ?? 0) > 60)
+
+/** 处理记录默认折叠 */
+const timelineExpanded = ref(false)
+/** 对账信息「查看明细」折叠 */
+const financeDetailExpanded = ref(false)
+
+/** 拨打电话链接 */
+// contact 存的是「姓名 电话」合并串（如 "Clover 15957761287"），取号码用于显示与拨号，避免姓名重复
+const contactPhone = computed(() => {
+  const raw = detail.value?.contact ?? ''
+  const m = raw.match(/\d[\d\s-]{5,}/)
+  return m ? m[0].replace(/[\s-]/g, '') : raw.trim()
+})
+/** 报修人真实姓名：从 contact（"姓名 电话"合并串）中剔除号码后取姓名部分 */
+const contactName = computed(() => {
+  const raw = detail.value?.contact ?? ''
+  const m = raw.match(/\d[\d\s-]{5,}/)
+  const name = m ? raw.slice(0, m.index).trim() : raw.trim()
+  return name
+})
+/** 报修人账户名（系统账号昵称） */
+const accountName = computed(() => detail.value?.reporter?.nickname ?? '')
+/** 展示用的报修人姓名：优先真实姓名，缺省回退账户名 */
+const reporterName = computed(() => contactName.value || accountName.value)
+/** 头像下方是否展示账户名：仅当存在真实姓名且与账户名不同（避免重复） */
+const showAccountName = computed(
+  () => !!contactName.value && contactName.value !== accountName.value
+)
+const telHref = computed(() => `tel:${contactPhone.value}`)
+
+/** 紧急程度标签样式（小号圆角标签，不用纯文本） */
+const urgencyTagClass = computed(() => {
+  const u = detail.value?.urgency
+  if (u === 'very_urgent') return 'ut-very'
+  if (u === 'urgent') return 'ut-urgent'
+  return 'ut-normal'
 })
 
-/** 金额格式化：保留两位小数 */
+/** 复制工单号到剪贴板 */
+const copyOrderNo = async () => {
+  const no = detail.value?.order_no
+  if (!no) return
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(no)
+    } else {
+      const ta = document.createElement('textarea')
+      ta.value = no
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+    }
+    ElMessage.success('工单号已复制')
+  } catch {
+    ElMessage.error('复制失败，请手动复制')
+  }
+}
+
 const formatMoney = (value?: number | null) => {
   if (value === undefined || value === null || Number.isNaN(Number(value))) return '-'
   return Number(value).toFixed(2)
+}
+
+/** 状态中文标签（含 rejected，时间轴状态流转胶囊用） */
+function statusLabel(s?: string | null): string {
+  if (!s) return '-'
+  const map: Record<string, string> = {
+    draft: '草稿',
+    reported: '已上报',
+    pending_accept: '待接单',
+    processing: '处理中',
+    completed: '已处理',
+    cancelled: '已取消',
+    rejected: '已退回'
+  }
+  return map[s] ?? s
+}
+
+/** 时间轴节点配色（按动作类型上色：草稿灰 / 上报蓝 / 接单橙 / 完工绿） */
+function tlNodeClass(action?: string): string {
+  switch (action) {
+    case 'submit':
+      return 'tl-blue'
+    case 'accept':
+    case 'reopen':
+      return 'tl-orange'
+    case 'complete':
+    case 'audit':
+    case 'sign':
+      return 'tl-teal'
+    case 'reject':
+    case 'cancel':
+      return 'tl-red'
+    default:
+      return 'tl-gray'
+  }
 }
 
 const fetchDetail = async () => {
@@ -75,6 +191,22 @@ const visibleActions = computed<AvailableAction[]>(() => {
       (a.action === 'reject' && detail.value?.status === 'reported')
   )
 })
+
+// ── 底部操作栏：按状态/角色拆分「主操作 / 弱化驳回 / 次级操作」 ──
+const primaryAction = computed(() =>
+  visibleActions.value.find(a => ['accept', 'audit', 'complete', 'sign'].includes(a.action))
+)
+const rejectAction = computed(() =>
+  visibleActions.value.find(a => a.action === 'reject')
+)
+const secondaryActions = computed(() =>
+  visibleActions.value.filter(
+    a =>
+      !['accept', 'audit', 'complete', 'sign', 'reject', 'update_finance'].includes(a.action)
+  )
+)
+// 操作卡片标题：有「退回」（审核员视角）时叫审核操作，否则叫工单操作
+const actionCardTitle = computed(() => (rejectAction.value ? '审核操作' : '工单操作'))
 
 // ---- 简单操作：审核通过 / 接单 / 重新打开（可带确认文案） ----
 const runSimpleAction = async (action: AvailableAction) => {
@@ -138,7 +270,7 @@ const completeDialogVisible = ref(false)
 const completeRemark = ref('')
 const receipts = ref<string[]>([])
 const receiptFileList = ref<UploadUserFile[]>([])
-const receiptUrlMap = new Map<number, string>()
+const receiptIdMap = new Map<number, string>()  // uid -> 图片 id（移除时定位）
 const completing = ref(false)
 const previewVisible = ref(false)
 const previewUrl = ref('')
@@ -171,8 +303,8 @@ const signMode = ref<'signed' | 'pending_sign'>('signed')
 const signDialogVisible = ref(false)
 const signing = ref(false)
 const signFileList = ref<UploadUserFile[]>([])
-const signUrls = ref<string[]>([])
-const signUrlMap = new Map<number, string>()
+const signIds = ref<string[]>([])   // 存图片 id（即时上传后回填），提交时作为 receipt_ids
+const signIdMap = new Map<number, string>()  // uid -> 图片 id
 const signQuantity = ref<number>(1)
 const signUnitPrice = ref<number>(0)
 const signRepairContent = ref('')
@@ -271,7 +403,7 @@ const handleCompleteSubmit = async () => {
   try {
     await adminAPI.completeOrder(orderId, {
       remark,
-      receipts: receiptsPayload,
+      receipt_ids: receiptsPayload,
       quantity,
       unit_price: unitPrice,
       repair_content: repairContent,
@@ -304,9 +436,9 @@ const openSignDialog = () => {
     url: r.url,
     status: 'success' as const
   }))
-  signUrls.value = existingReceipts.map(r => r.url)
-  signUrlMap.clear()
-  existingReceipts.forEach((r, idx) => signUrlMap.set(-(idx + 1), r.url))
+  signIds.value = existingReceipts.map(r => r.id)
+  signIdMap.clear()
+  existingReceipts.forEach((r, idx) => signIdMap.set(-(idx + 1), r.id))
   signQuantity.value = detail.value?.quantity ?? 1
   signUnitPrice.value = detail.value?.unit_price ?? 0
   signRepairContent.value = detail.value?.repair_content ?? ''
@@ -339,8 +471,8 @@ const beforeSignUpload = (rawFile: File) => {
 const handleSignUpload = async (options: UploadRequestOptions) => {
   try {
     const res = await adminAPI.uploadReceipt(orderId, options.file)
-    signUrls.value.push(res.data.url)
-    signUrlMap.set(options.file.uid, res.data.url)
+    signIds.value.push(res.data.id)
+    signIdMap.set(options.file.uid, res.data.id)
     const item = signFileList.value.find(f => f.uid === options.file.uid)
     if (item) {
       item.url = res.data.url
@@ -357,15 +489,15 @@ const handleSignUpload = async (options: UploadRequestOptions) => {
 const handleSignRemove = (file: UploadUserFile) => {
   const uid = file.uid
   if (uid === undefined) return
-  const url = signUrlMap.get(uid)
-  if (url) {
-    signUrls.value = signUrls.value.filter(u => u !== url)
-    signUrlMap.delete(uid)
+  const id = signIdMap.get(uid)
+  if (id) {
+    signIds.value = signIds.value.filter(x => x !== id)
+    signIdMap.delete(uid)
   }
 }
 
 const handleSignSubmit = async () => {
-  if (signUrls.value.length === 0) {
+  if (signIds.value.length === 0) {
     ElMessage.warning('请先上传客户签字单')
     return
   }
@@ -383,7 +515,7 @@ const handleSignSubmit = async () => {
   try {
     await adminAPI.signOrder(orderId, {
       remark,
-      receipts: signUrls.value,
+      receipt_ids: signIds.value,
       quantity: signQuantity.value ?? 1,
       unit_price: signUnitPrice.value ?? 0,
       repair_content: signRepairContent.value.trim(),
@@ -417,8 +549,8 @@ const beforeReceiptUpload = (rawFile: File) => {
 const handleReceiptUpload = async (options: UploadRequestOptions) => {
   try {
     const res = await adminAPI.uploadReceipt(orderId, options.file)
-    receipts.value.push(res.data.url)
-    receiptUrlMap.set(options.file.uid, res.data.url)
+    receipts.value.push(res.data.id)
+    receiptIdMap.set(options.file.uid, res.data.id)
     const item = receiptFileList.value.find(f => f.uid === options.file.uid)
     if (item) {
       item.url = res.data.url
@@ -436,10 +568,10 @@ const handleReceiptUpload = async (options: UploadRequestOptions) => {
 const handleReceiptRemove = (file: UploadUserFile) => {
   const uid = file.uid
   if (uid === undefined) return
-  const url = receiptUrlMap.get(uid)
-  if (url) {
-    receipts.value = receipts.value.filter(u => u !== url)
-    receiptUrlMap.delete(uid)
+  const id = receiptIdMap.get(uid)
+  if (id) {
+    receipts.value = receipts.value.filter(x => x !== id)
+    receiptIdMap.delete(uid)
   }
 }
 
@@ -456,7 +588,7 @@ const openCompleteDialog = () => {
   signMode.value = 'signed'
   receipts.value = []
   receiptFileList.value = []
-  receiptUrlMap.clear()
+  receiptIdMap.clear()
   completeQuantity.value = 1
   completeUnitPrice.value = 0
   completeRepairContent.value = ''
@@ -573,160 +705,73 @@ onMounted(fetchDetail)
 </script>
 
 <template>
-  <div v-loading="loading">
-    <el-card shadow="never">
-      <template #header>
-        <div class="detail-header">
-          <el-button link @click="router.back()">
-            <el-icon><ArrowLeft /></el-icon>
-            返回列表
-          </el-button>
-          <span class="detail-title">{{ detail?.order_no }}</span>
-          <el-tag v-if="detail" :type="(detail.display_tag_type as string) || statusTagType[detail.status]" class="detail-status">
-            {{ detail.display_tag || detail.status_label }}
-          </el-tag>
+  <div v-loading="loading" class="detail-page">
+    <template v-if="detail">
+      <!-- 页头：返回 + 工单号 + 状态胶囊 -->
+      <div class="d-header">
+        <el-button link @click="router.back()">
+          <el-icon><ArrowLeft /></el-icon>
+          返回
+        </el-button>
+        <span class="d-order-no">{{ detail.order_no }}</span>
+      </div>
+
+      <!-- 退回原因提示 -->
+      <el-alert
+        v-if="detail.status === 'rejected' && detail.reject_reason"
+        type="warning"
+        :closable="false"
+        show-icon
+        class="reject-alert"
+        :title="`退回原因：${detail.reject_reason}`"
+      />
+
+      <div class="xn-grid">
+      <div class="xn-col xn-col-main">
+      <!-- 第一组 · 现场执行卡（最高优先级） -->
+      <section class="xn-card onsite">
+        <div class="xn-card-title">
+          <el-icon><Location /></el-icon>
+          报修信息
+          <span class="status-pill" :class="statusViewOf(detail).cls">{{ statusViewOf(detail).text }}</span>
         </div>
-      </template>
-
-      <template v-if="detail">
-        <div class="meta-row">
-          <span class="meta-item">
-            <el-icon><OfficeBuilding /></el-icon>
-            企业：{{ detail.enterprise_name }}
-          </span>
-          <span class="meta-item">
-            <el-icon><Clock /></el-icon>
-            提交时间：{{ formatDateTime(detail.submitted_at) }}
-          </span>
-          <span class="meta-item">
-            <el-icon><Warning /></el-icon>
-            紧急程度：
-            <span class="urgency-text">{{ detail.urgency_label }}</span>
-          </span>
-          <span v-if="detail.auditor_name" class="meta-item">
-            <el-icon><Stamp /></el-icon>
-            审核人：{{ detail.auditor_name }}
-            <span class="meta-sub">（{{ formatDateTime(detail.audited_at) }}）</span>
-          </span>
-          <span v-if="detail.repairer_name" class="meta-item">
-            <el-icon><User /></el-icon>
-            接单/维修：{{ detail.repairer_name }}
-          </span>
+        <div class="onsite-place">
+          {{ detail.enterprise_name }}：{{ detail.room || '未填写地点' }}
         </div>
-
-        <el-alert
-          v-if="detail.status === 'rejected' && detail.reject_reason"
-          type="warning"
-          :closable="false"
-          show-icon
-          class="reject-alert"
-          :title="`退回原因：${detail.reject_reason}`"
-        />
-
-        <div class="section">
-          <h3 class="section-title">报修信息</h3>
-          <div class="info-grid">
-            <div class="info-row">
-              <div class="info-cell">
-                <span class="info-label">工单号</span>
-                <span class="info-value">{{ detail.order_no }}</span>
-              </div>
-              <div class="info-cell">
-                <span class="info-label">报修企业</span>
-                <span class="info-value">{{ detail.enterprise_name }}</span>
-              </div>
-            </div>
-            <div class="info-row">
-              <div class="info-cell">
-                <span class="info-label">项目大类</span>
-                <span class="info-value">{{ detail.category_name || '-' }}</span>
-              </div>
-              <div class="info-cell">
-                <span class="info-label">项目属性</span>
-                <span class="info-value">{{ detail.property_name || '-' }}</span>
-              </div>
-            </div>
-            <div class="info-row">
-              <div class="info-cell">
-                <span class="info-label">报修位置</span>
-                <span class="info-value">{{ detail.room }}</span>
-              </div>
-              <div class="info-cell">
-                <span class="info-label">联系方式</span>
-                <span class="info-value">{{ detail.contact }}</span>
-              </div>
-            </div>
-            <div class="info-row">
-              <div class="info-cell info-cell--full">
-                <span class="info-label">报修描述</span>
-                <span class="info-value">{{ detail.description }}</span>
-              </div>
+        <div v-if="detail.category_name || detail.property_name" class="onsite-tags">
+          报修内容：<template v-if="detail.category_name">{{ detail.category_name }}</template><template v-if="detail.category_name && detail.property_name"> → </template><template v-if="detail.property_name">{{ detail.property_name }}</template>
+        </div>
+        <div class="onsite-row">
+          <div class="onsite-reporter">
+            <el-avatar :size="26" :src="detail.reporter?.avatar_url" class="or-avatar">
+              {{ accountName.charAt(0) }}
+            </el-avatar>
+            <span v-if="showAccountName" class="or-account">{{ accountName }}</span>
+            <span v-if="showAccountName" class="or-divider"></span>
+            <div class="or-text">
+              <div class="or-name">{{ reporterName || '未知报修人' }}</div>
+              <div class="or-phone">{{ contactPhone || '未留联系方式' }}</div>
             </div>
           </div>
+          <a v-if="contactPhone" class="call-btn" :href="telHref" title="拨打电话">
+            <el-icon><Phone /></el-icon>
+          </a>
         </div>
+      </section>
 
-        <!-- 对账信息（completed 状态展示） -->
-        <div v-if="showFinance" class="section">
-          <h3 class="section-title">对账信息</h3>
-          <div class="info-grid">
-            <div class="info-row">
-              <div class="info-cell">
-                <span class="info-label">数量</span>
-                <span class="info-value">{{ detail.quantity ?? '-' }}</span>
-              </div>
-              <div class="info-cell">
-                <span class="info-label">单价</span>
-                <span class="info-value">{{ formatMoney(detail.unit_price) }}</span>
-              </div>
-              <div class="info-cell">
-                <span class="info-label">金额</span>
-                <span class="info-value">{{ formatMoney(detail.amount) }}</span>
-              </div>
-            </div>
-            <div class="info-row">
-              <div class="info-cell info-cell--full">
-                <span class="info-label">维修操作内容</span>
-                <span class="info-value">{{ detail.repair_content || '-' }}</span>
-              </div>
-            </div>
-            <div v-if="detail.remark" class="info-row">
-              <div class="info-cell info-cell--full">
-                <span class="info-label">维修备注</span>
-                <span class="info-value">{{ detail.remark }}</span>
-              </div>
-            </div>
-          </div>
+      <!-- 第二组 · 故障详情卡 -->
+      <section class="xn-card">
+        <div class="xn-card-title">
+          <el-icon><Warning /></el-icon>
+          故障详情
         </div>
-
-        <!-- 附加信息（completed 状态 metadata 独立区块） -->
-        <div v-if="showMetadata" class="section">
-          <h3 class="section-title">附加信息</h3>
-          <div class="info-grid">
-            <div class="info-row">
-              <div class="info-cell">
-                <span class="info-label">维修结果</span>
-                <span class="info-value">{{ detail.metadata?.repair_result || '-' }}</span>
-              </div>
-              <div class="info-cell">
-                <span class="info-label">维修方式</span>
-                <span class="info-value">{{ detail.metadata?.repair_method || '-' }}</span>
-              </div>
-              <div class="info-cell">
-                <span class="info-label">保修期</span>
-                <span class="info-value">{{ detail.metadata?.warranty_period || '-' }}</span>
-              </div>
-            </div>
-            <div class="info-row">
-              <div class="info-cell">
-                <span class="info-label">维修时长</span>
-                <span class="info-value">{{ detail.metadata?.repair_duration != null ? `${detail.metadata.repair_duration} 分钟` : '-' }}</span>
-              </div>
-            </div>
-          </div>
+        <div class="fault-desc" :class="{ clamp: isLongDesc && !descExpanded }">
+          {{ detail.description || '（无故障描述）' }}
         </div>
-
-        <div v-if="imageUrls.length" class="section">
-          <h3 class="section-title">故障图片</h3>
+        <el-button v-if="isLongDesc" link type="primary" class="desc-toggle" @click="descExpanded = !descExpanded">
+          {{ descExpanded ? '收起' : '查看全文' }}
+        </el-button>
+        <div v-if="imageUrls.length" class="img-strip">
           <el-image
             v-for="(url, index) in imageUrls"
             :key="url"
@@ -734,62 +779,221 @@ onMounted(fetchDetail)
             :preview-src-list="imageUrls"
             :initial-index="index"
             fit="cover"
-            class="preview-img"
             preview-teleported
           />
         </div>
+      </section>
 
-        <div v-if="receiptUrls.length" class="section">
-          <h3 class="section-title">收据图片</h3>
-          <el-image
-            v-for="(url, index) in receiptUrls"
-            :key="url"
-            :src="url"
-            :preview-src-list="receiptUrls"
-            :initial-index="index"
-            fit="cover"
-            class="preview-img"
-            preview-teleported
-          />
+      <!-- 第四组 · 对账信息卡（仅店方可见；与故障详情同级，左列展示金额/维修操作内容/收据） -->
+      <section v-if="showFinance" class="xn-card finance-card">
+        <div class="xn-card-title">
+          对账信息
+          <el-button v-if="financeEditVisible" link type="primary" class="edit-link" @click="openFinanceDialog">
+            编辑
+          </el-button>
         </div>
 
-        <div class="section">
-          <h3 class="section-title">处理时间轴</h3>
-          <el-timeline>
-            <el-timeline-item
-              v-for="item in detail.timeline"
-              :key="item.id"
-              :timestamp="formatDateTime(item.created_at)"
-              placement="top"
-            >
-              <div class="timeline-item">
-                <div class="timeline-head">
-                  <span class="timeline-action">{{ item.action_label }}</span>
-                  <span class="timeline-operator">{{ item.operator_name }}</span>
-                  <span v-if="item.from_status || item.to_status" class="timeline-status">
-                    {{ item.from_status ? `${statusLabelMap[item.from_status] ?? item.from_status} → ` : '' }}{{ statusLabelMap[item.to_status ?? ''] ?? item.to_status }}
-                  </span>
-                </div>
-                <div v-if="item.remark" class="timeline-remark">{{ item.remark }}</div>
+        <!-- 核心：金额（主显，左侧）+ 右侧详情箭头（点开才展示单价/数量/维修方式） -->
+        <div class="fin-amount">
+          <span class="fa-value">¥{{ formatMoney(detail.amount) }}</span>
+          <span
+            class="fin-detail-toggle"
+            :class="{ expanded: financeDetailExpanded }"
+            role="button"
+            aria-label="展开对账明细"
+            @click="financeDetailExpanded = !financeDetailExpanded"
+          >
+            <el-icon><ArrowRight /></el-icon>
+          </span>
+        </div>
+        <div v-if="financeDetailExpanded" class="fin-detail">
+          <div class="kv">
+            <span class="k">数量</span>
+            <span class="v">{{ detail.quantity ?? '-' }}</span>
+          </div>
+          <div class="kv">
+            <span class="k">单价</span>
+            <span class="v">¥{{ formatMoney(detail.unit_price) }}</span>
+          </div>
+          <div v-if="detail.metadata?.repair_method" class="kv">
+            <span class="k">维修方式</span>
+            <span class="v">{{ detail.metadata.repair_method }}</span>
+          </div>
+        </div>
+
+        <div class="fin-divider"></div>
+
+        <!-- 维修操作内容 -->
+        <div v-if="detail.repair_content" class="fin-section">
+          <div class="fin-subtitle">维修操作内容</div>
+          <div class="fin-text">{{ detail.repair_content }}</div>
+        </div>
+
+        <!-- 维修备注 -->
+        <div v-if="detail.remark" class="fin-section">
+          <div class="fin-subtitle">维修备注</div>
+          <div class="fin-text">{{ detail.remark }}</div>
+        </div>
+
+        <!-- 维修附加信息 -->
+        <template v-if="detail.metadata">
+          <div
+            v-if="detail.metadata.repair_result || detail.metadata.warranty_period || detail.metadata.repair_duration != null"
+            class="fin-section"
+          >
+            <div class="fin-subtitle">维修附加信息</div>
+            <div class="fin-text">
+              <span v-if="detail.metadata.repair_result">结果：{{ detail.metadata.repair_result }}</span>
+              <span v-if="detail.metadata.warranty_period"> · 保修：{{ detail.metadata.warranty_period }}</span>
+              <span v-if="detail.metadata.repair_duration != null"> · 时长：{{ detail.metadata.repair_duration }} 分钟</span>
+            </div>
+          </div>
+        </template>
+
+        <div class="fin-divider"></div>
+
+        <!-- 收据 -->
+        <div class="fin-section">
+          <div class="fin-subtitle">收据</div>
+          <div v-if="receiptUrls.length" class="img-strip">
+            <el-image
+              v-for="(url, index) in receiptUrls"
+              :key="url"
+              :src="url"
+              :preview-src-list="receiptUrls"
+              :initial-index="index"
+              fit="cover"
+              preview-teleported
+            />
+          </div>
+          <div v-else class="fin-receipt-empty">暂无收据</div>
+        </div>
+      </section>
+      </div><!-- /xn-col-main -->
+      <div class="xn-col xn-col-side">
+      <!-- 第三组 · 归档信息卡（单列纵向 Flex，窄侧栏下绝对整齐） -->
+      <section class="xn-card">
+        <div class="xn-card-title">归档信息</div>
+        <div class="kv-list">
+          <div class="kv">
+            <span class="k">工单号</span>
+            <span class="v v-strong arch-no">
+              {{ detail.order_no }}
+              <el-icon class="copy-ico" title="复制工单号" @click="copyOrderNo"><DocumentCopy /></el-icon>
+            </span>
+          </div>
+          <div class="kv">
+            <span class="k">提交时间</span>
+            <span class="v">{{ formatDateTime(detail.submitted_at) }}</span>
+          </div>
+          <div class="kv">
+            <span class="k">紧急程度</span>
+            <span class="v">
+              <span class="urgency-tag" :class="urgencyTagClass">{{ detail.urgency_label }}</span>
+            </span>
+          </div>
+          <div v-if="detail.auditor_name" class="kv">
+            <span class="k">审核人</span>
+            <span class="v v-strong">{{ detail.auditor_name }}</span>
+          </div>
+          <div v-if="detail.audited_at" class="kv">
+            <span class="k">审核时间</span>
+            <span class="v">{{ formatDateTime(detail.audited_at) }}</span>
+          </div>
+          <div v-if="detail.repairer_name" class="kv">
+            <span class="k">维修人员</span>
+            <span class="v v-strong">{{ detail.repairer_name }}</span>
+          </div>
+          <div v-if="detail.accepted_at" class="kv">
+            <span class="k">接单时间</span>
+            <span class="v">{{ formatDateTime(detail.accepted_at) }}</span>
+          </div>
+          <div v-if="detail.completed_at" class="kv">
+            <span class="k">完工时间</span>
+            <span class="v">{{ formatDateTime(detail.completed_at) }}</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- 第五组 · 处理记录卡（默认折叠） -->
+      <section class="xn-card">
+        <div class="xn-card-title">
+          处理记录
+          <span class="title-count">（{{ detail.timeline.length }}）</span>
+        </div>
+        <div v-if="!timelineExpanded" class="timeline-collapsed">
+          <el-button link type="primary" @click="timelineExpanded = true">查看全部处理轨迹</el-button>
+        </div>
+        <el-timeline v-else class="xn-timeline">
+          <el-timeline-item
+            v-for="item in detail.timeline"
+            :key="item.id"
+            :class="tlNodeClass(item.action)"
+            placement="top"
+          >
+            <div class="tl-body">
+              <!-- 第一行：动作名称（加粗深色）+ 操作人（小字灰，同行） -->
+              <div class="tl-row1">
+                <span class="tl-action">{{ item.action_label }}</span>
+                <span v-if="item.operator_name" class="tl-operator">{{ item.operator_name }}</span>
               </div>
-            </el-timeline-item>
-          </el-timeline>
-        </div>
-      </template>
-    </el-card>
+              <!-- 第二行：时间（小字浅灰，仅占一点空间） -->
+              <div class="tl-row2">{{ formatShortDateTime(item.created_at) }}</div>
+              <!-- 第三行：状态流转胶囊（旧 ➔ 新；相同则隐藏） -->
+              <div
+                v-if="item.from_status && item.to_status && item.from_status !== item.to_status"
+                class="tl-row3"
+              >
+                <span class="tl-pill tl-pill-from">{{ statusLabel(item.from_status) }}</span>
+                <el-icon class="tl-arrow"><Right /></el-icon>
+                <span class="tl-pill tl-pill-to">{{ statusLabel(item.to_status) }}</span>
+              </div>
+              <div v-if="item.remark" class="tl-remark">{{ item.remark }}</div>
+            </div>
+          </el-timeline-item>
+        </el-timeline>
+        <el-button v-if="timelineExpanded" link type="primary" class="timeline-collapse-btn" @click="timelineExpanded = false">
+          收起
+        </el-button>
+      </section>
 
-    <!-- 操作区（按钮由 visibleActions 驱动；退回/完工/补签等均在同行展示） -->
-    <div v-if="visibleActions.length" class="action-bar">
-      <el-button
-        v-for="action in visibleActions"
-        :key="action.action"
-        :type="action.action === 'reject' ? 'danger' : action.action === 'sign' ? 'warning' : 'primary'"
-        size="large"
-        @click="handleAction(action)"
-      >
-        {{ action.label }}
-      </el-button>
-    </div>
+      <!-- 审核操作卡片：右栏底部；审核通过（绿实心主按钮，占满整行）/ 退回（灰线框次按钮，占满整行） -->
+      <section v-if="visibleActions.length" class="xn-card action-card">
+        <div class="xn-card-title">
+          <el-icon><Stamp /></el-icon>
+          {{ actionCardTitle }}
+        </div>
+        <el-button
+          v-if="primaryAction"
+          type="primary"
+          size="large"
+          class="act-primary"
+          @click="handleAction(primaryAction)"
+        >
+          {{ primaryAction.label }}
+        </el-button>
+        <el-button
+          v-if="rejectAction"
+          plain
+          size="large"
+          class="reject-btn"
+          @click="handleAction(rejectAction)"
+        >
+          {{ rejectAction.label }}
+        </el-button>
+        <el-button
+          v-for="a in secondaryActions"
+          :key="a.action"
+          plain
+          size="large"
+          @click="handleAction(a)"
+        >
+          {{ a.label }}
+        </el-button>
+      </section>
+      </div><!-- /xn-col-side -->
+      </div><!-- /xn-grid -->
+    </template>
 
     <!-- 退回弹窗 -->
     <el-dialog v-model="rejectDialogVisible" title="退回工单" width="480px">
@@ -1020,7 +1224,7 @@ onMounted(fetchDetail)
             <el-input-number v-model="financeUnitPrice" :min="0" :precision="2" controls-position="right" class="full-width" />
           </el-form-item>
         </div>
-        <div class="finance-amount-line">金额（只读预览）：{{ financeAmount }}</div>
+        <div class="finance-amount-line">金额（只读预览）：¥{{ financeAmount }}</div>
         <el-form-item label="维修操作内容（≤200 字）">
           <el-input
             v-model="financeRepairContent"
@@ -1082,156 +1286,640 @@ onMounted(fetchDetail)
 </template>
 
 <style scoped>
-:deep(.el-descriptions__label) {
-  white-space: nowrap;
+.detail-page {
+  max-width: 1000px;
+  margin: 0 auto;
+  padding-bottom: 16px;
 }
 
-.info-grid {
-  border: 1px solid var(--el-border-color);
-  border-radius: 4px;
-  overflow: hidden;
+/* 双栏布局：左 2/3（报修信息 + 故障详情 + 对账信息），右 1/3（归档 + 处理记录 + 审核操作） */
+.xn-grid {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 16px;
+  align-items: start;
 }
 
-.info-row {
+.xn-col {
   display: flex;
-  flex-wrap: wrap;
-  border-top: 1px solid var(--el-border-color);
-  align-items: stretch;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
 }
 
-.info-row:first-child {
-  border-top: none;
+@media (max-width: 860px) {
+  .xn-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
-.info-cell {
-  display: flex;
-  border-right: 1px solid var(--el-border-color);
-  align-items: stretch;
-}
-
-.info-cell:last-child {
-  border-right: none;
-}
-
-.info-cell--full {
-  flex: 1;
-}
-
-.info-label {
-  padding: 12px 16px;
-  font-weight: 700;
-  color: var(--el-text-color-regular);
-  background-color: var(--el-fill-color-light);
-  white-space: nowrap;
-  border-right: 1px solid var(--el-border-color);
-  display: flex;
-  align-items: center;
-}
-
-.info-value {
-  padding: 12px 16px;
-  color: var(--el-text-color-primary);
-  word-break: break-all;
-  display: flex;
-  align-items: center;
-}
-
-.detail-header {
+/* 页头 */
+.d-header {
   display: flex;
   align-items: center;
   gap: 12px;
+  margin-bottom: 14px;
 }
 
-.detail-title {
-  font-size: 16px;
+.d-order-no {
+  font-size: 17px;
   font-weight: 600;
-  color: #303133;
+  color: var(--xn-text-900);
 }
 
-.detail-status {
+.xn-card-title .status-pill {
   margin-left: auto;
 }
 
-.meta-row {
+/* 通用卡片 */
+.xn-card {
+  background: var(--xn-surface);
+  border: 1px solid var(--xn-border);
+  border-radius: 12px;
+  padding: 16px;
+  margin-top: 0;
+}
+
+.xn-card-title {
   display: flex;
   align-items: center;
-  gap: 28px;
-  flex-wrap: wrap;
-  margin-bottom: 8px;
+  gap: 6px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--xn-text-900);
+  padding-bottom: 10px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--xn-border-soft);
 }
 
-.meta-item {
+.xn-card-title .el-icon {
+  color: var(--xn-text-500);
+}
+
+.title-count {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--xn-text-400);
+}
+
+.edit-link {
+  margin-left: auto;
+  font-weight: 500;
+}
+
+/* ── 报修信息卡（原「现场执行」） ── */
+.onsite-place {
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.35;
+  color: var(--xn-text-900);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.onsite-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-top: 10px;
+  font-size: 13px;
+  color: var(--xn-text-500);
+}
+
+.onsite-row {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--xn-border-soft);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: nowrap;
+}
+
+.onsite-reporter {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+
+.or-avatar {
+  flex-shrink: 0;
+}
+
+/* 头像右侧账户名（仅当与报修人姓名不同时展示） */
+.or-account {
+  font-size: 12px;
+  line-height: 1;
+  color: var(--xn-text-400);
+  flex-shrink: 0;
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 账户名与报修人姓名之间的分隔线 */
+.or-divider {
+  width: 1px;
+  height: 24px;
+  background: var(--xn-border);
+  flex-shrink: 0;
+  margin: 0 2px;
+}
+
+.or-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.or-name {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--xn-text-900);
+}
+
+.or-phone {
+  font-size: 13px;
+  color: var(--xn-text-500);
+  letter-spacing: 0.3px;
+  margin-top: 2px;
+}
+
+.call-btn {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  color: #606266;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--xn-text-500);
+  text-decoration: none;
+  border: 1px solid var(--xn-border);
+  transition: color 0.2s, border-color 0.2s;
 }
 
-.meta-sub {
-  color: #909399;
-  font-size: 12px;
+.call-btn .el-icon {
+  font-size: 18px;
 }
 
-.urgency-text {
-  color: #f56c6c;
+.call-btn:hover {
+  color: var(--xn-primary);
+  border-color: var(--xn-primary);
+}
+
+/* ── 故障详情卡 ── */
+.fault-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.fault-tag {
+  display: inline-flex;
+  align-items: center;
+  background: var(--xn-tag-bg);
+  color: var(--xn-text-700);
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 13px;
   font-weight: 600;
 }
 
-.reject-alert {
-  margin-bottom: 16px;
+.fault-tag-empty {
+  font-size: 13px;
+  color: var(--xn-text-400);
 }
 
-.section {
-  margin-top: 20px;
+.fault-desc {
+  font-size: 16px;
+  line-height: 1.7;
+  color: var(--xn-text-700);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
-.section-title {
-  margin: 0 0 12px;
-  font-size: 15px;
-  color: #303133;
-  border-left: 3px solid #409eff;
-  padding-left: 8px;
+.fault-desc.clamp {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
-.preview-img {
-  width: 120px;
-  height: 120px;
-  border-radius: 6px;
-  margin-right: 8px;
+.desc-toggle {
+  padding-left: 0;
+  margin-top: 2px;
+}
+
+/* 缩略图网格（故障图 / 收据，自动换行，一行 3-4 张） */
+.img-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.img-strip :deep(.el-image) {
+  width: 100%;
+  height: 104px;
+  border-radius: 8px;
+  overflow: hidden;
   cursor: zoom-in;
+  background: var(--xn-tag-bg);
 }
 
-.timeline-item {
-  background-color: #f5f7fa;
-  border-radius: 6px;
-  padding: 10px 14px;
+.img-strip :deep(.el-image img) {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
-.timeline-head {
+/* ── 归档 / 对账 键值列表（两列网格，紧凑） ── */
+/* ── 归档信息：单列纵向 Flex，两端对齐，窄侧栏绝对整齐 ── */
+.kv-list {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 12px;
 }
 
-.timeline-action {
-  font-weight: 600;
-  color: #303133;
+.kv {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 0;
 }
 
-.timeline-operator {
-  color: #606266;
-  font-size: 13px;
-}
-
-.timeline-status {
-  color: #909399;
+.kv .k {
+  color: var(--xn-text-500);
   font-size: 12px;
+  line-height: 18px;
+  flex-shrink: 0;
 }
 
-.timeline-remark {
-  margin-top: 6px;
-  color: #606266;
+.kv .v {
+  color: #1f2937;
   font-size: 13px;
+  line-height: 18px;
+  text-align: right;
+  word-break: break-all;
+}
+
+/* 重要内容加粗 */
+.kv .v-strong {
+  font-weight: 600;
+}
+
+/* 工单号 + 复制图标 */
+.arch-no {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.copy-ico {
+  font-size: 13px;
+  color: var(--xn-text-400);
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+
+.copy-ico:hover {
+  color: var(--xn-primary);
+}
+
+/* 紧急程度：小号圆角标签（不用纯文本） */
+.urgency-tag {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+}
+
+.urgency-tag.ut-normal {
+  background: var(--xn-tag-bg);
+  color: var(--xn-text-500);
+}
+
+.urgency-tag.ut-urgent {
+  background: rgba(234, 88, 12, 0.12);
+  color: #ea580c;
+}
+
+.urgency-tag.ut-very {
+  background: rgba(220, 38, 38, 0.12);
+  color: #dc2626;
+}
+
+/* ── 对账信息卡：金额主显 + 折叠明细 + 内容/收据分区 ── */
+.finance-card {
+  padding: 20px;
+}
+
+/* 金额：独立成块，大字号加粗主色 + 右侧详情箭头 */
+.fin-amount {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 2px;
+}
+
+.fa-value {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--xn-primary);
+  letter-spacing: 0.5px;
+}
+
+.fin-detail-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  color: var(--xn-text-secondary);
+  cursor: pointer;
+  transition: transform 0.2s ease, background 0.2s ease, color 0.2s ease;
+}
+
+.fin-detail-toggle:hover {
+  background: var(--xn-tag-bg);
+  color: var(--xn-primary);
+}
+
+.fin-detail-toggle .el-icon {
+  font-size: 16px;
+  transition: transform 0.2s ease;
+}
+
+.fin-detail-toggle.expanded .el-icon {
+  transform: rotate(90deg);
+}
+
+/* 折叠明细：横向平铺键值对 */
+.fin-detail {
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: var(--xn-bg);
+  border-radius: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 28px;
+}
+
+.fin-detail .kv {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+}
+
+.fin-detail .kv .k {
+  font-size: 13px;
+  color: var(--xn-text-500);
+}
+
+.fin-detail .kv .v {
+  font-size: 13px;
+  color: var(--xn-text-900);
+}
+
+/* 模块间分割线 */
+.fin-divider {
+  height: 1px;
+  background: var(--xn-border);
+  margin: 16px 0;
+}
+
+/* 内容分区（维修操作内容 / 维修备注 / 附加信息 / 收据） */
+.fin-section + .fin-section {
+  margin-top: 14px;
+}
+
+/* 小标题：左侧主色竖线 + 深灰加粗，强化视觉 */
+.fin-subtitle {
+  display: flex;
+  align-items: center;
+  font-size: 14px;
+  font-weight: 600;
+  color: #1f2937;
+  border-left: 3px solid var(--xn-primary);
+  padding-left: 8px;
+  margin-bottom: 10px;
+}
+
+.fin-text {
+  font-size: 15px;
+  color: var(--xn-text-700);
+  line-height: 1.7;
+  word-break: break-word;
+}
+
+/* 收据图片：顶部间距拉大 + 极浅灰色描边 */
+.fin-section .img-strip {
+  margin-top: 12px;
+}
+
+.fin-section .img-strip :deep(.el-image) {
+  border: 1px solid var(--xn-border);
+}
+
+/* 收据占位 */
+.fin-receipt-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 96px;
+  border: 1px dashed var(--xn-border);
+  border-radius: 8px;
+  color: var(--xn-text-400);
+  font-size: 13px;
+  background: var(--xn-bg);
+}
+
+/* ── 处理记录（折叠） ── */
+.timeline-collapsed {
+  padding: 4px 0;
+}
+
+.timeline-collapse-btn {
+  padding-left: 0;
+  margin-top: 4px;
+}
+
+/* ── 处理记录时间轴：去背景化 + 节点上色 + 三段式信息层级 ── */
+.xn-timeline {
+  padding-left: 2px;
+}
+
+/* 节点与节点之间紧凑（约 16px），最后一个不占距 */
+.xn-timeline .el-timeline-item {
+  padding-bottom: 16px;
+}
+
+.xn-timeline .el-timeline-item:last-child {
+  padding-bottom: 0;
+}
+
+/* 竖线：1px + 浅色 #E5E7EB */
+.xn-timeline .el-timeline-item__tail {
+  border-left-width: 1px;
+  border-left-color: var(--xn-border);
+  left: 5px;
+}
+
+/* 节点圆圈按动作类型上色（去掉默认灰块） */
+.xn-timeline .el-timeline-item__node {
+  background-color: #9ca3af;
+  border: none;
+}
+
+.xn-timeline .tl-gray .el-timeline-item__node {
+  background-color: #9ca3af;
+}
+
+.xn-timeline .tl-blue .el-timeline-item__node {
+  background-color: #2563eb;
+}
+
+.xn-timeline .tl-orange .el-timeline-item__node {
+  background-color: #ea580c;
+}
+
+.xn-timeline .tl-teal .el-timeline-item__node {
+  background-color: var(--xn-primary);
+}
+
+.xn-timeline .tl-red .el-timeline-item__node {
+  background-color: #dc2626;
+}
+
+/* 内容直接呈现在卡片背景上，无灰底 */
+.tl-body {
+  padding: 0;
+}
+
+.tl-row1 {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.tl-action {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1f2937;
+  line-height: 1.3;
+}
+
+.tl-operator {
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.tl-row2 {
+  margin-top: 2px;
+  font-size: 12px;
+  color: #9ca3af;
+  line-height: 1.3;
+}
+
+/* 状态流转胶囊：旧 ➔ 新 */
+.tl-row3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.tl-pill {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 500;
+}
+
+.tl-pill-from {
+  background: var(--xn-tag-bg);
+  color: var(--xn-text-500);
+}
+
+.tl-pill-to {
+  background: rgba(15, 118, 110, 0.12);
+  color: var(--xn-primary);
+}
+
+.tl-arrow {
+  font-size: 12px;
+  color: var(--xn-text-400);
+}
+
+.tl-remark {
+  margin-top: 6px;
+  color: var(--xn-text-500);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+/* ── 审核操作卡片：竖排按钮，主按钮(绿实心)占满整行在上，退回(灰线框)占满整行在下 ── */
+.action-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* 占满整行，并去除 Element Plus 相邻按钮默认的左边距 */
+.action-card .el-button {
+  width: 100%;
+  margin-left: 0;
+}
+
+/* 弱化驳回按钮：灰色线框，不与主按钮并排强调 */
+.reject-btn {
+  color: var(--xn-text-500);
+  border-color: var(--xn-border);
+}
+
+/* 弱化驳回按钮：灰色、不与主按钮并排强调 */
+.reject-btn {
+  color: var(--xn-text-500);
+  border-color: var(--xn-border);
+}
+
+.reject-btn:hover {
+  color: var(--xn-text-700);
+  border-color: var(--xn-text-400);
+  background: var(--xn-bg);
+}
+
+/* ── 以下为弹窗内复用样式（完工 / 补签 / 对账） ── */
+.reject-alert {
+  margin-bottom: 14px;
+}
+
+.complete-block-title {
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--xn-text-900);
+  margin: 4px 0 10px;
+  padding-left: 8px;
+  border-left: 3px solid var(--xn-primary);
+  line-height: 1.4;
 }
 
 .finance-row {
@@ -1250,36 +1938,52 @@ onMounted(fetchDetail)
 }
 
 .finance-amount-line {
-  color: #606266;
+  color: var(--xn-text-500);
   font-size: 14px;
   margin: 0 0 10px;
 }
 
-.finance-amount {
-  color: #f56c6c;
-  font-weight: 600;
-}
-
-.complete-block-title {
+/* 状态放大胶囊（详情头 / 列表共用色板，定义在全局） */
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 12px;
+  border-radius: 14px;
+  font-size: 13px;
   font-weight: 700;
-  font-size: 15px;
-  color: #303133;
-  margin: 4px 0 10px;
-  padding-left: 8px;
-  border-left: 3px solid #409eff;
-  line-height: 1.4;
+  line-height: 1;
+  color: #fff;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
-.action-bar {
-  position: sticky;
-  bottom: 16px;
-  display: flex;
-  justify-content: flex-end;
-  gap: 12px;
-  margin-top: 16px;
-  padding: 12px 20px;
-  background-color: #fff;
-  border-radius: 8px;
-  box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.06);
+.st-red {
+  background: var(--st-red);
+}
+
+.st-amber {
+  background: var(--st-amber);
+}
+
+.st-orange {
+  background: var(--st-orange);
+}
+
+.st-blue {
+  background: var(--st-blue);
+}
+
+.st-teal {
+  background: var(--st-teal);
+}
+
+.st-gray {
+  background: var(--st-gray);
+}
+
+.st-pending-sign {
+  background: linear-gradient(90deg, #f59e0b, #ea580c);
+  box-shadow: 0 1px 4px rgba(234, 88, 12, 0.35);
+  letter-spacing: 1px;
 }
 </style>

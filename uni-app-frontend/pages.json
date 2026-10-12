@@ -7,15 +7,15 @@
   },
   "pages": [
     {
-      "path": "pages/service/index",
+      "path": "pages/home/index",
       "style": {
-        "navigationBarTitleText": "服务"
+        "navigationBarTitleText": "首页"
       }
     },
     {
       "path": "pages/order/list",
       "style": {
-        "navigationBarTitleText": "我的工单",
+        "navigationBarTitleText": "工单",
         "enablePullDownRefresh": true
       }
     },
@@ -69,12 +69,6 @@
       }
     },
     {
-      "path": "pages/admin/enterprise/create",
-      "style": {
-        "navigationBarTitleText": "创建企业"
-      }
-    },
-    {
       "path": "pages/admin/enterprise/detail",
       "style": {
         "navigationBarTitleText": "企业详情",
@@ -86,31 +80,23 @@
       "style": {
         "navigationBarTitleText": "工单处理"
       }
-    },
-    {
-      "path": "pages/admin/order/list",
-      "style": {
-        "navigationBarTitleText": "处理工单",
-        "enablePullDownRefresh": true
-      }
-    },
-    {
-      "path": "pages/review/index",
-      "style": {
-        "navigationBarTitleText": "审核工单",
-        "enablePullDownRefresh": true
-      }
     }
   ],
   "tabBar": {
     "color": "#999999",
-    "selectedColor": "#4d80f0",
+    "selectedColor": "#0f766e",
     "backgroundColor": "#ffffff",
     "borderStyle": "black",
     "list": [
       {
-        "pagePath": "pages/service/index",
-        "text": "服务",
+        "pagePath": "pages/home/index",
+        "text": "首页",
+        "iconPath": "static/tabbar/home.png",
+        "selectedIconPath": "static/tabbar/home-active.png"
+      },
+      {
+        "pagePath": "pages/order/list",
+        "text": "工单",
         "iconPath": "static/tabbar/order.png",
         "selectedIconPath": "static/tabbar/order-active.png"
       },
@@ -126,7 +112,7 @@
     "navigationBarTextStyle": "black",
     "navigationBarTitleText": "新泥报修",
     "navigationBarBackgroundColor": "#F8F8F8",
-    "backgroundColor": "#F8F8F8"
+    "backgroundColor": "#F4F6F8"
   },
   "uniIdRouter": {}
 }

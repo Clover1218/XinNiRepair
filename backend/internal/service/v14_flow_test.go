@@ -42,6 +42,8 @@ type v14TestEnv struct {
 	projects  *repository.ProjectRepository
 	users     *repository.AuthRepository
 	ents      *repository.EnterpriseRepository
+	scopes    *repository.RepairerEnterpriseRepository
+	settings  *repository.SettingsRepository
 
 	orderSvc  *OrderService
 	adminSvc  *AdminOrderService
@@ -71,12 +73,14 @@ func newV14Env(t *testing.T) *v14TestEnv {
 		projects:  repository.NewProjectRepository(db),
 		users:     repository.NewAuthRepository(db),
 		ents:      repository.NewEnterpriseRepository(db),
+		scopes:    repository.NewRepairerEnterpriseRepository(db),
+		settings:  repository.NewSettingsRepository(db),
 	}
-	env.accessSvc = NewAccessService(env.mems)
+	env.accessSvc = NewAccessService(env.mems, env.scopes)
 	env.entSvc = NewEnterpriseService(env.ents, env.mems, zapNop())
 	img := imagebed.New(imagebed.Config{Endpoint: "http://127.0.0.1:9/none"})
 	env.orderSvc = NewOrderService(env.orders, env.images, env.timelines, env.mems, env.projects, img, nil, zapNop())
-	env.adminSvc = NewAdminOrderService(env.orders, env.images, env.timelines, env.accessSvc, img, nil, zapNop())
+	env.adminSvc = NewAdminOrderService(env.orders, env.images, env.timelines, env.accessSvc, img, nil, NewSettingsService(env.settings, zapNop()), zapNop())
 	env.projSvc = NewProjectService(env.projects, zapNop())
 
 	env.seed(t)
@@ -148,6 +152,11 @@ func (e *v14TestEnv) seed(t *testing.T) {
 			t.Fatalf("create membership: %v", err)
 		}
 	}
+
+	// V1.5: 授予维修员本测试企业的经营范围, 满足接单前置校验
+	if err := e.scopes.ReplaceAll(e.ctx, e.repairerID, []string{e.entID}, ""); err != nil {
+		t.Fatalf("grant repairer scope: %v", err)
+	}
 }
 
 // cleanup 清理本次测试数据 (按外键顺序)
@@ -161,6 +170,7 @@ func (e *v14TestEnv) cleanup(t *testing.T) {
 	_ = db.Exec(`DELETE FROM order_timeline WHERE order_id IN (SELECT id FROM repair_orders WHERE reporter_id = ?)`, e.reporterID).Error
 	_ = db.Exec(`DELETE FROM order_images WHERE order_id IN (SELECT id FROM repair_orders WHERE reporter_id = ?)`, e.reporterID).Error
 	_ = db.Exec(`DELETE FROM repair_orders WHERE reporter_id = ?`, e.reporterID).Error
+	_ = db.Exec(`DELETE FROM repairer_enterprises WHERE enterprise_id = ?`, e.entID).Error
 	_ = db.Exec(`DELETE FROM memberships WHERE enterprise_id = ?`, e.entID).Error
 	_ = db.Exec(`DELETE FROM enterprises WHERE id = ?`, e.entID).Error
 	_ = db.Exec(`DELETE FROM users WHERE id IN (?,?,?)`, e.reporterID, e.reviewerID, e.repairerID).Error
@@ -255,9 +265,22 @@ func TestV14OrderLifecycleAndAccess(t *testing.T) {
 		t.Fatalf("after accept: status=%s repairer=%v", order.Status, nstr(order.RepairerID))
 	}
 
+	// 先即时上传一张收据 (落 temporary) 取得 ID, 供完工时 diff 激活
+	rcpt := &model.OrderImage{
+		ID:        uuid.New().String(),
+		OrderID:   order.ID,
+		ImageUrl:  "https://img.local/receipt1.jpg",
+		ImageType: string(model.ImageReceipt),
+		Status:    string(model.ImageTemporary),
+		SortOrder: -1,
+		FileSize:  1234,
+	}
+	if err := env.images.Create(env.ctx, rcpt); err != nil {
+		t.Fatalf("seed receipt: %v", err)
+	}
 	in := CompleteOrderInput{
 		Remark:        "已更换电源, 测试通过",
-		Receipts:      []string{"https://img.local/receipt1.jpg"},
+		ReceiptIDs:     []string{rcpt.ID},
 		Quantity:      1,
 		UnitPrice:     150.00,
 		RepairContent: "更换台式机电源模块",
@@ -325,9 +348,9 @@ func TestV14RejectAndCancel(t *testing.T) {
 		t.Fatalf("after reject submitted_at 应被清空 (order_no 保留用于历史追溯)")
 	}
 
-	// 原因过短
+	// 原因过短 (现行校验为 2-200 字, 1 字应被拒绝)
 	order2, _ := env.newOrderViaReport(t, "")
-	if err := env.adminSvc.Reject(env.ctx, reviewerOp, order2.ID, "太短", "127.0.0.1"); err == nil {
+	if err := env.adminSvc.Reject(env.ctx, reviewerOp, order2.ID, "短", "127.0.0.1"); err == nil {
 		t.Fatal("过短原因应被拒绝")
 	}
 

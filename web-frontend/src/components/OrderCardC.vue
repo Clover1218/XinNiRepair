@@ -9,10 +9,10 @@ const emit = defineEmits<{ (e: 'click', row: OrderListItem): void }>()
 // 放大后的状态展示（颜色 + 文案），含 V1.5 本质标签（待补签等）
 const statusClassMap: Record<string, string> = {
   draft: 'st-gray',
-  reported: 'st-red',
+  reported: 'st-amber',
   pending_accept: 'st-orange',
   processing: 'st-blue',
-  completed: 'st-green',
+  completed: 'st-teal',
   cancelled: 'st-gray',
   rejected: 'st-red'
 }
@@ -42,21 +42,28 @@ function statusView(row: OrderListItem) {
       </div>
       <div class="oc-mid">
         <span class="status-pill" :class="statusView(row).cls">{{ statusView(row).text }}</span>
-        <span class="oc-cat">
+        <span
+          class="oc-cat"
+          :title="(row.category_name || '') + (row.property_name ? ' · ' + row.property_name : '')"
+        >
           <span v-if="row.category_name">{{ row.category_name }}</span>
           <span v-if="row.property_name"> · {{ row.property_name }}</span>
         </span>
       </div>
+      <!-- 报修人 | 地点 合并一行，过长整体截断 -->
       <div class="oc-meta">
-        <span class="oc-customer" :title="row.reporter.nickname">
-          <el-icon class="oc-ico"><User /></el-icon>{{ row.reporter.nickname }}
-        </span>
-        <span class="oc-loc" :title="row.room">
-          <el-icon class="oc-ico"><Location /></el-icon>{{ row.room || '未填地点' }}
-        </span>
-        <span class="oc-ent" :title="row.enterprise_name">
-          <el-icon class="oc-ico"><OfficeBuilding /></el-icon>{{ row.enterprise_name }}
-        </span>
+        <div class="oc-line">
+          <el-icon class="oc-ico"><User /></el-icon>
+          <span class="oc-val" :title="row.reporter.nickname">{{ row.reporter.nickname }}</span>
+          <span class="oc-sep">|</span>
+          <el-icon class="oc-ico"><Location /></el-icon>
+          <span class="oc-val oc-val--flex" :title="row.room">{{ row.room || '未填地点' }}</span>
+        </div>
+        <!-- 企业单独一行 -->
+        <div class="oc-line">
+          <el-icon class="oc-ico"><OfficeBuilding /></el-icon>
+          <span class="oc-val oc-val--flex" :title="row.enterprise_name">{{ row.enterprise_name }}</span>
+        </div>
       </div>
       <div class="oc-time">{{ formatDateTime(row.submitted_at) }}</div>
     </div>
@@ -69,17 +76,17 @@ function statusView(row: OrderListItem) {
   display: flex;
   align-items: stretch;
   gap: 12px;
-  border: 1px solid #ebeef5;
+  border: 1px solid var(--xn-border);
   border-radius: 10px;
   padding: 12px 14px;
-  background: #fff;
+  background: var(--xn-surface);
   cursor: pointer;
   transition: box-shadow 0.2s, border-color 0.2s;
 }
 
 .order-card-c:hover {
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
-  border-color: #c6e2ff;
+  box-shadow: 0 4px 16px rgba(17, 24, 39, 0.08);
+  border-color: var(--xn-primary-light, #b7e0d9);
 }
 
 /* 缩略图 */
@@ -89,7 +96,7 @@ function statusView(row: OrderListItem) {
   flex-shrink: 0;
   border-radius: 8px;
   overflow: hidden;
-  background: #f5f7fa;
+  background: var(--xn-tag-bg);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -104,7 +111,7 @@ function statusView(row: OrderListItem) {
 
 .oc-thumb-ph {
   font-size: 24px;
-  color: #c0c4cc;
+  color: var(--xn-text-400);
 }
 
 .oc-body {
@@ -122,22 +129,21 @@ function statusView(row: OrderListItem) {
 }
 
 .oc-desc {
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 700;
-  color: #303133;
+  color: var(--xn-text-900);
   line-height: 1.4;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-  -webkit-box-orient: vertical;
+  white-space: nowrap;
   overflow: hidden;
+  text-overflow: ellipsis;
   flex: 1;
+  min-width: 0;
 }
 
 .oc-amount {
   font-size: 18px;
   font-weight: 800;
-  color: #f56c6c;
+  color: var(--xn-primary);
   white-space: nowrap;
   flex-shrink: 0;
 }
@@ -145,14 +151,18 @@ function statusView(row: OrderListItem) {
 .oc-mid {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
   gap: 8px;
-  margin-top: 10px;
+  margin-top: 8px;
+  min-width: 0;
 }
 
 .oc-cat {
   font-size: 12px;
-  color: #606266;
+  color: var(--xn-text-500);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
 /* 状态放大胶囊 */
@@ -170,67 +180,82 @@ function statusView(row: OrderListItem) {
 }
 
 .st-red {
-  background: #f56c6c;
+  background: var(--st-red);
+}
+
+.st-amber {
+  background: var(--st-amber);
 }
 
 .st-orange {
-  background: #e6a23c;
+  background: var(--st-orange);
 }
 
 .st-blue {
-  background: #409eff;
+  background: var(--st-blue);
 }
 
-.st-green {
-  background: #67c23a;
+.st-teal {
+  background: var(--st-teal);
 }
 
 .st-gray {
-  background: #909399;
+  background: var(--st-gray);
 }
 
 .st-pending-sign {
-  background: linear-gradient(90deg, #ff8c1a, #ff6a00);
-  box-shadow: 0 1px 4px rgba(255, 106, 0, 0.45);
+  background: linear-gradient(90deg, #f59e0b, #ea580c);
+  box-shadow: 0 1px 4px rgba(234, 88, 12, 0.35);
   letter-spacing: 1px;
 }
 
-/* 图标化元信息：报修人 / 地点 / 企业，图标与文字严格垂直居中 */
+/* 图标化元信息：报修人|地点 一行、企业单独一行，过长整体截断 */
 .oc-meta {
   display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 4px 14px;
-  margin-top: 10px;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
   font-size: 13px;
-  color: #606266;
+  color: var(--xn-text-500);
 }
 
-.oc-customer,
-.oc-loc,
-.oc-ent {
-  display: inline-flex;
+.oc-line {
+  display: flex;
   align-items: center;
-  gap: 4px;
-  line-height: 1;
-  color: #606266;
+  gap: 6px;
+  min-width: 0;
+  line-height: 1.2;
+}
+
+.oc-val {
+  color: var(--xn-text-500);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 100%;
+  min-width: 0;
+}
+
+/* 地点 / 企业占据剩余宽度，超出即截断 */
+.oc-val--flex {
+  flex: 1;
+}
+
+.oc-sep {
+  color: var(--xn-text-400);
+  flex-shrink: 0;
 }
 
 .oc-ico {
   font-size: 14px;
-  color: #909399;
+  color: var(--xn-text-400);
   flex-shrink: 0;
   align-self: center;
-  vertical-align: middle;
 }
 
 .oc-time {
-  margin-top: 8px;
+  margin-top: auto;
+  padding-top: 8px;
   font-size: 12px;
-  color: #909399;
+  color: var(--xn-text-400);
 }
 </style>

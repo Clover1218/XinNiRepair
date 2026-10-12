@@ -221,6 +221,17 @@ export function uploadOrderImage(
   return uploadFile(`/orders/${orderId}/images`, filePath, true)
 }
 
+/**
+ * 故障图预上传（POST /orders/images，multipart/form-data）
+ * 不要求 order_id：图片尚未绑定工单（如新建单尚未落库）时调用，
+ * 后端写入「未绑定哨兵」的 temporary 记录，提交建单/保存草稿时再关联为 active。
+ */
+export function uploadOrderImageFree(
+  filePath: string
+): Promise<{ id: string; url: string; sort_order: number; file_size: number }> {
+  return uploadFile('/orders/images', filePath, true)
+}
+
 /** 头像上传（POST /upload/avatar，multipart/form-data）注册前公开，无需 token */
 export function uploadAvatar(filePath: string): Promise<{ url: string }> {
   return uploadFile('/upload/avatar', filePath, false)

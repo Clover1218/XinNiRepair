@@ -1,53 +1,44 @@
 <template>
   <view class="oc" @click="onClick">
-    <!-- 主体：左缩略图（images[0]） + 完整报修描述（≤3 行截断） -->
+    <!-- 缩略图（64px 对齐 Web；图片缺失用 image 图标占位） -->
+    <view class="oc-thumb">
+      <image v-if="firstImage" class="oc-thumb-img" :src="firstImage" mode="aspectFill"></image>
+      <wd-icon v-else name="image" size="48rpx" color="#9ca3af"></wd-icon>
+    </view>
+
     <view class="oc-body">
-      <image v-if="firstImage" class="oc-thumb" :src="firstImage" mode="aspectFill"></image>
-      <view class="oc-text">
-        <view class="oc-desc">{{ item.description || '（无描述）' }}</view>
+      <!-- 第一行：故障描述（单行截断） + 大字金额 -->
+      <view class="oc-top">
+        <view class="oc-desc">{{ item.description || '（无故障描述）' }}</view>
+        <view v-if="amountText" class="oc-amount">¥{{ amountText }}</view>
+      </view>
+
+      <!-- 第二行：状态胶囊 + 项目大类·属性 -->
+      <view class="oc-mid">
+        <text class="status-pill" :class="pill.cls">{{ pill.text }}</text>
+        <text class="oc-cat">{{ problemType || '未分类' }}</text>
+      </view>
+
+      <!-- 第三/四行：图标化元信息。企业 · 地点 一行；报修人 + 时间 一行 -->
+      <view class="oc-meta">
+        <view class="oc-line">
+          <wd-icon name="shop" size="26rpx" color="#9ca3af"></wd-icon>
+          <text class="oc-val oc-val-flex">{{ enterpriseName }}</text>
+          <text class="oc-sep">|</text>
+          <wd-icon name="location" size="26rpx" color="#9ca3af"></wd-icon>
+          <text class="oc-val oc-val-flex">{{ location || '未填地点' }}</text>
+        </view>
+        <view class="oc-line">
+          <wd-icon name="user" size="26rpx" color="#9ca3af"></wd-icon>
+          <text class="oc-val">{{ reporterName || '—' }}</text>
+          <text class="oc-time">{{ timeText }}</text>
+        </view>
       </view>
     </view>
 
-    <!-- 其他信息：问题类型 / 报修企业 / 报修地点 / 报修人 / 联系方式 -->
-    <view class="oc-info">
-      <view class="oc-info-row">
-        <text class="oc-info-label">问题类型：</text>
-        <text class="oc-info-value">{{ problemType || '—' }}</text>
-      </view>
-      <view class="oc-info-row">
-        <text class="oc-info-label">报修企业：</text>
-        <text class="oc-info-value">{{ enterpriseName }}</text>
-      </view>
-      <view class="oc-info-row">
-        <text class="oc-info-label">报修地点：</text>
-        <text class="oc-info-value">{{ location || '—' }}</text>
-      </view>
-      <view class="oc-info-row">
-        <text class="oc-info-label">报修人：</text>
-        <text class="oc-info-value">{{ reporterName || '—' }}</text>
-      </view>
-      <view class="oc-info-row">
-        <text class="oc-info-label">联系方式：</text>
-        <text class="oc-info-value">{{ contactPhone || '—' }}</text>
-      </view>
-    </view>
-
-    <!-- 额外信息位（如：退回提示 / 金额） -->
+    <!-- 额外信息位（如退回提示） -->
     <slot />
-
-    <!-- 底栏：当前状态（状态标签） + 提交时间（相对时间） -->
-    <view class="oc-foot">
-      <view class="oc-foot-side">
-        <text class="oc-foot-label">当前状态：</text>
-        <text class="oc-status-text" :style="{ color: statusColor(item.status) }">{{ statusText }}</text>
-      </view>
-      <view class="oc-foot-side">
-        <text class="oc-foot-label">提交时间：</text>
-        <text class="oc-foot-time">{{ timeText }}</text>
-      </view>
-    </view>
-
-    <!-- 操作位（如：我的工单草稿的 编辑/提交/取消/删除） -->
+    <!-- 操作位（如草稿的 编辑/提交/删除），调用方需自行 @click.stop 拦截冒泡 -->
     <slot name="actions" />
   </view>
 </template>
@@ -55,27 +46,26 @@
 <script lang="ts">
 import { defineComponent, type PropType } from 'vue'
 import type { AdminOrderListItem, OrderListItem } from '@/types'
-import { statusTagType, statusColor, statusLabel, relativeTime, splitContact } from '@/utils/format'
+import { statusPill, formatAmount, formatDateTime, splitContact } from '@/utils/format'
 
 /**
- * V1.3 统一工单卡片（审核工单 / 处理工单 / 我的工单 三处列表共用）
+ * 统一工单卡片（对齐 Web 端 components/OrderCardC.vue）
  *
- * ┌────────────────────────────────┐
- * │ ┌──────┐  报修描述（≤3行）      │
- * │ │ 缩略图│                       │
- * │ └──────┘                       │
- * │ 问题类型：设备类型-问题类型      │
- * │ 报修企业：xxx                   │
- * │ 报修地点：xxx                   │
- * │ 报修人：xxx                     │
- * │ 联系方式：xxx                   │
- * │ ────────────────────────────── │
- * │ 当前状态：[标签]  提交时间：x分钟前 │
- * └────────────────────────────────┘
+ * ┌────────────────────────────────────┐
+ * │ ┌─────┐  故障描述（单行截断）  ¥120 │
+ * │ │缩略图│                            │
+ * │ └─────┘  [处理中]  电脑 · 更换      │
+ * │          🏪 测试企业3 | 📍 高三13班  │
+ * │          👤 张三      2026-10-11 14:30 │
+ * └────────────────────────────────────┘
  *
- * 两个插槽：
- * - 默认插槽：卡片信息区之后、分隔线之前的额外信息（退回提示 / 金额）
- * - actions：底栏之下的操作按钮（注意自行加 @click.stop 拦截冒泡）
+ * 与旧版（5 行「标签：值」列表）的关键差异：
+ * 1. 元信息由 5 行压成 2 行，用图标 + 值，企业与地点合并一行、报修人与时间合并一行；
+ * 2. 状态由「纯文字染色」改为六色实心胶囊，并支持「待补签」渐变胶囊；
+ * 3. 金额独立成大字 hero（苍岭绿，非红色——红色在体系里专指「已退回」）；
+ * 4. 描述单行截断，保证网格内卡片等高、底边对齐。
+ *
+ * 首页、工单 tab（普通/管理列表）三处共用此组件，改一处全局生效。
  */
 export default defineComponent({
   name: 'OrderCard',
@@ -87,11 +77,12 @@ export default defineComponent({
   },
   emits: ['click'],
   computed: {
-    statusText(): string {
-      return this.item.status_label || statusLabel(this.item.status)
+    /** 状态胶囊：文案 + class（待补签优先） */
+    pill(): { text: string; cls: string } {
+      return statusPill(this.item as any)
     },
     timeText(): string {
-      return relativeTime(this.item.submitted_at || this.item.created_at)
+      return formatDateTime(this.item.submitted_at || this.item.created_at)
     },
     images(): string[] {
       return (this.item.images || []).map((img) => img.url).filter(Boolean)
@@ -102,25 +93,24 @@ export default defineComponent({
     location(): string {
       return this.item.room || ''
     },
-    /** 报修人：从 contact（"王五 12345678910"）分隔提取 */
+    /** 报修人：从 contact（"王五 12345678910"）分隔提取真实姓名 */
     reporterName(): string {
       return splitContact(this.item.contact).name
     },
-    /** 联系方式：从 contact 分隔提取（不脱敏） */
-    contactPhone(): string {
-      return splitContact(this.item.contact).phone
+    /** 金额（>0 才显示，对齐 Web） */
+    amountText(): string {
+      const v = (this.item as any).amount
+      return v && Number(v) > 0 ? formatAmount(v) : ''
     },
-    /** 问题类型：设备类型-问题类型 */
+    /** 问题类型：大类 · 属性 */
     problemType(): string {
-      return [this.item.category_name, this.item.property_name].filter(Boolean).join('-')
+      return [this.item.category_name, this.item.property_name].filter(Boolean).join(' · ')
     },
     enterpriseName(): string {
       return this.item.enterprise_name || '未指定单位'
     }
   },
   methods: {
-    statusTagType,
-    statusColor,
     onClick() {
       this.$emit('click', this.item)
     }
@@ -130,103 +120,156 @@ export default defineComponent({
 
 <style lang="scss" scoped>
 .oc {
-  background-color: #ffffff;
+  display: flex;
+  align-items: stretch;
+  padding: 24rpx 28rpx;
+  background: var(--xn-surface);
+  border: 2rpx solid var(--xn-border);
   border-radius: 20rpx;
-  padding: 28rpx;
-  margin-bottom: 20rpx;
-  box-shadow: 0 4rpx 16rpx rgba(0, 0, 0, 0.04);
+}
+
+/* 缩略图 64px */
+.oc-thumb {
+  width: 128rpx;
+  height: 128rpx;
+  flex-shrink: 0;
+  margin-right: 24rpx;
+  border-radius: 16rpx;
+  overflow: hidden;
+  background: var(--xn-tag-bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.oc-thumb-img {
+  width: 100%;
+  height: 100%;
+  display: block;
 }
 
 .oc-body {
-  display: flex;
-  align-items: flex-start;
-
-  .oc-thumb {
-    width: 160rpx;
-    height: 160rpx;
-    border-radius: 12rpx;
-    margin-right: 20rpx;
-    flex-shrink: 0;
-    background-color: #f5f6f8;
-  }
-
-  .oc-text {
-    flex: 1;
-    min-width: 0;
-  }
-
-  /* 完整报修描述，最多三行截断 */
-  .oc-desc {
-    font-size: 28rpx;
-    color: #333333;
-    line-height: 1.5;
-    display: -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 3;
-    overflow: hidden;
-  }
-}
-
-.oc-info {
-  margin-top: 20rpx;
-  font-size: 24rpx;
-  line-height: 1.7;
-}
-
-.oc-info-row {
-  display: flex;
-  align-items: baseline;
-}
-
-.oc-info-label {
-  flex-shrink: 0;
-  color: #999999;
-}
-
-.oc-info-value {
   flex: 1;
   min-width: 0;
-  color: #333333;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  display: flex;
+  flex-direction: column;
 }
 
-.oc-foot {
+.oc-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20rpx;
+}
+.oc-desc {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--xn-text-900);
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+.oc-amount {
+  font-size: 36rpx;
+  font-weight: 600;
+  color: var(--xn-primary);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.oc-mid {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  margin-top: 20rpx;
-  padding-top: 20rpx;
-  border-top: 1rpx solid #f2f3f5;
+  gap: 16rpx;
+  margin-top: 16rpx;
+  min-width: 0;
+}
+.oc-cat {
+  font-size: 24rpx;
+  color: var(--xn-text-500);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
 
-  .oc-foot-side {
-    display: flex;
-    align-items: center;
-    min-width: 0;
-  }
+/* 状态胶囊（与 Web 端 .status-pill 一致） */
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 6rpx 24rpx;
+  border-radius: 28rpx;
+  font-size: 26rpx;
+  font-weight: 600;
+  line-height: 1;
+  color: #fff;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.st-amber {
+  background: var(--st-amber);
+}
+.st-orange {
+  background: var(--st-orange);
+}
+.st-blue {
+  background: var(--st-blue);
+}
+.st-teal {
+  background: var(--st-teal);
+}
+.st-red {
+  background: var(--st-red);
+}
+.st-gray {
+  background: var(--st-gray);
+}
+.st-pending-sign {
+  background: linear-gradient(90deg, #f59e0b, #ea580c);
+  letter-spacing: 2rpx;
+}
 
-  .oc-foot-label {
-    flex-shrink: 0;
-    font-size: 24rpx;
-    color: #999999;
-  }
+/* 图标化元信息 */
+.oc-meta {
+  margin-top: 16rpx;
+  font-size: 26rpx;
+  color: var(--xn-text-500);
+}
+.oc-line {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  min-width: 0;
+  line-height: 1.2;
+}
+.oc-line + .oc-line {
+  margin-top: 12rpx;
+}
+.oc-val {
+  color: var(--xn-text-500);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+/* 地点 / 企业占据剩余宽度，超出即截断 */
+.oc-val-flex {
+  flex: 1;
+}
+.oc-sep {
+  color: var(--xn-text-400);
+  flex-shrink: 0;
+}
 
-  /* 状态：纯文字 + 颜色（不再使用胶囊标签） */
-  .oc-status-text {
-    font-size: 24rpx;
-    font-weight: 600;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-  }
-
-  .oc-foot-time {
-    font-size: 24rpx;
-    color: #666666;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-  }
+/* 时间与报修人同行，靠右对齐 */
+.oc-time {
+  margin-left: auto;
+  padding-left: 16rpx;
+  font-size: 24rpx;
+  color: var(--xn-text-400);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 </style>

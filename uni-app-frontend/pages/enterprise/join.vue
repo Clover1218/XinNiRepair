@@ -154,13 +154,13 @@ export default defineComponent({
 
   .scan-icon {
     font-size: 34rpx;
-    color: #4d80f0;
+    color: #0f766e;
     margin-right: 12rpx;
   }
 
   .scan-text {
     font-size: 30rpx;
-    color: #4d80f0;
+    color: #0f766e;
   }
 }
 

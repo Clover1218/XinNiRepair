@@ -14,9 +14,9 @@ import type { CategoryOption, ProblemOption, PropertyOption } from '@/types'
  * 因此企业下拉只能用 /orders/options 返回的「我加入并通过审核的单位」，
  * 不能用超管的企业全列表，否则提交会被 403。
  *
- * 图片时序是本项目最大的坑：上传接口写入的是 status=temporary，
- * 必须再 PUT 一次完整的 images 数组才会转成 active（列表/详情只展示 active）。
- * 所以流程固定为：建草稿 → 逐张传图 → PUT images 全量回写 → 提交。
+ * 图片时序：选图即传（即时上传，落 temporary），提交/保存时回传 image_ids，
+ * 由后端 updateOrder 做 diff 关联（新→active、移除→deleted）。新建单无 order_id 时
+ * 走 free 接口落「未绑定哨兵」temporary，建单后由 image_ids 关联激活。
  */
 
 const router = useRouter()
@@ -58,23 +58,24 @@ const problemOptions = computed<ProblemOption[]>(() => {
   return p?.problems ?? []
 })
 
-// ── 故障图片：先只进本地队列，等拿到 order_id 后再串行上传 ──
+// ── 故障图片：选图即传（即时上传，落 temporary），提交时回传 image_ids 由后端 diff 激活 ──
 const imageFiles = ref<UploadUserFile[]>([])
-/** uid → 图床 URL */
-const uploadedUrls = new Map<number, string>()
+/** uid → 已上传图片的 id 与 url（即时上传返回） */
+const uploadedMap = new Map<number, { id: string; url: string }>()
 
 const removeImageFile = (uid: number) => {
   const idx = imageFiles.value.findIndex(f => f.uid === uid)
   if (idx >= 0) imageFiles.value.splice(idx, 1)
-  uploadedUrls.delete(uid)
+  uploadedMap.delete(uid)
 }
 
 const handleImageExceed = () => {
   ElMessage.warning(`最多上传 ${MAX_IMAGES} 张故障图片`)
 }
 
-// auto-upload=false 时 before-upload 不会触发，因此校验放在 change 里
-const handleImageChange = (file: UploadFile) => {
+// 选图即传：校验通过后立即上传（无 order_id 走 free 接口落哨兵 temporary，有则绑定工单）。
+// 上传成功写入 uploadedMap[uid] = {id,url}；失败置 fail 便于重选。
+const handleImageChange = async (file: UploadFile) => {
   if (file.status !== 'ready') return
   const raw = file.raw
   if (!raw) return
@@ -86,11 +87,23 @@ const handleImageChange = (file: UploadFile) => {
   if (raw.size > 5 * 1024 * 1024) {
     ElMessage.error('单张图片不能超过 5MB')
     removeImageFile(file.uid)
+    return
+  }
+  try {
+    const endpoint = orderId.value
+      ? adminAPI.uploadOrderImage(orderId.value, raw)
+      : adminAPI.uploadOrderImageFree(raw)
+    const res = await endpoint
+    if (file.uid !== undefined) uploadedMap.set(file.uid, { id: res.data.id, url: res.data.url })
+    file.status = 'success'
+  } catch (e) {
+    file.status = 'fail'
+    ElMessage.error('图片上传失败，请重试')
   }
 }
 
 const handleImageRemove = (file: UploadUserFile) => {
-  if (file.uid !== undefined) uploadedUrls.delete(file.uid)
+  if (file.uid !== undefined) uploadedMap.delete(file.uid)
 }
 
 // ── 字典与默认值 ──
@@ -162,23 +175,9 @@ const buildPayload = () => ({
   contact: contactValue() || undefined
 })
 
-/** 串行上传本地队列中尚未上传的图片 */
-const flushImages = async (id: string) => {
-  const pending = imageFiles.value.filter(
-    f => f.uid !== undefined && !uploadedUrls.has(f.uid)
-  )
-  for (const f of pending) {
-    if (!f.raw) continue
-    if (f.uid === undefined) continue
-    const res = await adminAPI.uploadOrderImage(id, f.raw)
-    uploadedUrls.set(f.uid, res.data.url)
-    f.status = 'success'
-  }
-}
-
 /**
- * 落库：确保草稿存在 → 传图 → PUT images 全量回写。
- * 最后那次 PUT 不可省略：它把上传产生的 temporary 图片转成 active 并按数组顺序排 sort_order。
+ * 落库：确保草稿存在 → 传 image_ids 由后端 diff 激活（图片已在选图时即时上传为 temporary）。
+ * 新建单：首次 create 拿到 order_id 后，updateOrder(image_ids) 把哨兵 temporary 记录绑定并激活。
  */
 const persistOrder = async () => {
   if (!orderId.value) {
@@ -187,12 +186,10 @@ const persistOrder = async () => {
   } else {
     await adminAPI.updateOrder(orderId.value, buildPayload())
   }
-  const id = orderId.value
-  await flushImages(id)
-  const urls = imageFiles.value
-    .map(f => (f.uid !== undefined ? uploadedUrls.get(f.uid) : undefined))
-    .filter((u): u is string => !!u)
-  await adminAPI.updateOrder(id, { images: urls })
+  const ids = imageFiles.value
+    .map(f => (f.uid !== undefined ? uploadedMap.get(f.uid)?.id : undefined))
+    .filter((x): x is string => !!x)
+  await adminAPI.updateOrder(orderId.value, { image_ids: ids })
 }
 
 const handleSaveDraft = async () => {

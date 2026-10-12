@@ -3,7 +3,8 @@
     <!-- 工具栏 -->
     <view class="toolbar">
       <view class="toolbar-title">企业管理</view>
-      <wd-button size="small" type="primary" round @click="goCreate">+ 创建</wd-button>
+      <!-- 注：创建客户单位自 V1.5 起后端收紧为仅超级管理员（RequireSuperAdmin），
+           超管能力不在小程序移植范围内，故此处不提供「+ 创建」入口。 -->
     </view>
 
     <!-- 搜索 -->
@@ -118,9 +119,7 @@ export default defineComponent({
     onSearch() {
       this.loadList(true)
     },
-    goCreate() {
-      uni.navigateTo({ url: '/pages/admin/enterprise/create' })
-    },
+    /** 注：创建企业入口已移除 —— 后端 RequireSuperAdmin，超管能力不移植小程序 */
     goDetail(id: string) {
       uni.navigateTo({ url: `/pages/admin/enterprise/detail?id=${id}` })
     }
@@ -188,7 +187,7 @@ export default defineComponent({
         .stat-num {
           font-size: 36rpx;
           font-weight: 700;
-          color: #4d80f0;
+          color: #0f766e;
 
           &.warn {
             color: #fa5151;

@@ -44,12 +44,6 @@ const routes = [
         meta: { title: '工单处理', permissions: ['store', 'reviewer'] }
       },
       {
-        path: 'review',
-        name: 'ReviewIndex',
-        component: () => import('@/views/review/index.vue'),
-        meta: { title: '单位审核', permissions: ['reviewer'] }
-      },
-      {
         path: 'stats',
         name: 'Stats',
         component: () => import('@/views/stats/index.vue'),
