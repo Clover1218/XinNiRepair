@@ -1,5 +1,6 @@
 <template>
   <view class="page" v-if="order">
+    <scroll-view scroll-y class="body-scroll">
     <!-- 被退回提示（仅 status==='rejected' 才显示，避免重提后残留旧原因） -->
     <view v-if="order.status === 'rejected' && order.reject_reason" class="reject-bar">
       <text class="reject-title">退回原因：</text>
@@ -182,8 +183,9 @@
         <text class="timeline-collapse-btn" @click="timelineExpanded = false">收起</text>
       </view>
     </view>
+    </scroll-view>
 
-    <!-- ⑥ 操作区：编辑（草稿/退回）/ 取消（已上报/待接单） -->
+    <!-- ⑥ 操作区：固定底栏（详情区独立滚动，底栏不遮挡内容） -->
     <view v-if="showFooterActions" class="footer">
       <view v-if="order.status === 'draft' || order.status === 'rejected'" class="footer-btn footer-btn--primary">
         <wd-button type="primary" round block size="large" @click="goEdit">编辑</wd-button>
@@ -388,7 +390,17 @@ export default defineComponent({
 
 <style lang="scss" scoped>
 .page {
-  min-height: 100vh;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+/* 详情滚动区：占满底栏以上剩余空间，内容滚动不经过底栏 */
+.body-scroll {
+  flex: 1;
+  min-height: 0;
   padding: 20rpx 24rpx;
   box-sizing: border-box;
 }
@@ -779,8 +791,9 @@ export default defineComponent({
   line-height: 1.5;
 }
 
-/* ===== ⑥ 操作区（正常文档流，不再悬浮） ===== */
+/* ===== ⑥ 操作区（固定底栏：详情区独立滚动，底栏 flex-shrink:0 常驻底部） ===== */
 .footer {
+  flex-shrink: 0;
   display: flex;
   background-color: #ffffff;
   padding: 20rpx 24rpx calc(20rpx + env(safe-area-inset-bottom));

@@ -1,5 +1,6 @@
 <template>
   <view class="page" v-if="detail">
+    <scroll-view scroll-y class="body-scroll">
     <!-- 被退回提示（Web 同样要求 status==='rejected' 才显示，避免重新提交后残留旧原因） -->
     <view v-if="detail.status === 'rejected' && detail.reject_reason" class="reject-bar">
       <text class="reject-title">退回原因：</text>
@@ -217,8 +218,9 @@
         <text class="timeline-collapse-btn" @click="timelineExpanded = false">收起</text>
       </view>
     </view>
+    </scroll-view>
 
-    <!-- ⑥ 操作区：保留固定底栏（移动端更好用），但内部按 Web 三档排序 -->
+    <!-- ⑥ 操作区：固定底栏（详情区独立滚动，底栏不遮挡内容） -->
     <view v-if="actionButtons.length > 0" class="footer">
       <view class="footer-btn footer-btn--primary">
         <wd-button type="primary" round block size="large" @click="onAction(actionButtons[0])">
@@ -1267,7 +1269,17 @@ export default defineComponent({
 
 <style lang="scss" scoped>
 .page {
-  min-height: 100vh;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+/* 详情滚动区：占满底栏以上剩余空间，内容滚动不经过底栏 */
+.body-scroll {
+  flex: 1;
+  min-height: 0;
   padding: 20rpx 24rpx;
   box-sizing: border-box;
 }
@@ -1714,6 +1726,7 @@ export default defineComponent({
 }
 
 .footer {
+  flex-shrink: 0;
   display: flex;
   background-color: #ffffff;
   padding: 20rpx 24rpx calc(20rpx + env(safe-area-inset-bottom));

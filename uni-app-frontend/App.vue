@@ -70,9 +70,37 @@
 		-webkit-font-smoothing: antialiased;
 	}
 
-	/* 弹窗内 wd-textarea：微信原生 textarea 默认白底，强制与外层灰底统一，
-	   修复「内容区白、四周灰」的色差（覆盖 wot 组件内 .wd-textarea__inner 默认 transparent）。 */
+	/* ===== 弹窗内 wd-textarea 背景 + 字数块定位统一 =====
+	   wot 默认给 .wd-textarea__value / .wd-textarea__count 设白底($-textarea-bg)，
+	   而各弹窗给组件根节点 custom-style 设了灰底(#f5f6f8)，
+	   导致「外壳灰、内容区/字数块白」的色差。全部透明化，露出容器自身背景。 */
+	.wd-textarea__value,
+	.wd-textarea__count {
+		background: transparent !important;
+	}
+	/* 微信原生 textarea 强制透明（同层渲染下生效），避免默认白底色块 */
 	.wd-textarea__inner {
-		background-color: #f5f6f8 !important;
+		background-color: transparent !important;
+	}
+	/* 字数块(0/100)：wot 默认把它绝对定位于内部 value/suffix 包裹层底部，
+	   但 auto-height 的 textarea 由 JS 动态撑高，包裹层经常没跟着长到真实高度，
+	   于是「底部」实际落在文字中间/顶部。这里把计数块改锚定到
+	   输入框灰底容器(.wd-textarea 根)的右下角，确保永远在盒子真正底部。 */
+	.wd-textarea {
+		position: relative !important;
+	}
+	.wd-textarea__value,
+	.wd-textarea__suffix {
+		position: static !important;
+	}
+	.wd-textarea__count {
+		position: absolute !important;
+		right: 16rpx !important;
+		bottom: 12rpx !important;
+	}
+	/* wd-input 同理（当前页面暂未直接使用，防御性统一，供未来弹窗表单复用） */
+	.wd-input__value,
+	.wd-input__count {
+		background: transparent !important;
 	}
 </style>
