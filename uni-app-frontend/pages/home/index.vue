@@ -23,74 +23,122 @@
       </picker>
     </view>
 
-    <!-- 待办区块（按角色渲染） -->
-    <view v-for="s in sections" :key="s.key" class="sect">
-      <view class="sect-hd">
-        <view class="sect-hd-left">
-          <text class="sect-title">{{ s.title }}</text>
-          <text v-if="s.total > 0" class="sect-badge">{{ s.total }}</text>
-        </view>
-        <text class="sect-more" @click="goOrders(s)">详情 ›</text>
+    <!-- 上半：待办看板（按角色出卡，空卡不显示） -->
+    <view class="board">
+      <view class="board-hd">
+        <text class="board-title">待办</text>
+        <text v-if="unreadTotal > 0" class="board-unread">{{ unreadTotal }} 条未读</text>
       </view>
-      <view class="sect-hint">{{ s.hint }}</view>
 
-      <view v-if="s.loading && !s.list.length" class="sect-tip">加载中…</view>
+      <view v-if="loading && !cards.length" class="board-tip">加载中…</view>
+
       <template v-else>
-        <order-card v-for="o in s.list" :key="o.id" :item="o" @click="goDetail(o)" />
-        <view v-if="!s.list.length" class="sect-empty">暂无工单</view>
+        <view v-for="c in visibleCards" :key="c.key" class="bcard">
+          <!-- 卡头：点击进该状态的工单列表 -->
+          <view class="bcard-hd" @click="goCard(c)">
+            <text class="bcard-label">{{ c.label }}</text>
+            <text class="bcard-total">({{ c.total }})</text>
+            <text v-if="c.unread > 0" class="bcard-badge">{{ c.unread > 99 ? '99+' : c.unread }}</text>
+            <text class="bcard-more">›</text>
+          </view>
+
+          <!-- 卡体：最近几条工单，点击进入列表并自动打开详情（返回键落在列表页） -->
+          <view v-if="!c.orders.length" class="bcard-empty">暂无</view>
+          <view v-else class="bcard-list">
+            <view
+              v-for="o in c.orders"
+              :key="o.id"
+              class="orow"
+              @click="goDetail(c, o)"
+            >
+              <view class="orow-dot" :class="{ 'orow-dot-on': o.unread }"></view>
+              <text class="orow-tag" :class="tagCls(o.display_tag_type)">{{ o.display_tag }}</text>
+              <text class="orow-desc">{{ o.description || '（无故障描述）' }}</text>
+            </view>
+          </view>
+        </view>
+
+        <view v-if="!visibleCards.length" class="board-tip">当前没有与您相关的待办</view>
       </template>
     </view>
 
-    <!-- 普通报修用户（无管理待办）：快捷入口 -->
-    <block v-if="isLoggedIn && !sections.length">
-      <view class="quick">
-        <view class="quick-card" @click="goCreate">
-          <view class="quick-ico quick-ico-primary">
-            <text class="quick-ico-txt">报</text>
+    <!-- 下半：服务入口（常驻，不再受待办数量门控） -->
+    <view class="svc">
+      <view class="svc-title">服务</view>
+      <view class="entry-grid">
+        <view
+          v-for="e in serviceEntries"
+          :key="e.key"
+          class="entry-card"
+          @click="onEntry(e)"
+        >
+          <view class="entry-ico" :class="e.cls">
+            <text class="entry-ico-txt">{{ e.icon }}</text>
           </view>
-          <view class="quick-txt">
-            <text class="quick-title">设备出问题了？</text>
-            <text class="quick-sub">填写故障信息，师傅很快联系你</text>
-          </view>
-          <text class="quick-arrow">›</text>
-        </view>
-        <view class="quick-card" @click="goMyOrders">
-          <view class="quick-ico">
-            <text class="quick-ico-txt">单</text>
-          </view>
-          <view class="quick-txt">
-            <text class="quick-title">我的报修记录</text>
-            <text class="quick-sub">查看处理进度与结果</text>
-          </view>
-          <text class="quick-arrow">›</text>
+          <text class="entry-title">{{ e.title }}</text>
+          <text v-if="e.sub" class="entry-sub">{{ e.sub }}</text>
         </view>
       </view>
-      <view class="guest-note">您暂无待处理的工单任务</view>
-    </block>
+    </view>
   </view>
 </template>
 
 <script lang="ts">
 import { defineComponent } from 'vue'
 import { useUserStore } from '@/stores/user'
-import { useOrderStore } from '@/stores/order'
-import { adminAPI } from '@/api'
+import { dashboardAPI } from '@/api'
 import { isStoreStaff, isUnitReviewer, isSuperAdmin, reviewerEnterprises } from '@/utils/auth'
-import type { AdminOrderListItem } from '@/types'
+import { setTabBarSelected } from '@/utils/tabbar'
+import type { DashboardCard, DashboardOrder } from '@/types'
 
-/** 每区块预览条数 */
-const PREVIEW_SIZE = 5
+/**
+ * 卡片 key → 工单列表的 mode（与 pages/order/modes.ts 一致）
+ * - 待审核            → 审核员视角 review
+ * - 处理中 / 待接单    → 维修业务员视角 worker_task
+ * - 进行中 / 提醒      → 申报人视角 my_repair
+ */
+function cardMode(key: string): string {
+  if (key === 'pending_review') return 'review'
+  if (key === 'repairer_processing' || key === 'pending_accept') return 'worker_task'
+  return 'my_repair'
+}
 
-interface TodoSection {
+/**
+ * 卡片 key → 工单列表要选中的 Tab key。
+ * 进行中 / 提醒两张卡命中多个状态，统一落在「全部」Tab（其排序与看板完全一致）。
+ */
+function cardTag(key: string): string {
+  switch (key) {
+    case 'pending_review':
+      return 'pending_review'
+    case 'repairer_processing':
+      return 'processing'
+    case 'pending_accept':
+      return 'pending_accept'
+    default:
+      return '' // my_repair 的「全部」Tab
+  }
+}
+
+/**
+ * 卡内单条工单 → 目标 Tab key。
+ * 「提醒」卡混装已完工与已退回，按该工单自身状态落到对应 Tab（已完成 / 已退回）；
+ * 其余卡沿用卡片本身的 Tab。
+ */
+function orderTag(key: string, status: string): string {
+  if (key === 'notice') {
+    return status === 'completed' ? 'finished' : 'rejected'
+  }
+  return cardTag(key)
+}
+
+interface ServiceEntry {
   key: string
+  icon: string
   title: string
-  status: string
-  hint: string
-  /** 是否受所选单位限定（仅审核员的「待审核」区块） */
-  unitScoped: boolean
-  list: AdminOrderListItem[]
-  total: number
-  loading: boolean
+  sub: string
+  cls: string
+  action: () => void
 }
 
 export default defineComponent({
@@ -98,7 +146,9 @@ export default defineComponent({
   data() {
     return {
       isLoggedIn: false,
-      sections: [] as TodoSection[],
+      cards: [] as DashboardCard[],
+      unreadTotal: 0,
+      loading: false,
       /** 审核员当前选中的单位 */
       activeUnitId: '',
       /** init 防并发令牌：快速切换 tab / 双 onShow 时以最新一次为准 */
@@ -108,9 +158,6 @@ export default defineComponent({
   computed: {
     userStore() {
       return useUserStore()
-    },
-    orderStore() {
-      return useOrderStore()
     },
     displayName(): string {
       return this.userStore.userInfo?.nickname || '您好'
@@ -133,9 +180,10 @@ export default defineComponent({
     greetingSub(): string {
       const d = new Date()
       const date = `${d.getMonth() + 1}月${d.getDate()}日`
-      const total = this.sections.reduce((sum, s) => sum + s.total, 0)
       if (!this.isLoggedIn) return `${date} · 登录后查看您的待办`
-      return total > 0 ? `${date} · 您有 ${total} 项待办` : `${date} · 暂无待办`
+      return this.unreadTotal > 0
+        ? `${date} · 您有 ${this.unreadTotal} 项新进展`
+        : `${date} · 暂无新进展`
     },
     /** 本人担任审核员的单位 */
     unitList(): { enterprise_id: string; enterprise_name: string }[] {
@@ -150,10 +198,91 @@ export default defineComponent({
     },
     /** 仅多单位才显示切换条 */
     showUnitSwitch(): boolean {
-      return this.unitList.length > 1
+      return isUnitReviewer() && this.unitList.length > 1
     },
     activeUnitName(): string {
       return this.unitList[this.unitIndex]?.enterprise_name || '我的单位'
+    },
+    /** 空卡隐藏：后端已过滤一层，这里再兜一次底 */
+    visibleCards(): DashboardCard[] {
+      return this.cards.filter((c) => c.total > 0)
+    },
+    /** 下半部分服务入口（严格按角色互斥：审核员 / 业务员 / 普通用户） */
+    serviceEntries(): ServiceEntry[] {
+      if (isUnitReviewer()) {
+        return [
+          {
+            key: 'ent_manage',
+            icon: '企',
+            title: '企业管理',
+            sub: '成员与邀请码',
+            cls: 'reviewer',
+            action: () => this.goEnterpriseManage()
+          },
+          {
+            key: 'my_orders',
+            icon: '单',
+            title: '我的工单',
+            sub: '我报修的',
+            cls: 'plain',
+            action: () => this.goList('my_repair', '')
+          },
+          {
+            key: 'create',
+            icon: '报',
+            title: '报修',
+            sub: '提交新工单',
+            cls: 'primary',
+            action: () => this.goCreate()
+          },
+          {
+            key: 'review',
+            icon: '审',
+            title: '审核工单',
+            sub: '本单位待审核',
+            cls: 'reviewer',
+            action: () => this.goList('review', 'pending_review')
+          }
+        ]
+      }
+      if (isStoreStaff()) {
+        return [
+          {
+            key: 'hall',
+            icon: '接',
+            title: '接单大厅',
+            sub: '可接的工单',
+            cls: 'staff',
+            action: () => this.goList('worker_task', 'pending_accept')
+          },
+          {
+            key: 'my_repair_work',
+            icon: '修',
+            title: '我的维修',
+            sub: '我接的工单',
+            cls: 'staff',
+            action: () => this.goList('worker_task', 'mine')
+          }
+        ]
+      }
+      return [
+        {
+          key: 'my_orders',
+          icon: '单',
+          title: '我的工单',
+          sub: '查看处理进度与结果',
+          cls: 'plain',
+          action: () => this.goList('my_repair', '')
+        },
+        {
+          key: 'create',
+          icon: '报',
+          title: '报修',
+          sub: '提交新工单',
+          cls: 'primary',
+          action: () => this.goCreate()
+        }
+      ]
     }
   },
   methods: {
@@ -163,7 +292,7 @@ export default defineComponent({
         const ok = await this.userStore.ensureLoggedIn()
         if (!ok) {
           this.isLoggedIn = false
-          this.sections = []
+          this.cards = []
           return
         }
       }
@@ -178,118 +307,100 @@ export default defineComponent({
       if (!this.activeUnitId) {
         this.activeUnitId = this.unitList[0]?.enterprise_id || ''
       }
-      this.buildSections()
+      this.fetchDashboard()
     },
 
-    /**
-     * 按角色构建待办区块（移植自 Web 端 views/home/index.vue）：
-     * - 单位审核员：待审核（限定所选单位）
-     * - 店方：待接单 + 处理中
-     * - 兼任角色：取并集
-     */
-    /**
-     * 按角色构建待办区块（移植自 Web 端 views/home/index.vue）：
-     * - 单位审核员：待审核（限定所选单位）
-     * - 店方：待接单 + 处理中
-     * - 兼任角色：取并集
-     *
-     * 关键修复：复用上一轮已加载的 list，避免切回首页时整块清空再重拉导致的
-     * “加载不出来 / 一闪而过”；嵌套对象属性变更后重新赋值数组引用，确保重渲染。
-     */
-    async buildSections() {
-      const wanted: { key: string; title: string; status: string; hint: string; unitScoped: boolean }[] = []
-      if (isUnitReviewer()) {
-        wanted.push({
-          key: 'reported',
-          title: '待审核',
-          status: 'reported',
-          hint: '等待您确认后，转给维修业务员处理',
-          unitScoped: true
-        })
-      }
-      if (isStoreStaff()) {
-        wanted.push({
-          key: 'pending_accept',
-          title: '待接单',
-          status: 'pending_accept',
-          hint: '审核已通过，可以接单处理',
-          unitScoped: false
-        })
-        wanted.push({
-          key: 'processing',
-          title: '处理中',
-          status: 'processing',
-          hint: '已接单，等待完工结单',
-          unitScoped: false
-        })
-      }
-      // 复用已有区块的已加载数据，避免重建为空导致空白闪烁
-      const prevMap: Record<string, TodoSection> = {}
-      this.sections.forEach((s) => {
-        prevMap[s.key] = s
-      })
-      this.sections = wanted.map((w) => {
-        const old = prevMap[w.key]
-        return old
-          ? { ...w, list: old.list, total: old.total, loading: old.loading }
-          : { ...w, list: [], total: 0, loading: false }
-      })
-      // 拉取各区块数据，全部完成后按待办数降序排一次（并列保持角色原始顺序）
-      await Promise.all(this.sections.map((s) => this.fetchSection(s)))
-      this.sortSectionsOnce()
-    },
-
-    /** 待办区块按待办数降序排一次（稳定排序：并列保持原顺序） */
-    sortSectionsOnce() {
-      this.sections = [...this.sections].sort((a, b) => b.total - a.total)
-    },
-
-    async fetchSection(s: TodoSection) {
-      s.loading = true
+    async fetchDashboard() {
+      this.loading = true
       try {
-        const res = await adminAPI.getOrders({
-          page: 1,
-          page_size: PREVIEW_SIZE,
-          status: s.status,
-          sort_by: 'submitted_at',
-          sort_order: 'desc',
-          // 单位限定的区块带上所选单位，保证与全局视角一致
-          ...(s.unitScoped && this.activeUnitId ? { enterprise_id: this.activeUnitId } : {})
-        })
-        s.list = res.list || []
-        s.total = res.total || 0
+        // 审核员带上当前所选单位；其余角色后端忽略该参数
+        const params = isUnitReviewer() && this.activeUnitId ? { enterprise_id: this.activeUnitId } : undefined
+        const res = await dashboardAPI.get(params)
+        this.cards = res.cards || []
+        this.unreadTotal = res.unread_total || 0
       } catch (e) {
-        s.list = []
-        s.total = 0
+        this.cards = []
+        this.unreadTotal = 0
       } finally {
-        s.loading = false
-        // 重新赋值数组引用，确保嵌套对象属性变更触发重渲染
-        this.sections = [...this.sections]
+        this.loading = false
       }
     },
 
-    /** 切换单位：只刷新受单位限定的区块 */
+    /** 切换单位：按新单位重拉看板 */
     onUnitChange(e: { detail: { value: number } }) {
       this.activeUnitId = this.unitList[e.detail.value]?.enterprise_id || ''
-      this.sections.filter((s) => s.unitScoped).forEach((s) => this.fetchSection(s))
+      this.fetchDashboard()
     },
 
-    /** 「详情 ›」→ 工单 tab；企业/用户默认全部（工单页据此重置），状态=对应区块 */
-    goOrders(s: TodoSection) {
-      this.orderStore.setPendingJump(s.status, '')
-      uni.switchTab({ url: '/pages/order/list' })
+    /** 点击卡片标题 → 工单列表并选中对应 Tab */
+    goCard(c: DashboardCard) {
+      this.goList(cardMode(c.key), cardTag(c.key))
     },
 
-    goDetail(o: AdminOrderListItem) {
-      uni.navigateTo({ url: `/pages/admin/order/detail?id=${o.id}` })
+    /**
+     * 点击卡片内的工单 → 先进「已按该状态筛选好的列表页」，由列表页自动打开详情。
+     * 栈为 [首页 → 列表 → 详情]，返回键落在列表页而不是直接回首页。
+     */
+    goDetail(c: DashboardCard, o: DashboardOrder) {
+      this.goList(cardMode(c.key), orderTag(c.key, o.status), o.id)
+    },
+
+    /**
+     * 跳工单列表页。
+     * V1.7：工单列表不再是 tabBar 页，可用 navigateTo 直接带参；
+     * open 非空时列表页会就位后自动打开该工单详情。
+     */
+    goList(mode: string, tag: string, openId?: string) {
+      let url = `/pages/order/list?mode=${mode}`
+      if (tag) url += `&tag=${tag}`
+      if (openId) url += `&open=${openId}`
+      uni.navigateTo({ url })
+    },
+
+    /** 企业管理：单单位直达详情，多单位先选单位 */
+    goEnterpriseManage() {
+      const units = reviewerEnterprises()
+      if (units.length === 1) {
+        uni.navigateTo({ url: `/pages/admin/enterprise/detail?id=${units[0].enterprise_id}` })
+        return
+      }
+      if (units.length > 1) {
+        uni.showActionSheet({
+          itemList: units.map((u) => u.enterprise_name),
+          success: (res) => {
+            const target = units[res.tapIndex]
+            if (target) {
+              uni.navigateTo({ url: `/pages/admin/enterprise/detail?id=${target.enterprise_id}` })
+            }
+          }
+        })
+        return
+      }
+      uni.showToast({ title: '您还不是任何单位的审核员', icon: 'none' })
     },
 
     goCreate() {
       uni.navigateTo({ url: '/pages/order/edit' })
     },
 
-    goMyOrders() {
-      uni.switchTab({ url: '/pages/order/list' })
+    onEntry(e: ServiceEntry) {
+      e.action()
+    },
+
+    /** display_tag_type → 胶囊配色 */
+    tagCls(type: string): string {
+      switch (type) {
+        case 'warning':
+          return 'tag-warning'
+        case 'danger':
+          return 'tag-danger'
+        case 'success':
+          return 'tag-success'
+        case 'primary':
+          return 'tag-primary'
+        default:
+          return 'tag-info'
+      }
     },
 
     goLogin() {
@@ -297,6 +408,7 @@ export default defineComponent({
     }
   },
   onShow() {
+    setTabBarSelected(0)
     this.init()
   }
 })
@@ -373,46 +485,26 @@ export default defineComponent({
   color: var(--xn-primary);
 }
 
-/* 待办区块 */
-.sect {
+/* 待办看板 */
+.board {
   margin-bottom: 32rpx;
 }
-.sect-hd {
+.board-hd {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 0 4rpx;
+  padding: 0 4rpx 16rpx;
 }
-.sect-hd-left {
-  display: flex;
-  align-items: center;
-}
-.sect-title {
-  font-size: 32rpx;
-  font-weight: 600;
-  color: var(--xn-text-900);
-}
-.sect-badge {
-  margin-left: 12rpx;
-  min-width: 36rpx;
-  padding: 2rpx 12rpx;
-  border-radius: 18rpx;
-  background: var(--xn-primary);
-  color: #fff;
-  font-size: 22rpx;
-  text-align: center;
-}
-.sect-more {
+.board-title {
   font-size: 26rpx;
-  color: var(--xn-primary);
+  font-weight: 600;
+  color: var(--xn-text-700);
 }
-.sect-hint {
-  padding: 6rpx 4rpx 16rpx;
+.board-unread {
+  margin-left: auto;
   font-size: 24rpx;
-  color: var(--xn-text-400);
+  color: #dc2626;
 }
-.sect-tip,
-.sect-empty {
+.board-tip {
   padding: 40rpx 0;
   text-align: center;
   font-size: 26rpx;
@@ -421,61 +513,177 @@ export default defineComponent({
   border-radius: var(--xn-radius-card);
 }
 
-/* 普通用户快捷入口 */
-.quick-card {
-  display: flex;
-  align-items: center;
-  padding: 28rpx 24rpx;
-  margin-bottom: 20rpx;
+.bcard {
+  margin-bottom: 16rpx;
   background: var(--xn-surface);
-  border-radius: var(--xn-radius-card);
   border: 1rpx solid var(--xn-border);
+  border-radius: var(--xn-radius-card);
+  overflow: hidden;
 }
-.quick-ico {
-  width: 76rpx;
-  height: 76rpx;
-  border-radius: 18rpx;
-  background: var(--xn-tag-bg);
+.bcard-hd {
   display: flex;
   align-items: center;
-  justify-content: center;
-  margin-right: 24rpx;
+  padding: 20rpx 24rpx 16rpx;
+}
+.bcard-label {
+  font-size: 30rpx;
+  font-weight: 600;
+  color: var(--xn-text-900);
+}
+.bcard-total {
+  margin-left: 8rpx;
+  font-size: 26rpx;
+  color: var(--xn-text-500);
+}
+.bcard-badge {
+  margin-left: 12rpx;
+  min-width: 32rpx;
+  padding: 2rpx 12rpx;
+  border-radius: 18rpx;
+  background: #dc2626;
+  color: #fff;
+  font-size: 22rpx;
+  text-align: center;
+}
+.bcard-more {
+  margin-left: auto;
+  font-size: 30rpx;
+  color: var(--xn-text-400);
+}
+.bcard-empty {
+  padding: 0 24rpx 24rpx;
+  font-size: 24rpx;
+  color: var(--xn-text-400);
+}
+.bcard-list {
+  padding: 0 24rpx 12rpx;
+}
+.orow {
+  display: flex;
+  align-items: center;
+  padding: 16rpx 0;
+  border-top: 1rpx solid var(--xn-border);
+}
+.orow-dot {
+  width: 12rpx;
+  height: 12rpx;
+  border-radius: 50%;
+  margin-right: 12rpx;
   flex-shrink: 0;
 }
-.quick-ico-primary {
-  background: var(--xn-primary-soft);
+.orow-dot-on {
+  background: #dc2626;
 }
-.quick-ico-txt {
-  font-size: 32rpx;
+.orow-tag {
+  flex-shrink: 0;
+  padding: 2rpx 12rpx;
+  border-radius: 6rpx;
+  font-size: 22rpx;
+  background: var(--xn-tag-bg);
+  color: var(--xn-text-600);
+}
+.orow-desc {
+  flex: 1;
+  min-width: 0;
+  margin-left: 12rpx;
+  font-size: 26rpx;
+  color: var(--xn-text-800);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 状态胶囊配色（与卡片组件一致的四色语义） */
+.tag-warning {
+  background: #fff7ed;
+  color: #ea580c;
+}
+.tag-danger {
+  background: #fef2f2;
+  color: #dc2626;
+}
+.tag-success {
+  background: #e6fffb;
+  color: #0f766e;
+}
+.tag-primary {
+  background: #eff6ff;
+  color: #2563eb;
+}
+.tag-info {
+  background: var(--xn-tag-bg);
+  color: var(--xn-text-600);
+}
+
+/* 服务入口 */
+.svc {
+  margin-top: 8rpx;
+}
+.svc-title {
+  display: block;
+  padding: 0 4rpx 16rpx;
+  font-size: 26rpx;
   font-weight: 600;
   color: var(--xn-text-700);
 }
-.quick-ico-primary .quick-ico-txt {
+
+.entry-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16rpx;
+}
+.entry-card {
+  padding: 24rpx 20rpx;
+  background: var(--xn-surface);
+  border: 1rpx solid var(--xn-border);
+  border-radius: var(--xn-radius-card);
+}
+.entry-ico {
+  width: 56rpx;
+  height: 56rpx;
+  border-radius: 14rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 14rpx;
+}
+.entry-ico-txt {
+  font-size: 26rpx;
+  font-weight: 600;
+}
+.entry-ico.primary {
+  background: var(--xn-primary-soft);
+}
+.entry-ico.primary .entry-ico-txt {
   color: var(--xn-primary);
 }
-.quick-txt {
-  flex: 1;
-  min-width: 0;
+.entry-ico.staff {
+  background: #fff7ed;
 }
-.quick-title {
+.entry-ico.staff .entry-ico-txt {
+  color: #ea580c;
+}
+.entry-ico.reviewer {
+  background: #fffbeb;
+}
+.entry-ico.reviewer .entry-ico-txt {
+  color: #b45309;
+}
+.entry-ico.plain {
+  background: var(--xn-tag-bg);
+}
+.entry-ico.plain .entry-ico-txt {
+  color: var(--xn-text-700);
+}
+.entry-title {
   display: block;
-  font-size: 30rpx;
+  font-size: 28rpx;
   color: var(--xn-text-900);
 }
-.quick-sub {
+.entry-sub {
   display: block;
   margin-top: 6rpx;
-  font-size: 24rpx;
+  font-size: 22rpx;
   color: var(--xn-text-500);
-}
-.quick-arrow {
-  font-size: 34rpx;
-  color: var(--xn-text-400);
-}
-.guest-note {
-  padding: 24rpx 0;
-  text-align: center;
-  font-size: 24rpx;
-  color: var(--xn-text-400);
 }
 </style>

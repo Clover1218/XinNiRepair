@@ -4,10 +4,15 @@ import type { OrderDetail, OrderListItem, PageResult } from '@/types'
 
 /** 跨 tabBar 页面的跳转上下文 */
 export interface PendingJump {
-  /** 目标状态 Tab 值（如 reported / pending_accept / processing） */
+  /** 目标状态 Tab 值（如 reported / pending_accept / processing；my_repair 下为 display_tag 枚举键） */
   status: string
   /** 目标企业 ID（审核员单位视角；空串 = 全部负责单位） */
   enterprise: string
+  /**
+   * 入口指定的页面 mode（my_repair / review / worker_task）。
+   * 用于按角色多重身份时（如审核员同时是成员）精确进入对应视图，而非按角色兜底。
+   */
+  mode?: string
 }
 
 interface OrderState {
@@ -44,12 +49,13 @@ export const useOrderStore = defineStore('order', {
     },
 
     /**
-     * 记录待跳转的筛选上下文（首页待办区块「详情 ›」调用）。
-     * @param status 目标状态
+     * 记录待跳转的筛选上下文（首页待办区块「详情 ›」/ 快捷入口调用）。
+     * @param status 目标状态 / Tab 值
      * @param enterprise 目标企业，空串表示不限单位
+     * @param mode 入口指定的页面 mode（my_repair / review / worker_task）
      */
-    setPendingJump(status: string, enterprise = '') {
-      this.pending = { status, enterprise }
+    setPendingJump(status: string, enterprise = '', mode?: string) {
+      this.pending = { status, enterprise, mode }
     },
 
     /**

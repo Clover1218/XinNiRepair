@@ -175,6 +175,8 @@ const fetchDetail = async () => {
   try {
     const res = await adminAPI.getOrderDetail(orderId)
     detail.value = res.data
+    // 进详情页即视为已读：清除首页待办看板上该工单的未读红点（失败不阻塞展示）
+    adminAPI.markOrderRead(orderId).catch(() => {})
   } finally {
     loading.value = false
   }

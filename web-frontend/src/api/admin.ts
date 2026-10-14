@@ -4,6 +4,7 @@ import type {
   DictionaryCategoryTree,
   DictionaryProblem,
   DictionaryProperty,
+  DashboardResult,
   EnterpriseDetail,
   EnterpriseListItem,
   EnterpriseMineDetail,
@@ -91,6 +92,13 @@ export const adminAPI = {
   // 5.2 工单详情（管理后台）
   getOrderDetail: (orderId: string) =>
     client.get<OrderDetail>(`/admin/orders/${orderId}`),
+
+  // 首页待办看板（按状态聚合的 3-4 张卡 + 工单级未读；非时间流）
+  getDashboard: (params?: { enterprise_id?: string }) =>
+    client.get<DashboardResult>('/dashboard', { params }),
+
+  // 标记工单已读：进详情页时调用，写入「该用户 × 该工单」的已读时间，首页红点消失
+  markOrderRead: (orderId: string) => client.post(`/orders/${orderId}/read`),
 
   // 5.17 工单汇总统计（含今日概况；店方可全域/审核员限本单位）
   getOrderStats: (params: { enterprise_id?: string; start?: string; end?: string }) =>

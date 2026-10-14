@@ -1,115 +1,115 @@
 <script setup lang="ts">
+/**
+ * 首页 · 待办看板（按状态聚合，非时间流）
+ *
+ * 上半：3-4 张状态卡，每张给出该状态的工单总数、未读数与最近 1-2 条工单；
+ *       未读 = 存在他人产生的、晚于「我最后一次查看该工单」的动态。
+ * 下半：常驻服务入口（不再受待办数量门控）。
+ */
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import { adminAPI } from '@/api/admin'
-import type { OrderListItem } from '@/types'
-import OrderCardC from '@/components/OrderCardC.vue'
+import type { DashboardCard, DashboardOrder } from '@/types'
 
 const router = useRouter()
 const userStore = useUserStore()
 
-/** 每个区块预览条数 */
-const PREVIEW_SIZE = 5
-
-interface Section {
-  /** 与工单管理 Tab 的 value 一致，供「详情 →」直接带筛选跳转 */
+interface ServiceEntry {
   key: string
+  icon: string
   title: string
-  status: string
-  hint: string
-  /** 是否受"单位"限定（审核员的待审核只能看本单位） */
-  unitScoped: boolean
-  list: OrderListItem[]
-  total: number
-  loading: boolean
+  sub: string
+  cls: string
+  action: () => void
 }
 
-/** 按角色取区块并集：审核员看待审核；维修员看待接单 + 处理中 */
-const buildSections = (): Section[] => {
-  const list: Section[] = []
-  if (userStore.hasReviewerRole) {
-    list.push({
-      key: 'reported',
-      title: '待审核',
-      status: 'reported',
-      hint: '等待您确认后上报维修业务员',
-      unitScoped: true,
-      list: [],
-      total: 0,
-      loading: false
-    })
-  }
-  if (userStore.isStoreStaff) {
-    list.push({
-      key: 'pending_accept',
-      title: '待接单',
-      status: 'pending_accept',
-      hint: '审核已通过，可以接单',
-      unitScoped: false,
-      list: [],
-      total: 0,
-      loading: false
-    })
-    list.push({
-      key: 'processing',
-      title: '处理中',
-      status: 'processing',
-      hint: '已接单，等待完工结单',
-      unitScoped: false,
-      list: [],
-      total: 0,
-      loading: false
-    })
-  }
-  return list
-}
-
-const sections = ref<Section[]>(buildSections())
+const cards = ref<DashboardCard[]>([])
+const unreadTotal = ref(0)
+const loading = ref(false)
 
 // ── 审核员多单位：首页同样提供「切换单位」 ──
 const reviewerUnits = computed(() => userStore.reviewerEnterprises)
 const showUnitSwitch = computed(() => reviewerUnits.value.length > 1)
 const activeUnitId = ref(reviewerUnits.value[0]?.enterprise_id || '')
 
-const fetchSection = async (s: Section) => {
-  s.loading = true
+/**
+ * 卡片 key → 工单列表的 status 筛选值（V1.7 角色化卡片矩阵）
+ * 空串 = 不过滤（全部）：进行中 / 提醒 两张卡命中多状态，跳列表时统一落在「全部」
+ */
+const STATUS_OF_KEY: Record<string, string> = {
+  pending_review: 'reported',
+  repairer_processing: 'processing',
+  pending_accept: 'pending_accept',
+  in_progress: '',
+  notice: ''
+}
+
+const fetchDashboard = async () => {
+  loading.value = true
   try {
-    const res = await adminAPI.getOrders({
-      page: 1,
-      page_size: PREVIEW_SIZE,
-      status: s.status,
-      sort_by: 'submitted_at',
-      sort_order: 'desc',
-      // 审核员的「待审核」限定在所选单位
-      ...(s.unitScoped && activeUnitId.value ? { enterprise_id: activeUnitId.value } : {})
-    })
-    s.list = res.data.list
-    s.total = res.data.total
+    const params = userStore.hasReviewerRole && activeUnitId.value ? { enterprise_id: activeUnitId.value } : undefined
+    const res = await adminAPI.getDashboard(params)
+    // client 响应拦截器返回信封 { code, message, data }
+    const data = (res as unknown as { data: { cards: DashboardCard[]; unread_total: number } }).data
+    cards.value = data?.cards || []
+    unreadTotal.value = data?.unread_total || 0
+  } catch {
+    cards.value = []
+    unreadTotal.value = 0
   } finally {
-    s.loading = false
+    loading.value = false
   }
 }
 
-const fetchAll = () => {
-  sections.value.forEach(s => fetchSection(s))
-}
+const handleUnitChange = () => fetchDashboard()
 
-const handleUnitChange = () => {
-  sections.value.filter(s => s.unitScoped).forEach(s => fetchSection(s))
-}
-
-/** 「详情 →」直达工单管理并自动选中对应 Tab */
-const goOrders = (s: Section) => {
-  const query: Record<string, string> = { status: s.status }
-  // 单位限定的区块连单位一起带过去，保证两边看到的是同一批数据
-  if (s.unitScoped && activeUnitId.value) query.enterprise = activeUnitId.value
+/** 点击卡片标题 → 工单列表并自动选中对应状态 */
+const goOrders = (c: DashboardCard) => {
+  const query: Record<string, string> = { status: STATUS_OF_KEY[c.key] || '' }
+  if (activeUnitId.value) query.enterprise = activeUnitId.value
   router.push({ name: 'OrderList', query })
 }
 
-const goDetail = (row: OrderListItem) => {
+/** 点击卡片内的工单 → 直达详情，并标记已读 */
+const goDetail = async (row: DashboardOrder) => {
+  adminAPI.markOrderRead(row.id).catch(() => {})
   router.push(`/orders/${row.id}`)
 }
+
+const serviceEntries = computed<ServiceEntry[]>(() => {
+  const out: ServiceEntry[] = [
+    {
+      key: 'orders',
+      icon: '单',
+      title: '工单管理',
+      sub: '全部工单列表',
+      cls: 'plain',
+      action: () => router.push({ name: 'OrderList' })
+    }
+  ]
+  if (userStore.isStoreStaff || userStore.hasReviewerRole) {
+    out.push({
+      key: 'stats',
+      icon: '统',
+      title: '数据统计',
+      sub: '企业与业务员统计',
+      cls: 'primary',
+      action: () => router.push({ name: 'Stats' })
+    })
+  }
+  if (userStore.hasReviewerRole) {
+    out.push({
+      key: 'enterprise',
+      icon: '企',
+      title: '企业管理',
+      sub: '成员与邀请码',
+      cls: 'staff',
+      action: () => router.push({ name: 'EnterpriseList' })
+    })
+  }
+  return out
+})
 
 const nickname = computed(() => userStore.userInfo?.nickname || '管理员')
 
@@ -130,7 +130,10 @@ const greeting = computed(() => {
   return '晚上好'
 })
 
-onMounted(fetchAll)
+/** display_tag_type → 胶囊配色 */
+const tagCls = (type: string) => `tag-${type || 'info'}`
+
+onMounted(fetchDashboard)
 </script>
 
 <template>
@@ -139,13 +142,13 @@ onMounted(fetchAll)
       <div class="head-text">
         <div class="greeting">{{ greeting }}，{{ nickname }}</div>
         <div class="sub">
-          按您的角色展示待办工单；点区块右上角「详情 →」进入工单管理查看完整列表
+          <span v-if="unreadTotal > 0" class="unread">您有 {{ unreadTotal }} 项新进展</span>
+          <span v-else>按您的角色展示待办工单</span>
         </div>
       </div>
       <el-tag v-if="roleLabel" type="warning" size="small">{{ roleLabel }}</el-tag>
     </div>
 
-    <!-- 多单位时：出现「切换单位」信息提示 -->
     <div v-if="showUnitSwitch" class="unit-bar">
       <el-icon class="unit-icon"><Switch /></el-icon>
       <span class="unit-hint">您担任 {{ reviewerUnits.length }} 个单位的审核员，请切换单位查看待审核工单</span>
@@ -159,26 +162,39 @@ onMounted(fetchAll)
       </el-select>
     </div>
 
-    <div v-for="s in sections" :key="s.key" class="sec">
-      <div class="sec-head">
-        <span class="sec-title">{{ s.title }}</span>
-        <el-badge :value="s.total" :hidden="s.total === 0" class="sec-count" />
-        <span class="sec-hint">{{ s.hint }}</span>
-        <el-button link type="primary" class="sec-more" @click="goOrders(s)">详情 →</el-button>
+    <div v-loading="loading" class="board">
+      <div v-for="c in cards" :key="c.key" class="bcard">
+        <div class="bcard-head">
+          <span class="bcard-title">{{ c.label }}</span>
+          <span class="bcard-total">({{ c.total }})</span>
+          <el-badge v-if="c.unread > 0" :value="c.unread" class="bcard-badge" />
+          <el-button link type="primary" class="bcard-more" @click="goOrders(c)">详情 →</el-button>
+        </div>
+
+        <div v-if="!c.orders.length" class="bcard-empty">暂无</div>
+        <div v-else class="bcard-list">
+          <div v-for="o in c.orders" :key="o.id" class="orow" @click="goDetail(o)">
+            <span class="orow-dot" :class="{ 'orow-dot-on': o.unread }" />
+            <span class="orow-tag" :class="tagCls(o.display_tag_type)">{{ o.display_tag }}</span>
+            <span class="orow-desc">{{ o.description || '（无故障描述）' }}</span>
+            <span class="orow-ent">{{ o.enterprise_name }}</span>
+          </div>
+        </div>
       </div>
 
-      <div v-loading="s.loading" class="card-grid">
-        <OrderCardC
-          v-for="row in s.list"
-          :key="row.id"
-          :row="row"
-          @click="goDetail(row)"
-        />
-        <div v-if="!s.loading && !s.list.length" class="card-empty">暂无{{ s.title }}工单</div>
-      </div>
+      <el-empty v-if="!loading && !cards.length" description="当前没有与您相关的工单" />
     </div>
 
-    <el-empty v-if="!sections.length" description="您的账号暂无任何待办角色" />
+    <div class="svc">
+      <div class="svc-title">服务</div>
+      <div class="entry-grid">
+        <div v-for="e in serviceEntries" :key="e.key" class="entry-card" @click="e.action()">
+          <span class="entry-ico" :class="e.cls">{{ e.icon }}</span>
+          <span class="entry-title">{{ e.title }}</span>
+          <span class="entry-sub">{{ e.sub }}</span>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -207,7 +223,10 @@ onMounted(fetchAll)
   color: #909399;
 }
 
-/* 多单位审核员：「切换单位」信息提示条 */
+.unread {
+  color: #dc2626;
+}
+
 .unit-bar {
   display: flex;
   align-items: center;
@@ -234,48 +253,190 @@ onMounted(fetchAll)
   margin-left: auto;
 }
 
-.sec {
-  margin-bottom: 16px;
+/* 待办看板 */
+.board {
+  min-height: 80px;
 }
 
-.sec-head {
+.bcard {
+  margin-bottom: 16px;
+  border: 1px solid #ebeef5;
+  border-radius: 8px;
+  background-color: #fff;
+  overflow: hidden;
+}
+
+.bcard-head {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 12px;
+  padding: 14px 16px 12px;
 }
 
-.sec-title {
+.bcard-title {
   font-size: 15px;
   font-weight: 600;
   color: #303133;
 }
 
-.sec-count {
+.bcard-total {
+  font-size: 13px;
+  color: #909399;
+}
+
+.bcard-badge {
   margin-top: -2px;
 }
 
-.sec-hint {
+.bcard-more {
+  margin-left: auto;
+}
+
+.bcard-empty {
+  padding: 0 16px 16px;
+  font-size: 13px;
+  color: #c0c4cc;
+}
+
+.bcard-list {
+  padding: 0 16px 8px;
+}
+
+.orow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 0;
+  border-top: 1px solid #f2f6fc;
+  cursor: pointer;
+}
+
+.orow:hover {
+  background-color: #f5f7fa;
+}
+
+.orow-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.orow-dot-on {
+  background: #dc2626;
+}
+
+.orow-tag {
+  flex-shrink: 0;
+  padding: 1px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  background: #f1efe8;
+  color: #5f5e5a;
+}
+
+.orow-desc {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: #303133;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.orow-ent {
+  flex-shrink: 0;
   font-size: 12px;
   color: #909399;
 }
 
-.sec-more {
-  margin-left: auto;
+.tag-warning {
+  background: #fff7ed;
+  color: #ea580c;
+}
+.tag-danger {
+  background: #fef2f2;
+  color: #dc2626;
+}
+.tag-success {
+  background: #e6fffb;
+  color: #0f766e;
+}
+.tag-primary {
+  background: #eff6ff;
+  color: #2563eb;
+}
+.tag-info {
+  background: #f1efe8;
+  color: #5f5e5a;
 }
 
-/* 卡片网格（与工单管理「卡片视图 (C)」共用同一套 OrderCardC 组件，样式完全一致） */
-.card-grid {
+/* 服务入口 */
+.svc {
+  margin-top: 24px;
+}
+
+.svc-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #303133;
+  margin-bottom: 12px;
+}
+
+.entry-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 12px;
-  min-height: 40px;
 }
 
-.card-empty {
-  grid-column: 1 / -1;
-  text-align: center;
-  color: #c0c4cc;
-  padding: 40px 0;
+.entry-card {
+  display: flex;
+  flex-direction: column;
+  padding: 16px;
+  border: 1px solid #ebeef5;
+  border-radius: 8px;
+  background-color: #fff;
+  cursor: pointer;
+}
+
+.entry-card:hover {
+  border-color: #0f766e;
+}
+
+.entry-ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+.entry-ico.primary {
+  background: #e6fffb;
+  color: #0f766e;
+}
+.entry-ico.staff {
+  background: #fff7ed;
+  color: #ea580c;
+}
+.entry-ico.plain {
+  background: #f1efe8;
+  color: #5f5e5a;
+}
+
+.entry-title {
+  font-size: 14px;
+  color: #303133;
+}
+
+.entry-sub {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #909399;
 }
 </style>

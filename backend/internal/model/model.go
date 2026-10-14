@@ -456,6 +456,21 @@ func (OrderTimeline) TableName() string {
 // 系统设置 (system_settings, 超管可调参数)
 // ────────────────────────────────────────────
 
+// OrderRead 工单级已读时间戳（首页待办看板未读红点，迁移 018）
+//
+// 按 (工单 × 用户) 存：同一工单会被报修人 / 单位审核员 / 维修业务员分别查看，
+// 单列时间戳会被后来者覆盖，故独立建表而非加在 repair_orders 上。
+type OrderRead struct {
+	OrderID      string    `gorm:"primaryKey;type:uuid"`
+	UserID       string    `gorm:"primaryKey;type:uuid;index:idx_order_reads_user"`
+	LastViewedAt time.Time `gorm:"type:timestamptz;not null;default:now()"`
+}
+
+// TableName 指定表名（与 order_timeline 同样走单数）
+func (OrderRead) TableName() string {
+	return "order_reads"
+}
+
 // SystemSetting 系统设置键值对（超管维护，当前承载「完工后二次修改时限」等闸门阈值）
 type SystemSetting struct {
 	Key         string    `gorm:"primaryKey;type:varchar(50)"`

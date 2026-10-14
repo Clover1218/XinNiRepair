@@ -196,12 +196,12 @@ export default defineComponent({
       enterpriseId: '',
       ent: null as EnterpriseDetail | null,
       tabs: [
-        { label: '全部', value: '' },
+        { label: '全部', value: 'all' },
         { label: '已通过', value: 'approved' },
         { label: '待审核', value: 'pending' },
         { label: '已移除', value: 'removed' }
       ],
-      activeTab: '',
+      activeTab: 'all',
       statusParam: '',
       members: [] as MemberItem[],
       page: 1,
@@ -295,7 +295,8 @@ export default defineComponent({
     },
     onTabChange(e: { name: string }) {
       this.activeTab = e.name
-      this.statusParam = e.name
+      // 「全部」不传 status 过滤；其余直接用状态值
+      this.statusParam = e.name === 'all' ? '' : e.name
       this.loadMembers(true)
     },
     /** 企业改名（PUT /enterprises/:id，名称 2-50，不可重名 4522 已由后端 Toast） */

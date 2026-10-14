@@ -74,11 +74,18 @@
            本期均不移植小程序，故此处不提供对应入口。 -->
       <template v-if="showManageEntry">
         <view class="ent-title"><text>管理</text></view>
-        <view class="link-list">
-          <view class="link-item" @click="goEnterpriseManage">
-            <text>企业管理</text>
-            <text class="link-arrow">›</text>
+        <view
+          v-for="entry in manageEntries"
+          :key="entry.key"
+          class="entry-card"
+          @click="entry.action"
+        >
+          <view class="entry-icon" :class="entry.cls">{{ entry.icon }}</view>
+          <view class="entry-text">
+            <view class="entry-title">{{ entry.title }}</view>
+            <view class="entry-sub">{{ entry.sub }}</view>
           </view>
+          <text class="entry-arrow">›</text>
         </view>
       </template>
 
@@ -107,7 +114,10 @@ import { defineComponent } from 'vue'
 import { useUserStore } from '@/stores/user'
 import { useEnterpriseStore } from '@/stores/enterprise'
 import { maskPhone, roleLabel, memberStatusLabel } from '@/utils/format'
-import { isStoreStaff, reviewerEnterprises } from '@/utils/auth'
+import { isStoreStaff, reviewerEnterprises, serviceEntryVisibility } from '@/utils/auth'
+import { setTabBarSelected } from '@/utils/tabbar'
+import { useOrderStore } from '@/stores/order'
+import type { OrderMode } from '@/pages/order/modes'
 import type { EnterpriseBrief, PlatformRole } from '@/types'
 
 const ROLE_TEXT: Record<number, string> = {
@@ -121,6 +131,7 @@ export default defineComponent({
     return {
       userStore: useUserStore(),
       enterpriseStore: useEnterpriseStore(),
+      orderStore: useOrderStore(),
       maskPhone,
       roleLabel,
       memberStatusLabel
@@ -156,9 +167,63 @@ export default defineComponent({
     /** 是否有管理身份（店方或单位审核员） */
     showManageEntry(): boolean {
       return isStoreStaff() || reviewerEnterprises().length > 0
+    },
+    /** 管理枢纽入口（V1.3 服务主页可见性矩阵驱动）：按角色显示 我的工单/审核工单/处理工单/企业管理 */
+    manageEntries(): {
+      key: string
+      title: string
+      sub: string
+      icon: string
+      cls: 'reviewer' | 'staff'
+      action: () => void
+    }[] {
+      const vis = serviceEntryVisibility() as Record<string, boolean>
+      const all: {
+        key: string
+        title: string
+        sub: string
+        icon: string
+        cls: 'reviewer' | 'staff'
+        action: () => void
+      }[] = [
+        {
+          key: 'myOrders',
+          title: '我的工单',
+          sub: '我提交的报修记录',
+          icon: '📋',
+          cls: 'staff',
+          action: () => this.goOrderList('my_repair')
+        },
+        {
+          key: 'reviewOrders',
+          title: '审核工单',
+          sub: '待我审核的单位工单',
+          icon: '✅',
+          cls: 'reviewer',
+          action: () => this.goOrderList('review')
+        },
+        {
+          key: 'repairOrders',
+          title: '处理工单',
+          sub: '待我接单与处理',
+          icon: '🔧',
+          cls: 'staff',
+          action: () => this.goOrderList('worker_task')
+        },
+        {
+          key: 'enterprise',
+          title: '企业管理',
+          sub: '客户单位与成员管理',
+          icon: '🏢',
+          cls: 'reviewer',
+          action: () => this.goEnterpriseManage()
+        }
+      ]
+      return all.filter((e) => !!vis[e.key])
     }
   },
   onShow() {
+    setTabBarSelected(2)
     this.init()
   },
   methods: {
@@ -188,16 +253,12 @@ export default defineComponent({
       uni.navigateTo({ url: '/pages/enterprise/join' })
     },
     /**
-     * 企业管理入口（按角色分流）：
-     * - 店方 → 企业列表
-     * - 单位审核员 → 直达本单位详情；多单位时弹出选择器
+     * 企业管理入口：仅「企业管理员（单位审核员）」可见（矩阵已控制显隐）。
+     * - 单单位 → 直达本单位详情
+     * - 多单位 → 弹出选择器
      */
     goEnterpriseManage() {
       const units = reviewerEnterprises()
-      if (isStoreStaff()) {
-        uni.navigateTo({ url: '/pages/admin/enterprise/list' })
-        return
-      }
       if (units.length === 1) {
         uni.navigateTo({ url: `/pages/admin/enterprise/detail?id=${units[0].enterprise_id}` })
         return
@@ -212,7 +273,17 @@ export default defineComponent({
             }
           }
         })
+        return
       }
+      uni.showToast({ title: '暂无可管理的企业', icon: 'none' })
+    },
+    /**
+     * 进入工单列表并显式指定 mode（我的工单/审核工单/处理工单）。
+     * V1.7：order/list 已从 tabBar 移出，改为普通页面，可直接 navigateTo 带 mode 参数，
+     * 不再需要 orderStore 中转（旧的 switchTab + setPendingJump 方案随之废弃）。
+     */
+    goOrderList(mode: OrderMode) {
+      uni.navigateTo({ url: `/pages/order/list?mode=${mode}` })
     },
     /** V1.2：切换企业 = 纯本地上下文切换（approved 才可切换） */
     onSwitchEnterprise(ent: EnterpriseBrief) {

@@ -80,6 +80,13 @@
       "style": {
         "navigationBarTitleText": "工单处理"
       }
+    },
+    {
+      "path": "pages/stats/index",
+      "style": {
+        "navigationBarTitleText": "数据统计",
+        "enablePullDownRefresh": true
+      }
     }
   ],
   "tabBar": {
@@ -87,6 +94,7 @@
     "selectedColor": "#0f766e",
     "backgroundColor": "#ffffff",
     "borderStyle": "black",
+    "custom": true,
     "list": [
       {
         "pagePath": "pages/home/index",
@@ -95,10 +103,10 @@
         "selectedIconPath": "static/tabbar/home-active.png"
       },
       {
-        "pagePath": "pages/order/list",
-        "text": "工单",
-        "iconPath": "static/tabbar/order.png",
-        "selectedIconPath": "static/tabbar/order-active.png"
+        "pagePath": "pages/stats/index",
+        "text": "统计",
+        "iconPath": "static/tabbar/stats.png",
+        "selectedIconPath": "static/tabbar/stats-active.png"
       },
       {
         "pagePath": "pages/profile/index",

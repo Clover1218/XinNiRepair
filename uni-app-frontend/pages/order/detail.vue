@@ -185,12 +185,18 @@
     </view>
     </scroll-view>
 
-    <!-- ⑥ 操作区：固定底栏（详情区独立滚动，底栏不遮挡内容） -->
+    <!-- ⑥ 操作区：固定底栏，按钮完全由后端 available_actions 派生（不按前端 status 硬编码） -->
     <view v-if="showFooterActions" class="footer">
-      <view v-if="order.status === 'draft' || order.status === 'rejected'" class="footer-btn footer-btn--primary">
+      <view v-if="acts.includes('edit')" class="footer-btn footer-btn--primary">
         <wd-button type="primary" round block size="large" @click="goEdit">编辑</wd-button>
       </view>
-      <view v-else-if="order.status === 'reported' || order.status === 'pending_accept'" class="footer-btn">
+      <view v-if="acts.includes('submit')" class="footer-btn footer-btn--primary">
+        <wd-button type="primary" round block size="large" @click="submitOrder">提交</wd-button>
+      </view>
+      <view v-if="acts.includes('delete')" class="footer-btn">
+        <wd-button type="danger" plain round block size="large" @click="deleteOrder">删除</wd-button>
+      </view>
+      <view v-if="acts.includes('cancel')" class="footer-btn">
         <wd-button type="warning" plain round block size="large" @click="cancelOrder">取消工单</wd-button>
       </view>
     </view>
@@ -224,6 +230,7 @@
 <script lang="ts">
 import { defineComponent } from 'vue'
 import { http } from '@/utils/request'
+import { orderAPI, dashboardAPI } from '@/api'
 import { formatAmount, formatDateTime, statusLabel, statusPill, timeAxisActionLabel } from '@/utils/format'
 import type { OrderDetail, OrderImage } from '@/types'
 
@@ -285,10 +292,13 @@ export default defineComponent({
       if (u === 'urgent') return 'urg-high'
       return 'urg-normal'
     },
-    /** 底部操作区是否展示（草稿/退回→编辑；已上报/待接单→取消） */
+    /** 后端派生的可用操作（申报人端：edit/submit/delete/cancel；前端只渲染、不按 status 硬编） */
+    acts(): string[] {
+      return (this.order?.available_actions as string[]) || []
+    },
+    /** 底部操作区是否展示：有可用操作才显示 */
     showFooterActions(): boolean {
-      const s = this.order?.status
-      return s === 'draft' || s === 'rejected' || s === 'reported' || s === 'pending_accept'
+      return this.acts.length > 0
     }
   },
   data() {
@@ -320,6 +330,8 @@ export default defineComponent({
         if (!this.order) {
           uni.showToast({ title: '工单不存在', icon: 'none' })
         }
+        // 进详情页即视为已读：清除首页待办看板上该工单的小红点（失败不阻塞展示）
+        dashboardAPI.markRead(this.orderId).catch(() => {})
       } catch (e) {
         console.error('加载详情失败', e)
       }
@@ -359,6 +371,35 @@ export default defineComponent({
     goEdit() {
       uni.navigateTo({ url: `/pages/order/edit?id=${this.orderId}` })
     },
+    /** 提交上报（草稿 / 退回后重提） */
+    async submitOrder() {
+      try {
+        await orderAPI.submit(this.orderId)
+        uni.showToast({ title: '提交成功', icon: 'success' })
+        this.loadDetail()
+      } catch (e) {
+        /* 后端错误已 Toast */
+      }
+    },
+    /** 删除草稿 / 退回单（二次确认） */
+    deleteOrder() {
+      const that = this
+      uni.showModal({
+        title: '删除工单',
+        content: '确定删除该工单吗？删除后不可恢复',
+        confirmColor: '#dc2626',
+        success: async (res) => {
+          if (!res.confirm) return
+          try {
+            await orderAPI.remove(that.orderId)
+            uni.showToast({ title: '已删除', icon: 'success' })
+            setTimeout(() => uni.navigateBack(), 600)
+          } catch (e) {
+            console.error('删除失败', e)
+          }
+        }
+      })
+    },
     /** 取消工单：打开原因弹窗 */
     cancelOrder() {
       this.cancelReason = ''
@@ -374,7 +415,7 @@ export default defineComponent({
       if (this.cancelSubmitting) return
       this.cancelSubmitting = true
       try {
-        await http.post(`/orders/${this.orderId}/cancel`, { reason })
+        await orderAPI.cancel(this.orderId, { reason })
         uni.showToast({ title: '已取消', icon: 'success' })
         this.showCancelPopup = false
         this.loadDetail()

@@ -46,6 +46,23 @@ func (h *AdminHandler) ListOrders(c *gin.Context) {
 		response.FailError(c, err)
 		return
 	}
+	sigStatus := c.Query("signature_status")
+	finOutcome := c.Query("finish_outcome")
+	// V1.6：display_tag 枚举键优先于原始 status / signature_status / finish_outcome，
+	// 由 service.MapDisplayTagToQuery 翻译为底层条件（中英文解耦，SQL 只含英文字段值）。
+	if dt := c.Query("display_tag"); dt != "" {
+		f, merr := service.MapDisplayTagToQuery(dt)
+		if merr != nil {
+			h.logger.Warn("ListOrders Admin: invalid display_tag", zap.Error(merr))
+			response.FailError(c, merr)
+			return
+		}
+		if f != nil {
+			statuses = f.Statuses
+			sigStatus = f.SignatureStatus
+			finOutcome = f.FinishOutcome
+		}
+	}
 	dateFrom, err := parseTimeParam(c.Query("date_from"))
 	if err != nil {
 		h.logger.Warn("ListOrders Admin: invalid date_from", zap.Error(err))
@@ -59,6 +76,13 @@ func (h *AdminHandler) ListOrders(c *gin.Context) {
 		return
 	}
 
+	// V1.7：repairer_id=me 表示「只看我接的单」（小程序端「我的维修」Tab）。
+	// 只接受字面量 me 并替换为当前登录用户，不接受任意 UUID，避免越权查看他人工单。
+	repairerID := c.Query("repairer_id")
+	if strings.EqualFold(repairerID, "me") {
+		repairerID = c.GetString("user_id")
+	}
+
 	filter := repository.OrderAdminFilter{
 		Status:       statuses,
 		Urgency:      c.Query("urgency"),
@@ -69,11 +93,12 @@ func (h *AdminHandler) ListOrders(c *gin.Context) {
 		DateFrom:     dateFrom,
 		DateTo:       dateTo,
 		ReporterID:   c.Query("reporter_id"),
+		RepairerID:   repairerID,
 		SortBy:       c.Query("sort_by"),
 		SortOrder:    c.Query("sort_order"),
-		// V1.5 本质标签筛选
-		SignatureStatus: c.Query("signature_status"),
-		FinishOutcome:   c.Query("finish_outcome"),
+		// V1.5 本质标签筛选（V1.6 可由 display_tag 覆盖）
+		SignatureStatus: sigStatus,
+		FinishOutcome:   finOutcome,
 	}
 	result, err := h.orders.ListOrders(c.Request.Context(), opOf(c), filter, page, pageSize)
 	if err != nil {

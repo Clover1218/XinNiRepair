@@ -202,6 +202,48 @@ func ComputeDisplayTag(o *model.RepairOrder, receiptUploaded bool) (tag, tagType
 	}
 }
 
+// ────────────────────────────────────────────
+// display_tag 筛选枚举（V1.6 前端千人千面）：中英文解耦
+// ────────────────────────────────────────────
+
+// DisplayTagFilter 由 display_tag 枚举键翻译而来的底层查询条件。
+// 仅含英文状态值 / 英文子状态值，绝不直接拿中文或未知串拼 SQL。
+type DisplayTagFilter struct {
+	Statuses        []string // repair_orders.status IN (...)
+	SignatureStatus string   // 空表示不限制；否则 signature_status = ?
+	FinishOutcome   string   // 空表示不限制；否则 finish_outcome = ?
+}
+
+// displayTagFilterMap 枚举键 → 底层条件（与 ComputeDisplayTag 派生方向互逆）。
+// 覆盖「进行中 / 已取消」等聚合维度；中文展示文案由前端字典负责，本表只存英文键。
+var displayTagFilterMap = map[string]DisplayTagFilter{
+	"draft":              {Statuses: []string{string(model.OrderDraft)}},
+	"pending_review":     {Statuses: []string{string(model.OrderReported)}},
+	"pending_accept":     {Statuses: []string{string(model.OrderPendingAccept)}},
+	"in_progress":        {Statuses: []string{string(model.OrderReported), string(model.OrderPendingAccept), string(model.OrderProcessing)}},
+	"processing":         {Statuses: []string{string(model.OrderProcessing)}},
+	"pending_sign":       {Statuses: []string{string(model.OrderProcessing), string(model.OrderCompleted)}, SignatureStatus: string(model.SignaturePendingSign)},
+	"finished":           {Statuses: []string{string(model.OrderCompleted)}},
+	"ended":              {Statuses: []string{string(model.OrderCompleted), string(model.OrderCancelled)}},
+	"unrepairable":       {Statuses: []string{string(model.OrderCancelled)}, FinishOutcome: string(model.FinishOutcomeUnrepairable)},
+	"customer_cancelled": {Statuses: []string{string(model.OrderCancelled)}, FinishOutcome: string(model.FinishOutcomeCustomerCancelled)},
+	"closed":             {Statuses: []string{string(model.OrderCancelled)}},
+	"rejected":           {Statuses: []string{string(model.OrderRejected)}},
+}
+
+// MapDisplayTagToQuery 将前端传来的 display_tag 枚举键翻译为底层查询条件（Query Mapping）。
+// 非法键返回 ErrInvalidParam，绝不把中文或未知串带入 SQL。
+func MapDisplayTagToQuery(key string) (*DisplayTagFilter, error) {
+	if key == "" {
+		return nil, nil
+	}
+	f, ok := displayTagFilterMap[key]
+	if !ok {
+		return nil, apperrors.ErrInvalidParam.WithMessage("display_tag 取值非法")
+	}
+	return &f, nil
+}
+
 // OrderListItem 我的工单列表项 (4.6)
 type OrderListItem struct {
 	ID             string     `json:"id"`
@@ -666,9 +708,26 @@ func (s *OrderService) Delete(ctx context.Context, userID, orderID string) error
 
 // List 我的工单列表 (4.6)
 // status 支持逗号分隔的多状态筛选, 如 "reported,pending_accept,processing"
-func (s *OrderService) List(ctx context.Context, userID, enterpriseID, status string, page, pageSize int) (*OrderListResult, error) {
+// V1.7：sort 取值 ""（创建时间倒序）/ board（状态优先级 + 更新时间倒序，与首页看板一致）
+func (s *OrderService) List(ctx context.Context, userID, enterpriseID, status, displayTag, sort string, page, pageSize int) (*OrderListResult, error) {
+	if sort != "" && sort != repository.SortBoard {
+		return nil, apperrors.ErrInvalidParam.WithMessage("sort 取值: 空 或 board")
+	}
 	var statuses []string
-	if status != "" {
+	var sigStatus, finishOutcome string
+	if displayTag != "" {
+		// V1.6：前端传枚举键，服务端翻译为底层条件（中英文解耦，SQL 只含英文字段值）
+		f, err := MapDisplayTagToQuery(displayTag)
+		if err != nil {
+			return nil, err
+		}
+		if f != nil {
+			statuses = f.Statuses
+			sigStatus = f.SignatureStatus
+			finishOutcome = f.FinishOutcome
+		}
+	} else if status != "" {
+		// 旧参数兼容：原始 status 逗号串
 		for _, v := range strings.Split(status, ",") {
 			v = strings.TrimSpace(v)
 			if v == "" {
@@ -686,7 +745,7 @@ func (s *OrderService) List(ctx context.Context, userID, enterpriseID, status st
 		}
 	}
 
-	orders, total, err := s.orders.ListByReporter(ctx, userID, enterpriseID, statuses, (page-1)*pageSize, pageSize)
+	orders, total, err := s.orders.ListByReporter(ctx, userID, enterpriseID, statuses, sigStatus, finishOutcome, sort, (page-1)*pageSize, pageSize)
 	if err != nil {
 		return nil, s.dbErr("list orders failed", err)
 	}
@@ -1100,10 +1159,13 @@ func (s *OrderService) dbErr(msg string, err error) error {
 }
 
 // availableActions 按状态计算用户端可执行操作
+// availableActions 申报人端详情页可用操作（由后端统一派生，前端只渲染、不自行按 status 判断）。
+// edit=编辑草稿/退回单；submit=提交上报；delete=删除草稿/退回单（Delete 权限限定 draft/rejected）；
+// cancel=取消（已上报/待接单）。
 func availableActions(status string) []string {
 	switch model.OrderStatus(status) {
 	case model.OrderDraft, model.OrderRejected:
-		return []string{"submit", "cancel"}
+		return []string{"edit", "submit", "delete"}
 	case model.OrderReported, model.OrderPendingAccept:
 		return []string{"cancel"}
 	default:

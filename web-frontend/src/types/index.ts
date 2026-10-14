@@ -502,6 +502,51 @@ export interface OrderStatsMetrics {
   updated_at: string
 }
 
+/* ==================== 首页待办看板（GET /dashboard） ==================== */
+
+/** 看板卡片内的一条工单摘要 */
+export interface DashboardOrder {
+  id: string
+  order_no: string
+  description: string
+  enterprise_name: string
+  room: string
+  reporter_name: string
+  urgency: string
+  urgency_label: string
+  /** 后端派生的展示标签（如 待补签 / 处理中） */
+  display_tag: string
+  display_tag_type: string
+  /** 原始状态值（completed / rejected …）：「提醒」卡据此决定落到哪个列表筛选 */
+  status: string
+  updated_at: string
+  /** 有他人新动态且我尚未查看 → 显示小红点 */
+  unread: boolean
+}
+
+/** 一张状态卡（按状态聚合，非时间流） */
+export interface DashboardCard {
+  /** 稳定英文键（pending_review / pending_accept / processing / pending_sign / rejected …） */
+  key: string
+  /** 卡片标题（后端已按角色本地化） */
+  label: string
+  /** 跳工单列表时用的 display_tag 枚举键 */
+  tag: string
+  /** 该状态下可见工单总数 */
+  total: number
+  /** 其中未读工单数（卡片标题旁角标） */
+  unread: number
+  /** 最近 1-2 条工单 */
+  orders: DashboardOrder[]
+}
+
+/** 首页看板响应 */
+export interface DashboardResult {
+  cards: DashboardCard[]
+  unread_total: number
+  updated_at: string
+}
+
 /** 维修员区间汇总项（5.21） */
 export interface RepairerSummaryRow {
   repairer_id: string

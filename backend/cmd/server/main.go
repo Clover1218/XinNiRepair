@@ -144,7 +144,11 @@ func main() {
 	scopeSvc := service.NewRepairerScopeService(scopeRepo, orderRepo, authRepo, logger)
 	scopeH := handler.NewRepairerScopeHandler(scopeSvc, logger)
 
-	registerRoutes(engine, db, authH, entH, orderH, adminH, projectH, scopeH, settingsH, tokenSvc)
+	// 首页待办看板（按状态聚合 + 工单级未读）
+	dashSvc := service.NewDashboardService(orderRepo, accessSvc, logger)
+	dashH := handler.NewDashboardHandler(dashSvc, logger)
+
+	registerRoutes(engine, db, authH, entH, orderH, adminH, projectH, scopeH, settingsH, dashH, tokenSvc)
 
 	// ── 8. 启动 HTTP 服务 ──
 	srv := &http.Server{
@@ -178,7 +182,7 @@ func main() {
 }
 
 // registerRoutes 注册所有 API 路由
-func registerRoutes(r *gin.Engine, db *repository.DB, authH *handler.AuthHandler, entH *handler.EnterpriseHandler, orderH *handler.OrderHandler, adminH *handler.AdminHandler, projectH *handler.ProjectHandler, scopeH *handler.RepairerScopeHandler, settingsH *handler.SettingsHandler, tokenSvc *service.TokenService) {
+func registerRoutes(r *gin.Engine, db *repository.DB, authH *handler.AuthHandler, entH *handler.EnterpriseHandler, orderH *handler.OrderHandler, adminH *handler.AdminHandler, projectH *handler.ProjectHandler, scopeH *handler.RepairerScopeHandler, settingsH *handler.SettingsHandler, dashH *handler.DashboardHandler, tokenSvc *service.TokenService) {
 	// ── 健康检查 ──
 	r.GET("/health", func(c *gin.Context) {
 		ctx, canc := context.WithTimeout(c.Request.Context(), 2*time.Second)
@@ -248,9 +252,17 @@ func registerRoutes(r *gin.Engine, db *repository.DB, authH *handler.AuthHandler
 			orders.POST("/:order_id/submit", orderH.Submit)
 			orders.POST("/:order_id/cancel", orderH.Cancel)
 			orders.POST("/:order_id/images", orderH.UploadImage)
-			// 预上传（无 order_id）：图片尚未绑定工单时调用，记录写入未绑定哨兵，提交时再关联
-			orders.POST("/images", orderH.UploadImage)
-		}
+		// 预上传（无 order_id）：图片尚未绑定工单时调用，记录写入未绑定哨兵，提交时再关联
+		orders.POST("/images", orderH.UploadImage)
+		orders.POST("/:order_id/read", dashH.MarkRead) // 标记工单已读（清除首页未读红点）
+	}
+
+	// 首页待办看板（按状态聚合，非时间流；含工单级未读计数）
+	dash := v1.Group("")
+	dash.Use(middleware.JWTAuth(tokenSvc))
+	{
+		dash.GET("/dashboard", dashH.Dashboard)
+	}
 
 		// 管理后台接口 (第五章+第六章): 双层角色控制
 		admin := v1.Group("/admin")

@@ -16,15 +16,20 @@ import type {
   AdminOrderListResult,
   AvailableAction,
   CompleteOrderInput,
+  DashboardResult,
   EnterpriseDetail,
   LoginResult,
   MemberItem,
   OptionsResult,
   OrderDetail,
   OrderListItem,
+  OrderMetrics,
+  OrderStats,
   PageResult,
+  RepairerOverview,
   ReporterOption,
   SignOrderInput,
+  StatsWindowParams,
   UpdateFinanceInput,
   UploadResult,
   UserInfo
@@ -133,6 +138,52 @@ export const adminAPI = {
   /** 重新打开 completed → processing */
   reopenOrder: (orderId: string, data?: { remark?: string }) =>
     http.post<AdminOrderDetail>(`/admin/orders/${orderId}/reopen`, data)
+}
+
+/* ==================== 首页待办看板（按状态聚合 + 工单级未读） ==================== */
+
+export const dashboardAPI = {
+  /**
+   * 首页待办看板 GET /dashboard
+   * 返回按状态聚合的 3-4 张卡（数量 / 未读数 / 最近 1-2 条工单）。
+   * ⚠️ GET 传参务必先建空对象、仅值非空时赋键：uni.request 会把 undefined 序列化成
+   * 字面量 "undefined"，后端按 uuid 解析会 500。
+   */
+  get: (params?: { enterprise_id?: string }) => {
+    const q: Record<string, unknown> = {}
+    if (params?.enterprise_id) q.enterprise_id = params.enterprise_id
+    return http.get<DashboardResult>('/dashboard', q)
+  },
+
+  /** 标记工单已读 POST /orders/{id}/read（进详情页调用，首页红点随之消失） */
+  markRead: (orderId: string) => http.post<null>(`/orders/${orderId}/read`, {})
+}
+
+/* ==================== 统计（5.17 / 5.20 / 5.22） ==================== */
+
+function statsQuery(params?: StatsWindowParams): Record<string, unknown> {
+  const q: Record<string, unknown> = {}
+  if (params?.enterprise_id) q.enterprise_id = params.enterprise_id
+  if (params?.start) q.start = params.start
+  if (params?.end) q.end = params.end
+  return q
+}
+
+export const statsAPI = {
+  /** 区间运营指标 (5.20)：待审核存量 / 区间上报 / 审核通过 / 退回 */
+  metrics: (params?: StatsWindowParams) =>
+    http.get<OrderMetrics>('/admin/orders/stats/metrics', statsQuery(params)),
+
+  /** 工单汇总统计 (5.17)：状态分布 / 大类分布 / 报修人排行 */
+  summary: (params?: StatsWindowParams) =>
+    http.get<OrderStats>('/admin/orders/stats', statsQuery(params)),
+
+  /** 维修员个人汇总 (5.22)：可接单 / 累计接单 / 处理中 / 完工 / 今日接单 / 今日完工 */
+  repairerOverview: (params?: { enterprise_id?: string }) => {
+    const q: Record<string, unknown> = {}
+    if (params?.enterprise_id) q.enterprise_id = params.enterprise_id
+    return http.get<RepairerOverview>('/admin/orders/stats/repairer-overview', q)
+  }
 }
 
 /* ==================== 企业 / 成员 ==================== */

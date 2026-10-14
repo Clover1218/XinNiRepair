@@ -272,8 +272,10 @@ func (s *AdminOrderService) ListOrders(ctx context.Context, op Operator, f repos
 	if f.SortBy != "" {
 		switch f.SortBy {
 		case "order_no", "enterprise_name", "reporter", "category_name", "urgency", "status", "submitted_at", "created_at":
+		// V1.7：board = 状态优先级 + 更新时间（首页看板与列表「全部」Tab 共用）
+		case repository.SortBoard:
 		default:
-			return nil, apperrors.ErrInvalidParam.WithMessage("sort_by 取值: order_no/enterprise_name/reporter/category_name/urgency/status/submitted_at/created_at")
+			return nil, apperrors.ErrInvalidParam.WithMessage("sort_by 取值: order_no/enterprise_name/reporter/category_name/urgency/status/submitted_at/created_at/board")
 		}
 	}
 	if f.SortOrder != "" && !strings.EqualFold(f.SortOrder, "asc") && !strings.EqualFold(f.SortOrder, "desc") {

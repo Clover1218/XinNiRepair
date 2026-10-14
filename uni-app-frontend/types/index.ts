@@ -462,3 +462,92 @@ export interface OrderStats {
   updated_at: string
 }
 
+/** 区间运营指标响应（GET /admin/orders/stats/metrics，5.20） */
+export interface OrderMetrics {
+  /** 当前待审核存量（reported，不计时间） */
+  pending_review: number
+  /** 区间上报 */
+  submitted: number
+  /** 区间审核通过 */
+  audited: number
+  /** 区间退回 */
+  rejected: number
+  range: OrderStatsRange
+  updated_at: string
+}
+
+/** 维修员个人汇总响应（GET /admin/orders/stats/repairer-overview，5.22） */
+export interface RepairerOverview {
+  /** 可接单存量 */
+  pending_accept: number
+  /** 我的累计接单 */
+  my_accepted: number
+  /** 处理中 */
+  my_processing: number
+  /** 累计完工 */
+  my_completed: number
+  /** 今日接单 */
+  today_accepted: number
+  /** 今日完工 */
+  today_completed: number
+  updated_at: string
+}
+
+/** 统计类接口公共查询参数 */
+export interface StatsWindowParams {
+  /** 单位审核员必填（限本单位）；店方可空=全域 */
+  enterprise_id?: string
+  /** 起始时间 YYYY-MM-DD 或 YYYY-MM-DD HH:mm:ss */
+  start?: string
+  /** 结束时间（纯日期按整天含当天处理） */
+  end?: string
+}
+
+/* ==================== 首页待办看板（GET /dashboard） ==================== */
+
+/** 看板卡片内的一条工单摘要 */
+export interface DashboardOrder {
+  id: string
+  order_no: string
+  description: string
+  enterprise_name: string
+  room: string
+  reporter_name: string
+  urgency: string
+  urgency_label: string
+  /** 后端派生的展示标签（如 待补签 / 处理中） */
+  display_tag: string
+  display_tag_type: string
+  /** 原始状态值（completed / rejected …）：「提醒」卡据此决定落到哪个列表 Tab */
+  status: string
+  updated_at: string
+  /** 有他人新动态且我尚未查看 → 显示小红点 */
+  unread: boolean
+}
+
+/** 一张状态卡 */
+export interface DashboardCard {
+  /**
+   * 稳定英文键（V1.7 角色化矩阵）：
+   * pending_review / repairer_processing / pending_accept / in_progress / notice
+   */
+  key: string
+  /** 卡片标题（按角色已由后端本地化） */
+  label: string
+  /** 跳工单列表时用的 display_tag 枚举键（空串 = 全部） */
+  tag: string
+  /** 该卡命中的工单总数 */
+  total: number
+  /** 其中未读工单数（卡片标题旁角标；仅「提醒」卡启用） */
+  unread: number
+  /** 最近 N 条工单 */
+  orders: DashboardOrder[]
+}
+
+/** 首页看板响应 */
+export interface DashboardResult {
+  cards: DashboardCard[]
+  unread_total: number
+  updated_at: string
+}
+

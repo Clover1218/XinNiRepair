@@ -15,9 +15,14 @@ function platformRole(): PlatformRole {
   return (decodeToken(token)?.role as PlatformRole) ?? 0
 }
 
-/** 店方：维修业务员(role=1) 或 超级管理员(role=2) */
+/**
+ * 业务维修员（店方）：仅维修业务员(role=1)。
+ * ⚠️ 小程序端不把超级管理员(role=2)视为店方——超管专属能力（项目字典 / 用户管理 /
+ * 经营范围 / 系统设置等）不在小程序端实现，故超管在小程序端退化为「普通用户」能力。
+ * 后端 IsStoreStaff 仍含 role>=2（操作鉴权一致），此处仅为前端 UI 角色分流。
+ */
 export function isStoreStaff(): boolean {
-  return platformRole() >= 1
+  return platformRole() === 1
 }
 
 /** 超级管理员 */
@@ -69,20 +74,21 @@ export interface ServiceEntryVisibility {
 }
 
 /**
- * 服务主页入口可见性矩阵（V1.3）：
- * - 普通用户(0)：我的工单
- * - 单位审核员(0+reviewer)：我的工单 + 审核工单 + 企业管理
- * - 维修业务员(1)：处理工单 + 企业管理；兼任审核员时加审核工单；兼任单位成员时加我的工单
- * - 超级管理员(2)：全部
+ * 服务主页入口可见性矩阵（V1.3 / 权限重分）：
+ * - 普通用户(0)：我的工单（仅上报）
+ * - 企业管理员 = 单位审核员(0+reviewer)：我的工单 + 审核工单 + 企业管理
+ * - 业务维修员 = 维修业务员(1)：我的工单 + 处理工单
+ * - 超级管理员(2)：小程序端暂不做超管专属能力，仅保留「我的工单」（上报）兜底
+ * 注：企业管理仅对「企业管理员（单位审核员）」开放；业务维修员（店方）仅维修、不管理客户企业。
  */
 export function serviceEntryVisibility(): ServiceEntryVisibility {
   const role = platformRole()
   const reviewer = isUnitReviewer()
-  const member = memberEnterprises().length > 0
+  const repairer = role === 1 // 业务维修员（店方）
   return {
-    myOrders: role === 0 || role === 2 || (role === 1 && member),
-    reviewOrders: role === 2 || reviewer,
-    repairOrders: role >= 1,
-    enterprise: role >= 1 || reviewer
+    myOrders: true, // 所有角色均可上报自己的工单
+    reviewOrders: reviewer, // 企业管理员
+    repairOrders: repairer, // 业务维修员
+    enterprise: reviewer // 企业管理员（单位审核员）
   }
 }

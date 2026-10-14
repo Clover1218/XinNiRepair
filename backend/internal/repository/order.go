@@ -63,8 +63,27 @@ func (r *OrderRepository) CountDraftsByUser(ctx context.Context, userID string) 
 	return count, err
 }
 
+// boardOrderSQL 首页看板 / 列表「全部」Tab 的统一排序（V1.7）：
+//
+//	处理中 → 处理中(待补签) → 待接单 → 待审核 → 其它，同档内按更新时间倒序。
+//
+// 角色无差异：全端共用一条规则，保证「首页看板」与「工单列表」顺序完全一致。
+// 状态优先级用 CASE 表达（不新增列）；SQL 中的字面量全部取自 model 常量，避免硬编码漂移。
+var boardOrderSQL = `(CASE
+	WHEN repair_orders.status = '` + string(model.OrderProcessing) + `' AND COALESCE(repair_orders.signature_status, '') <> '` + model.SignaturePendingSign + `' THEN 0
+	WHEN repair_orders.status = '` + string(model.OrderProcessing) + `' THEN 1
+	WHEN repair_orders.status = '` + string(model.OrderPendingAccept) + `' THEN 2
+	WHEN repair_orders.status = '` + string(model.OrderReported) + `' THEN 3
+	ELSE 4
+END) ASC, repair_orders.updated_at DESC`
+
+// SortBoard 看板排序标识（用户端 sort / 管理端 sort_by 取值）
+const SortBoard = "board"
+
 // ListByReporter 分页查询用户自己的工单, 支持企业与多状态筛选
-func (r *OrderRepository) ListByReporter(ctx context.Context, reporterID, enterpriseID string, statuses []string, offset, limit int) ([]model.RepairOrder, int64, error) {
+// V1.6：新增 signatureStatus / finishOutcome 子状态筛选（配合 display_tag 枚举反向映射）
+// V1.7：新增 sort（""=按创建时间倒序；board=状态优先级 + 更新时间倒序）
+func (r *OrderRepository) ListByReporter(ctx context.Context, reporterID, enterpriseID string, statuses []string, signatureStatus, finishOutcome, sort string, offset, limit int) ([]model.RepairOrder, int64, error) {
 	base := r.db.WithContext(ctx).Model(&model.RepairOrder{}).
 		Where("reporter_id = ?", reporterID)
 	if enterpriseID != "" {
@@ -73,15 +92,26 @@ func (r *OrderRepository) ListByReporter(ctx context.Context, reporterID, enterp
 	if len(statuses) > 0 {
 		base = base.Where("status IN ?", statuses)
 	}
+	if signatureStatus != "" {
+		base = base.Where("signature_status = ?", signatureStatus)
+	}
+	if finishOutcome != "" {
+		base = base.Where("finish_outcome = ?", finishOutcome)
+	}
 
 	var total int64
 	if err := base.Session(&gorm.Session{}).Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
 
+	orderSQL := "repair_orders.created_at DESC"
+	if sort == SortBoard {
+		orderSQL = boardOrderSQL
+	}
+
 	var orders []model.RepairOrder
 	err := base.Preload("Enterprise").
-		Order("created_at DESC").
+		Order(orderSQL).
 		Offset(offset).
 		Limit(limit).
 		Find(&orders).Error
@@ -194,22 +224,29 @@ func (r *OrderRepository) ListForAdmin(ctx context.Context, f OrderAdminFilter, 
 		return nil, 0, err
 	}
 
-	sortField, sErr := adminOrderSortField(f.SortBy)
-	if sErr != nil {
-		return nil, 0, sErr
-	}
-	if strings.HasPrefix(sortField, "enterprises.") {
-		base = base.Joins("JOIN enterprises ON enterprises.id = repair_orders.enterprise_id")
-	}
-	dir := "DESC"
-	if strings.EqualFold(f.SortOrder, "asc") {
-		dir = "ASC"
+	// V1.7：board 为复合排序（状态优先级 ASC + 更新时间 DESC），不能套用单一 dir，单独处理
+	orderSQL := ""
+	if f.SortBy == SortBoard {
+		orderSQL = boardOrderSQL
+	} else {
+		sortField, sErr := adminOrderSortField(f.SortBy)
+		if sErr != nil {
+			return nil, 0, sErr
+		}
+		if strings.HasPrefix(sortField, "enterprises.") {
+			base = base.Joins("JOIN enterprises ON enterprises.id = repair_orders.enterprise_id")
+		}
+		dir := "DESC"
+		if strings.EqualFold(f.SortOrder, "asc") {
+			dir = "ASC"
+		}
+		orderSQL = sortField + " " + dir
 	}
 
 	var orders []model.RepairOrder
 	err := base.Preload("Reporter").
 		Preload("Enterprise").
-		Order(sortField + " " + dir).
+		Order(orderSQL).
 		Offset(offset).
 		Limit(limit).
 		Find(&orders).Error

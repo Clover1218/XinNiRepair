@@ -592,7 +592,7 @@
 <script lang="ts">
 import { defineComponent } from 'vue'
 import { http, uploadReceipt } from '@/utils/request'
-import { adminAPI } from '@/api'
+import { adminAPI, dashboardAPI } from '@/api'
 import { isStoreStaff } from '@/utils/auth'
 import {
   formatAmount,
@@ -775,6 +775,8 @@ export default defineComponent({
     async loadDetail() {
       try {
         this.detail = await http.get<AdminOrderDetail>(`/admin/orders/${this.orderId}`)
+        // 进详情页即视为已读：清除首页待办看板上该工单的小红点（失败不阻塞展示）
+        dashboardAPI.markRead(this.orderId).catch(() => {})
       } catch (e) {
         console.error('加载工单详情失败', e)
       }

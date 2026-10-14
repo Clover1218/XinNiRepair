@@ -71,6 +71,8 @@ func (h *OrderHandler) List(c *gin.Context) {
 		c.GetString("user_id"),
 		c.Query("enterprise_id"),
 		c.Query("status"),
+		c.Query("display_tag"),
+		c.Query("sort"),
 		page,
 		pageSize,
 	)

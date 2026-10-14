@@ -16,22 +16,22 @@
             <text>筛选</text>
             <text v-if="activeFilterCount > 0" class="tb-filter-badge">{{ activeFilterCount }}</text>
           </view>
-          <wd-button size="small" type="primary" round @click="createOrder">+ 新建</wd-button>
+          <wd-button v-if="modeConfig.showCreate" size="small" type="primary" round @click="createOrder">+ 新建</wd-button>
         </view>
       </view>
 
-      <!-- ============ 管理模式（店方 / 单位审核员）：状态 Tab + 角标 ============ -->
+      <!-- ============ 管理模式（店方 / 单位审核员）：配置化 Tab + 角标 ============ -->
       <scroll-view v-if="manageMode" class="seg" scroll-x :show-scrollbar="false">
         <view class="seg-inner">
           <view
-            v-for="t in manageTabs"
-            :key="t.value"
+            v-for="t in modeTabs"
+            :key="t.key"
             class="seg-btn"
-            :class="{ active: activeTab === t.value }"
-            @click="onManageTab(t.value)"
+            :class="{ active: activeTab === t.key }"
+            @click="onManageTab(t.key)"
           >
             <text class="seg-txt">{{ t.label }}</text>
-            <text v-if="tabCount(t.value) > 0" class="seg-count">{{ tabCount(t.value) }}</text>
+            <text v-if="tabCount(t.key) > 0" class="seg-count">{{ tabCount(t.key) }}</text>
           </view>
         </view>
       </scroll-view>
@@ -71,6 +71,26 @@
         </view>
       </view>
 
+      <!-- ============ 管理模式：统计面板（审核员「统计」Tab） ============ -->
+      <view v-if="isStatsTab" class="stats-panel">
+        <view class="stats-hd">
+          <text class="stats-title">工单概览</text>
+          <text class="stats-sub">按当前单位域实时统计</text>
+        </view>
+        <view v-if="statsLoading" class="empty-text">加载中...</view>
+        <view v-else class="stats-grid">
+          <view
+            v-for="row in statsRows"
+            :key="row.key"
+            class="stats-card"
+            :class="'stats-card--' + row.type"
+          >
+            <text class="stats-num">{{ row.count }}</text>
+            <text class="stats-label">{{ row.label }}</text>
+          </view>
+        </view>
+      </view>
+
       <!-- 普通模式：原文保留的多企业筛选 + 状态 Tab -->
       <view v-else-if="enterpriseFilterOptions.length > 2" class="filter-bar">
         <picker
@@ -87,9 +107,9 @@
           </view>
         </picker>
       </view>
-      <view v-if="!manageMode" class="tabs-wrap">
+      <view v-if="!manageMode && activeTab" class="tabs-wrap">
         <wd-tabs :model-value="activeTab" @change="onTabChange">
-          <wd-tab v-for="tab in myTabs" :key="tab.value" :title="tab.label" :name="tab.value"></wd-tab>
+          <wd-tab v-for="tab in modeTabs" :key="tab.key" :title="tab.label" :name="tab.key"></wd-tab>
         </wd-tabs>
       </view>
 
@@ -101,8 +121,8 @@
         </view>
       </scroll-view>
 
-      <!-- 列表：统一工单卡片 -->
-      <view class="order-list">
+      <!-- 列表：统一工单卡片（统计 Tab 时隐藏，改由统计面板替代） -->
+      <view v-if="!isStatsTab" class="order-list">
         <order-card
           v-for="item in list"
           :key="item.id"
@@ -265,14 +285,31 @@ import { adminAPI, orderAPI, enterpriseAPI } from '@/api'
 import { useUserStore } from '@/stores/user'
 import { useOrderStore } from '@/stores/order'
 import { isStoreStaff, isUnitReviewer, reviewerEnterprises } from '@/utils/auth'
+import { ORDER_MODES, defaultModeFromRole } from '@/pages/order/modes'
+import { TAG_STATUS_GROUPS } from '@/pages/order/tags'
 import type { CategoryOption, PropertyOption, ReporterOption } from '@/types'
+import type { ModeTab, ModeConfig, OrderMode } from '@/pages/order/modes'
 
-/** 「未完成」聚合状态（传后端为逗号串） */
-const UNFINISHED = 'reported,pending_accept,processing'
-
-interface StatusTab {
-  label: string
-  value: string
+/** 统计面板：展示的底层状态维度（与 status_counts 键一致，避免聚合重叠导致视觉重复计数） */
+const STATS_ORDER = ['reported', 'pending_accept', 'processing', 'pending_sign', 'completed', 'rejected', 'cancelled']
+const STATS_LABELS: Record<string, string> = {
+  reported: '待审核',
+  pending_accept: '待接单',
+  processing: '处理中',
+  pending_sign: '待补签',
+  completed: '已完成',
+  rejected: '已退回',
+  cancelled: '已取消'
+}
+/** 统计卡左侧色条语义（对齐 design token 四色） */
+const STATS_TYPES: Record<string, string> = {
+  reported: 'danger',
+  pending_accept: 'warning',
+  processing: 'primary',
+  pending_sign: 'warning',
+  completed: 'success',
+  rejected: 'danger',
+  cancelled: 'info'
 }
 
 export default defineComponent({
@@ -291,21 +328,32 @@ export default defineComponent({
       totalPages: 1,
       loading: false,
       finished: false,
+      /** 页面 mode（my_repair / review / worker_task），由入口显式带入或按角色兜底 */
+      mode: 'my_repair' as OrderMode,
       /** 管理模式：状态淘宝数量角标 */
       statusCounts: {} as Record<string, number>,
-      /** 首页跳转带来的待消费上下文 */
-      activeTab: '',
+      /**
+       * 当前选中的 Tab key。
+       * ⚠️ 绝不能是空串：wd-tabs 在首帧 watch(value, immediate) 时遇到空串会抛错并连累整页渲染。
+       * 默认给非空哨兵 'all'（my_repair 首个 Tab）。
+       */
+      activeTab: 'all',
 
-      /* ---- 普通模式 ---- */
+      /* ---- 首页跳转带来的 URL 上下文（onLoad 一次性消费） ---- */
+      /** 入口指定的页面 mode */
+      entryMode: '' as OrderMode | '',
+      /** 入口指定的 Tab key */
+      entryTab: '',
+      /** 入口指定的企业（审核员单位视角） */
+      entryEnterprise: '',
+      /** 入口要求自动打开的工单 ID（形成 首页 → 列表 → 详情 的返回栈） */
+      entryOpenId: '',
+      /** 自动打开详情是否已执行（避免详情返回本页时二次跳转） */
+      autoOpened: false,
+
+      /* ---- 普通模式（my_repair）：Tab 维度取 display_tag 枚举键 ---- */
       enterpriseFilterOptions: [] as { id: string; name: string }[],
       enterpriseFilterIndex: 0,
-      myTabs: [
-        { label: '进行中', value: 'active' as string, status: 'reported,pending_accept,processing' },
-        { label: '草稿', value: 'draft' as string, status: 'draft' },
-        { label: '已退回', value: 'rejected' as string, status: 'rejected' },
-        { label: '已完成', value: 'completed' as string, status: 'completed' },
-        { label: '已取消', value: 'cancelled' as string, status: 'cancelled' }
-      ] as (StatusTab & { status: string })[],
 
       /* ---- 管理模式：筛选 ---- */
       showFilterDrawer: false,
@@ -339,17 +387,25 @@ export default defineComponent({
       showCancelPopup: false,
       cancelReason: '',
       cancelTargetId: '',
-      cancelSubmitting: false
+      cancelSubmitting: false,
+      /** 统计面板加载态 */
+      statsLoading: false
     }
   },
   computed: {
     /**
      * 是否走管理数据源。
-     * 维修业务员(role>=1) 与 单位审核员 → /admin/orders；
-     * 普通报修用户 → /orders（自己报的单）。
+     * mode 为 review / worker_task → /admin/orders；
+     * mode 为 my_repair → /orders（自己报的单）。
+     * ⚠️ 现在由 mode（而非纯角色）推导：审核员兼任成员时，其「我的报修记录」入口
+     * 显式带 mode=my_repair，仍能正确走申报人视图（后端 owner 隔离保证数据不串）。
      */
     manageMode(): boolean {
-      return isStoreStaff() || isUnitReviewer()
+      return this.mode !== 'my_repair'
+    },
+    /** 当前 mode 的页面配置（Tab 维度 / 是否显示新建 / 数据源） */
+    modeConfig(): ModeConfig {
+      return ORDER_MODES[this.mode]
     },
     /**
      * 卡片是否隐藏企业名：
@@ -361,43 +417,25 @@ export default defineComponent({
       return this.manageMode ? !!this.fEnterpriseId : this.enterpriseFilterIndex !== 0
     },
     /**
-     * 管理模式状态 Tab（移植自 Web 端 views/orders/list.vue）：
-     * 同一套状态只换标签——pending_accept 对维修员是「待接单」、对审核员是「已审核通过」。
+     * 管理模式状态 Tab：V1.6 配置化驱动（不再按角色硬编码）。
+     * 直接取自 ORDER_MODES[mode].tabs，每个 Tab 自带 display_tag 枚举键，
+     * 中文 label 也随之不同（如 processing 在 worker_task 叫「处理中」）。
      */
-    manageTabs(): StatusTab[] {
-      if (!this.manageMode) return []
-      const store = () =>
-        [
-          { label: '全部', value: '' },
-          { label: '待接单', value: 'pending_accept' },
-          { label: '处理中', value: 'processing' },
-          { label: '待补签', value: 'pending_sign' },
-          { label: '已完成', value: 'completed' },
-          { label: '已取消', value: 'cancelled' },
-          { label: '未完成', value: UNFINISHED }
-        ] as StatusTab[]
-      const reviewer = () =>
-        [
-          { label: '全部', value: '' },
-          { label: '待审核', value: 'reported' },
-          { label: '已审核通过', value: 'pending_accept' },
-          { label: '处理中', value: 'processing' },
-          { label: '待补签', value: 'pending_sign' },
-          { label: '已完成', value: 'completed' },
-          { label: '已取消', value: 'cancelled' },
-          { label: '未完成', value: UNFINISHED }
-        ] as StatusTab[]
-      // 兼任双角色：取并集，把「待审核」插到第 2 位
-      if (isStoreStaff() && isUnitReviewer()) {
-        const tabs = store()
-        tabs.splice(1, 0, { label: '待审核', value: 'reported' })
-        return tabs
-      }
-      return isStoreStaff() ? store() : reviewer()
+    modeTabs(): ModeTab[] {
+      return ORDER_MODES[this.mode].tabs
     },
-    /** 默认 Tab：未选择时一律「全部」 */
-    defaultStatus(): string {
-      return ''
+    /** 当前是否处于「统计」Tab（仅 review 模式有，key='stats'） */
+    isStatsTab(): boolean {
+      return this.manageMode && this.activeTab === 'stats'
+    },
+    /** 统计面板数据：基于 status_counts 按状态维度聚合（无需额外接口、审核员跨单位也无需指定单单位） */
+    statsRows(): { key: string; label: string; count: number; type: string }[] {
+      return STATS_ORDER.map((k) => ({
+        key: k,
+        label: STATS_LABELS[k],
+        count: this.statusCounts[k] || 0,
+        type: STATS_TYPES[k]
+      }))
     },
     approvedEnterprises(): { enterprise_id: string; enterprise_name: string }[] {
       return (this.userStore.userInfo?.enterprises ?? []).filter((e) => e.status === 'approved')
@@ -511,13 +549,33 @@ export default defineComponent({
       return out
     }
   },
+  /**
+   * V1.7：工单列表已移出 tabBar，变成普通页面 —— 首页 / 我的页可用 navigateTo 带参直达，
+   * 不再受「tabBar 页只能 switchTab、不能带参」的限制。
+   * 参数：mode（my_repair / review / worker_task）、tag（Tab key）、enterprise、open（自动打开的工单 ID）
+   */
+  onLoad(options: Record<string, string>) {
+    const q = options || {}
+    if (q.mode && ORDER_MODES[q.mode as OrderMode]) {
+      this.entryMode = q.mode as OrderMode
+    }
+    this.entryTab = q.tag || ''
+    this.entryEnterprise = q.enterprise || ''
+    this.entryOpenId = q.open || ''
+  },
   onShow() {
     this.init()
   },
   onPullDownRefresh() {
-    this.loadList(true).finally(() => uni.stopPullDownRefresh())
+    const done = () => uni.stopPullDownRefresh()
+    if (this.isStatsTab) {
+      this.loadStats().finally(done)
+    } else {
+      this.loadList(true).finally(done)
+    }
   },
   onReachBottom() {
+    if (this.isStatsTab) return
     if (this.isLoggedIn && !this.finished && !this.loading) {
       this.loadList(false)
     }
@@ -538,36 +596,68 @@ export default defineComponent({
         /* 401 已由请求层静默续期处理 */
       }
 
-      // 消费首页「详情 ›」带来的上下文（switchTab 不支持 URL 参数，改由 store 传递）。
-      // 从首页跳转：企业=全部、用户=全部、状态=对应待办区块；非首页进入则保留上次所选。
+      // 入口上下文：优先 URL 参数（V1.7 首页直接 navigateTo），其次 store（旧入口兼容）。
+      // mode 用入口显式指定的值（兼顾审核员兼任成员等身份），否则按角色兜底。
       const pending = this.orderStore.consumePendingJump()
+      const wantMode = this.entryMode || ((pending && pending.mode) as OrderMode) || defaultModeFromRole()
+      this.mode = ORDER_MODES[wantMode] ? wantMode : defaultModeFromRole()
+      const wantTab = this.entryTab || (pending && pending.status) || ''
+      const wantEnt = this.entryEnterprise || (pending && pending.enterprise) || ''
+
+      // URL 上下文一次性消费：从详情返回本页触发 onShow 时不再覆盖用户当前 Tab
+      this.entryMode = ''
+      this.entryTab = ''
+      this.entryEnterprise = ''
+
       if (this.manageMode) {
-        if (pending) {
-          this.activeTab = pending.status
-          this.fEnterpriseId = ''
+        if (wantTab || wantEnt) {
+          this.fEnterpriseId = wantEnt || ''
           this.fReporterId = ''
         }
         await this.ensureManageOptions()
         await this.loadReporterOptions()
-        if (!this.activeTab) this.activeTab = this.defaultStatus
+        // 默认落到第一个配置 Tab（review 模式首个为「统计」）；入口带入的 Tab 不匹配时回退到首个
+        this.activeTab = this.modeTabs.some((t) => t.key === wantTab) ? wantTab : this.modeTabs[0]?.key || ''
       } else {
-        if (!this.activeTab) this.activeTab = 'active'
+        // 非管理模式（my_repair，走用户端 /orders）同样要套用入口带入的 Tab，
+        // 否则从首页看板点进来会停在上次 Tab，看不到对应状态的工单。默认落「全部」。
+        this.activeTab = this.modeTabs.some((t) => t.key === wantTab) ? wantTab : 'all'
         this.buildEnterpriseFilter()
       }
-      this.loadList(true)
+      // 统计 Tab 加载计数面板，其余 Tab 加载列表
+      if (this.isStatsTab) {
+        await this.loadStats()
+      } else {
+        await this.loadList(true)
+      }
+      // 列表就位后再自动打开入口指定的详情，形成 首页 → 列表 → 详情 的返回栈
+      this.consumeAutoOpen()
+    },
+
+    /**
+     * 自动打开入口（首页待办）指定的工单详情，只执行一次。
+     * 返回键由此落在「已按入口筛选好的列表页」，而不是直接回首页。
+     */
+    consumeAutoOpen() {
+      if (this.autoOpened || !this.entryOpenId) return
+      const id = this.entryOpenId
+      this.autoOpened = true
+      this.goOrderDetail(id)
     },
 
     /* ==================== 状态 Tab ==================== */
 
     tabCount(value: string): number {
-      if (value === '') return this.statusCounts['all'] ?? 0
-      if (value === UNFINISHED) return this.statusCounts['unfinished'] ?? 0
-      return this.statusCounts[value] ?? 0
+      if (!value) return 0
+      const group = TAG_STATUS_GROUPS[value]
+      if (!group) return 0
+      return group.reduce((sum, s) => sum + (this.statusCounts[s] || 0), 0)
     },
     onManageTab(value: string) {
       if (this.activeTab === value) return
       this.activeTab = value
-      this.loadList(true)
+      if (value === 'stats') this.loadStats()
+      else this.loadList(true)
     },
     onTabChange(e: { name: string }) {
       this.activeTab = e.name
@@ -576,10 +666,23 @@ export default defineComponent({
     myActionable(status: string): boolean {
       return ['draft', 'rejected', 'reported', 'pending_accept'].includes(status)
     },
+    /** 当前 Tab 对应 display_tag 枚举键（空串 = 不过滤，如「全部」） */
     currentStatusParam(): string {
-      if (this.manageMode) return this.activeTab
-      const t = this.myTabs.find((x) => x.value === this.activeTab)
-      return t ? t.status : ''
+      const t = this.modeTabs.find((x) => x.key === this.activeTab)
+      return t ? t.tag : ''
+    },
+    /**
+     * 当前 Tab 的排序方式：'board' = 状态优先级 + 更新时间倒序（与首页看板一致），
+     * 其余返回空串走数据源默认排序。
+     */
+    currentSortParam(): string {
+      const t = this.modeTabs.find((x) => x.key === this.activeTab)
+      return (t && t.sort) || ''
+    },
+    /** 当前 Tab 是否限定「我接的单」（维修员「我的维修 / 处理中 / 待补签」） */
+    currentTabRepairerMe(): boolean {
+      const t = this.modeTabs.find((x) => x.key === this.activeTab)
+      return !!(t && t.repairerMe)
     },
 
     /* ==================== 数据加载 ==================== */
@@ -591,10 +694,15 @@ export default defineComponent({
         const targetPage = reset ? 1 : this.page + 1
         const params: Record<string, unknown> = { page: targetPage, page_size: PAGE_SIZE }
 
-        const status = this.currentStatusParam()
-        if (status) params.status = status
+        const tag = this.currentStatusParam()
+        // V1.6：统一用 display_tag 枚举键筛选（后端 MapDisplayTagToQuery 翻译为底层条件）
+        if (tag) {
+          params.display_tag = tag
+        }
 
         if (this.manageMode) {
+          // 「我的维修」类 Tab：只看我接的单（后端把 me 替换为当前用户，不接受任意 UUID）
+          if (this.currentTabRepairerMe()) params.repairer_id = 'me'
           if (this.fEnterpriseId) params.enterprise_id = this.fEnterpriseId
           if (this.fCategoryId) params.category_id = this.fCategoryId
           if (this.fPropertyId) params.property_id = this.fPropertyId
@@ -603,9 +711,14 @@ export default defineComponent({
           if (this.fDateFrom) params.date_from = this.fDateFrom
           if (this.fDateTo) params.date_to = this.fDateTo
           if (this.fKeyword) params.keyword = this.fKeyword
-          // 按提交时间排序（顶部「按时间」按钮切换方向，默认新→旧）
-          params.sort_by = 'submitted_at'
-          params.sort_order = this.timeSort
+          // 排序：「全部 / 处理中 / 待接单」等 Tab 用 board（与首页看板一致）；
+          // 其余保持顶部「按时间」按钮控制的提交时间排序（新→旧 / 旧→新）
+          if (this.currentSortParam() === 'board') {
+            params.sort_by = 'board'
+          } else {
+            params.sort_by = 'submitted_at'
+            params.sort_order = this.timeSort
+          }
 
           const data = await adminAPI.getOrders(params)
           this.statusCounts = (data && (data as any).status_counts) || {}
@@ -613,6 +726,8 @@ export default defineComponent({
         } else {
           const opt = this.enterpriseFilterOptions[this.enterpriseFilterIndex]
           if (opt && opt.id) params.enterprise_id = opt.id
+          // 用户端 /orders 默认按创建时间倒序；board 表示与首页看板一致的状态优先级排序
+          if (this.currentSortParam() === 'board') params.sort = 'board'
           const data = await orderAPI.list(params)
           this.applyPage(data, reset)
         }
@@ -628,6 +743,24 @@ export default defineComponent({
       this.totalPages = res.total_pages
       this.finished = this.page >= this.totalPages
       this.list = reset ? res.list : [...this.list, ...res.list]
+    },
+    /**
+     * 统计面板数据加载：复用列表接口返回的 status_counts（实时计数），
+     * 无需额外统计接口——既免去审核员必须指定 enterprise_id 的约束，
+     * 也能跨多单位聚合。仅传当前单位域筛选（fEnterpriseId）。
+     */
+    async loadStats() {
+      this.statsLoading = true
+      try {
+        const params: Record<string, unknown> = { page: 1, page_size: 1 }
+        if (this.fEnterpriseId) params.enterprise_id = this.fEnterpriseId
+        const data = await adminAPI.getOrders(params)
+        this.statusCounts = ((data as any) && (data as any).status_counts) || {}
+      } catch (e) {
+        console.error('加载统计失败', e)
+      } finally {
+        this.statsLoading = false
+      }
     },
 
     /* ==================== 管理模式：下拉数据源 ==================== */
@@ -1230,5 +1363,67 @@ export default defineComponent({
   display: flex;
   justify-content: flex-end;
   margin-top: 28rpx;
+}
+
+/* 统计面板（审核员「统计」Tab） */
+.stats-panel {
+  padding: 24rpx;
+  background-color: var(--xn-bg);
+}
+.stats-hd {
+  display: flex;
+  align-items: baseline;
+  margin-bottom: 20rpx;
+}
+.stats-title {
+  font-size: 30rpx;
+  font-weight: 600;
+  color: var(--xn-text-900);
+}
+.stats-sub {
+  margin-left: 16rpx;
+  font-size: 24rpx;
+  color: var(--xn-text-400);
+}
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16rpx;
+}
+.stats-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 30rpx 0;
+  background-color: var(--xn-surface);
+  border-radius: var(--xn-radius-card);
+  border-left: 6rpx solid var(--xn-text-400);
+}
+.stats-num {
+  font-size: 42rpx;
+  font-weight: 700;
+  color: var(--xn-text-900);
+  line-height: 1.2;
+}
+.stats-label {
+  margin-top: 8rpx;
+  font-size: 24rpx;
+  color: var(--xn-text-500);
+}
+.stats-card--warning {
+  border-left-color: var(--xn-st-orange);
+}
+.stats-card--primary {
+  border-left-color: var(--xn-primary);
+}
+.stats-card--success {
+  border-left-color: var(--xn-st-teal);
+}
+.stats-card--danger {
+  border-left-color: var(--xn-st-red);
+}
+.stats-card--info {
+  border-left-color: var(--xn-text-400);
 }
 </style>
