@@ -4,6 +4,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
+	apperrors "xin-ni-repair/internal/errors"
 	"xin-ni-repair/internal/service"
 	"xin-ni-repair/pkg/response"
 )
@@ -43,4 +44,28 @@ func (h *DashboardHandler) MarkRead(c *gin.Context) {
 		return
 	}
 	response.OK(c, nil)
+}
+
+// DashboardCardDetail 单张看板卡全量内容 (GET /dashboard/card-detail?key=xxx)
+//
+// 首页待办卡「查看全部」展开用：返回该卡命中的全部工单（突破每卡 3 条预览上限）。
+// 提醒卡因后端 def.UnreadOnly 为真，仍只返回未读工单。
+// enterprise_id 仅对单位审核员生效（多单位切换），其余角色忽略。
+func (h *DashboardHandler) DashboardCardDetail(c *gin.Context) {
+	key := c.Query("key")
+	if key == "" {
+		response.FailError(c, apperrors.ErrInvalidParam.WithMessage("缺少 key 参数"))
+		return
+	}
+	result, err := h.svc.DashboardCardDetail(c.Request.Context(), opOf(c), c.Query("enterprise_id"), key)
+	if err != nil {
+		h.logger.Warn("DashboardCardDetail: service error", zap.Error(err), zap.String("user_id", c.GetString("user_id")))
+		response.FailError(c, err)
+		return
+	}
+	if result == nil {
+		response.OK(c, gin.H{})
+		return
+	}
+	response.OK(c, result)
 }

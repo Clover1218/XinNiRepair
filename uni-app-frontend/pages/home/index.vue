@@ -42,7 +42,7 @@
             <text class="bcard-more">›</text>
           </view>
 
-          <!-- 卡体：最近几条工单，点击进入列表并自动打开详情（返回键落在列表页） -->
+          <!-- 卡体：最近几条工单，点击直达工单详情（返回键落回首页） -->
           <view v-if="!c.orders.length" class="bcard-empty">暂无</view>
           <view v-else class="bcard-list">
             <view
@@ -55,6 +55,18 @@
               <text class="orow-tag" :class="tagCls(o.display_tag_type)">{{ o.display_tag }}</text>
               <text class="orow-desc">{{ o.description || '（无故障描述）' }}</text>
             </view>
+          </view>
+
+          <!-- 卡底：仍有更多工单时，展开查看全部（突破 3 条预览上限） -->
+          <view
+            v-if="c.total > c.orders.length"
+            class="bcard-foot"
+            @click="expandCard(c)"
+          >
+            <text class="bcard-foot-txt">
+              {{ expandedKeys[c.key] ? '收起' : '查看全部 ' + c.total + ' 条' }}
+            </text>
+            <text class="bcard-foot-arw">{{ expandedKeys[c.key] ? '▲' : '▼' }}</text>
           </view>
         </view>
 
@@ -152,7 +164,13 @@ export default defineComponent({
       /** 审核员当前选中的单位 */
       activeUnitId: '',
       /** init 防并发令牌：快速切换 tab / 双 onShow 时以最新一次为准 */
-      initToken: 0
+      initToken: 0,
+      /** 各卡片展开态（key → 是否已展开全部） */
+      expandedKeys: {} as Record<string, boolean>,
+      /** 各卡片展开前的预览工单快照（用于收起时还原） */
+      previewMap: {} as Record<string, DashboardOrder[]>,
+      /** 正在加载全量的卡片 key（loading 态） */
+      loadingCardKey: ''
     }
   },
   computed: {
@@ -318,6 +336,11 @@ export default defineComponent({
         const res = await dashboardAPI.get(params)
         this.cards = res.cards || []
         this.unreadTotal = res.unread_total || 0
+        // 记录每张卡的预览快照，供「查看全部」收起时还原
+        const preview: Record<string, DashboardOrder[]> = {}
+        for (const c of this.cards) preview[c.key] = c.orders
+        this.previewMap = preview
+        this.expandedKeys = {}
       } catch (e) {
         this.cards = []
         this.unreadTotal = 0
@@ -338,11 +361,45 @@ export default defineComponent({
     },
 
     /**
-     * 点击卡片内的工单 → 先进「已按该状态筛选好的列表页」，由列表页自动打开详情。
-     * 栈为 [首页 → 列表 → 详情]，返回键落在列表页而不是直接回首页。
+     * 点击卡片内的工单 → 直达工单详情页（不再经过列表中间页）。
+     * 栈为 [首页 → 详情]，返回键直接落回首页。
+     * 报修人视角（进行中 / 提醒）进用户端详情；审核 / 维修视角进管理端详情。
      */
     goDetail(c: DashboardCard, o: DashboardOrder) {
-      this.goList(cardMode(c.key), orderTag(c.key, o.status), o.id)
+      const mode = cardMode(c.key)
+      if (mode === 'my_repair') {
+        uni.navigateTo({ url: `/pages/order/detail?id=${o.id}` })
+      } else {
+        uni.navigateTo({ url: `/pages/admin/order/detail?id=${o.id}` })
+      }
+    },
+
+    /**
+     * 卡片底部「查看全部 / 收起」：首次展开调全量接口突破 3 条上限；
+     * 提醒卡后端仍只返回未读工单（仅全部未读）。再次点击收起回到预览快照。
+     */
+    async expandCard(c: DashboardCard) {
+      if (this.expandedKeys[c.key]) {
+        c.orders = this.previewMap[c.key] || []
+        this.expandedKeys[c.key] = false
+        return
+      }
+      this.loadingCardKey = c.key
+      try {
+        const res = await dashboardAPI.getCardDetail(
+          c.key,
+          isUnitReviewer() ? this.activeUnitId : undefined
+        )
+        if (res && res.orders) {
+          this.previewMap[c.key] = c.orders
+          c.orders = res.orders
+          this.expandedKeys[c.key] = true
+        }
+      } catch (e) {
+        uni.showToast({ title: '加载失败', icon: 'none' })
+      } finally {
+        this.loadingCardKey = ''
+      }
     },
 
     /**
@@ -554,6 +611,22 @@ export default defineComponent({
   padding: 0 24rpx 24rpx;
   font-size: 24rpx;
   color: var(--xn-text-400);
+}
+.bcard-foot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 14rpx 0 18rpx;
+  border-top: 1rpx solid var(--xn-border);
+}
+.bcard-foot-txt {
+  font-size: 24rpx;
+  color: var(--xn-primary);
+}
+.bcard-foot-arw {
+  margin-left: 8rpx;
+  font-size: 20rpx;
+  color: var(--xn-primary);
 }
 .bcard-list {
   padding: 0 24rpx 12rpx;

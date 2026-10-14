@@ -16,6 +16,7 @@ import type {
   AdminOrderListResult,
   AvailableAction,
   CompleteOrderInput,
+  DashboardCard,
   DashboardResult,
   EnterpriseDetail,
   LoginResult,
@@ -153,6 +154,17 @@ export const dashboardAPI = {
     const q: Record<string, unknown> = {}
     if (params?.enterprise_id) q.enterprise_id = params.enterprise_id
     return http.get<DashboardResult>('/dashboard', q)
+  },
+
+  /**
+   * 单张看板卡全量内容 GET /dashboard/card-detail?key=xxx
+   * 首页待办卡「查看全部」展开用：突破每卡 3 条预览上限，返回该卡命中的全部工单。
+   * 提醒卡后端仍只返回未读工单（def.UnreadOnly）。
+   */
+  getCardDetail: (key: string, enterpriseId?: string) => {
+    const q: Record<string, unknown> = { key }
+    if (enterpriseId) q.enterprise_id = enterpriseId
+    return http.get<DashboardCard>('/dashboard/card-detail', q)
   },
 
   /** 标记工单已读 POST /orders/{id}/read（进详情页调用，首页红点随之消失） */

@@ -117,10 +117,13 @@ func (r *OrderRepository) ListDashboardCard(
 	}
 
 	var orders []model.RepairOrder
-	err := base.Preload("Enterprise").Preload("Reporter").Preload("Repairer").
-		Order(orderSQL).
-		Limit(opts.Limit).
-		Find(&orders).Error
+	q := base.Preload("Enterprise").Preload("Reporter").Preload("Repairer").
+		Order(orderSQL)
+	// Limit<=0 表示「全量」（首页待办「查看全部」展开用），不附加 LIMIT 子句。
+	if opts.Limit > 0 {
+		q = q.Limit(opts.Limit)
+	}
+	err := q.Find(&orders).Error
 	if err != nil {
 		return stat, nil, err
 	}

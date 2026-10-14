@@ -193,90 +193,159 @@ func (s *DashboardService) Dashboard(ctx context.Context, op Operator, enterpris
 	cards := make([]DashboardCard, 0, 3)
 	unreadTotal := int64(0)
 	for _, d := range buildCardDefs(op.IsPlainRepairer(), reviewer) {
-		f := base
-		f.Status = d.Statuses
-		f.SignatureStatus = d.SignatureStatus
-		// 「我报修的」始终可见：不受经营范围 / 审核单位收敛影响，
-		// 否则业务员自己报的单会因为该企业不在其服务范围内而消失。
-		if d.ReporterMe {
-			f.ScopeLimited = false
-			f.ScopeEnterpriseIDs = nil
-			f.OwnerOrRepairerID = ""
-			f.EnterpriseID = ""
-			f.ReporterID = op.UserID
-		}
-		if d.RepairerMe {
-			f.RepairerID = op.UserID
-		}
-
-		stat, orders, err := s.orders.ListDashboardCard(ctx, f, op.UserID, repository.DashboardCardOptions{
-			Limit:       dashboardPreviewSize,
-			Sort:        d.Sort,
-			UnreadOnly:  d.UnreadOnly,
-			CountUnread: d.CountUnread,
-		})
+		card, err := s.buildCard(ctx, op, base, d, false)
 		if err != nil {
-			return nil, s.dbErr("dashboard: list card failed", err)
+			return nil, err
 		}
 		// 空卡不返回：前端直接不渲染（避免「暂无」占位占屏）
-		if stat.Total == 0 {
+		if card == nil {
 			continue
 		}
-
-		// 未读角标：只有启用未读统计的卡才需要逐条判定
-		flags := map[string]bool{}
-		if d.CountUnread {
-			ids := make([]string, 0, len(orders))
-			for i := range orders {
-				ids = append(ids, orders[i].ID)
-			}
-			flags, err = s.orders.UnreadFlags(ctx, op.UserID, ids)
-			if err != nil {
-				return nil, s.dbErr("dashboard: unread flags failed", err)
-			}
-		}
-
-		list := make([]DashboardOrder, 0, len(orders))
-		for i := range orders {
-			o := orders[i]
-			tag, tagType := ComputeDisplayTag(&o, false)
-			orderNo := ""
-			if o.OrderNo != nil {
-				orderNo = *o.OrderNo
-			}
-			urgencyLabel := o.Urgency
-			if v, ok := urgencyLabels[o.Urgency]; ok {
-				urgencyLabel = v
-			}
-			list = append(list, DashboardOrder{
-				ID:             o.ID,
-				OrderNo:        orderNo,
-				Description:    o.Description,
-				EnterpriseName: o.Enterprise.Name,
-				Room:           o.Room,
-				ReporterName:   o.Reporter.Nickname,
-				Urgency:        o.Urgency,
-				UrgencyLabel:   urgencyLabel,
-				DisplayTag:     tag,
-				DisplayTagType: tagType,
-				Status:         o.Status,
-				UpdatedAt:      o.UpdatedAt.Format("2006-01-02 15:04:05"),
-				Unread:         d.CountUnread && flags[o.ID],
-			})
-		}
-
-		unreadTotal += stat.Unread
-		cards = append(cards, DashboardCard{
-			Key:    d.Key,
-			Label:  d.Label,
-			Tag:    d.Tag,
-			Total:  stat.Total,
-			Unread: stat.Unread,
-			Orders: list,
-		})
+		unreadTotal += card.Unread
+		cards = append(cards, *card)
 	}
 
 	return &DashboardResult{Cards: cards, UnreadTotal: unreadTotal, UpdatedAt: time.Now()}, nil
+}
+
+// buildCard 构造单张看板卡。full=true 时突破每卡 3 条预览上限（首页「查看全部」展开用，
+// 提醒卡仍仅返回未读集合——其 def 的 UnreadOnly 已保证）。空卡返回 nil。
+func (s *DashboardService) buildCard(
+	ctx context.Context, op Operator, base repository.OrderAdminFilter, d cardDef, full bool,
+) (*DashboardCard, error) {
+	f := base
+	f.Status = d.Statuses
+	f.SignatureStatus = d.SignatureStatus
+	// 「我报修的」始终可见：不受经营范围 / 审核单位收敛影响，
+	// 否则业务员自己报的单会因为该企业不在其服务范围内而消失。
+	if d.ReporterMe {
+		f.ScopeLimited = false
+		f.ScopeEnterpriseIDs = nil
+		f.OwnerOrRepairerID = ""
+		f.EnterpriseID = ""
+		f.ReporterID = op.UserID
+	}
+	if d.RepairerMe {
+		f.RepairerID = op.UserID
+	}
+
+	limit := dashboardPreviewSize
+	if full {
+		limit = 0 // 全量（仓库侧 Limit<=0 表示不限）
+	}
+
+	stat, orders, err := s.orders.ListDashboardCard(ctx, f, op.UserID, repository.DashboardCardOptions{
+		Limit:       limit,
+		Sort:        d.Sort,
+		UnreadOnly:  d.UnreadOnly,
+		CountUnread: d.CountUnread,
+	})
+	if err != nil {
+		return nil, s.dbErr("dashboard: list card failed", err)
+	}
+	if stat.Total == 0 {
+		return nil, nil
+	}
+
+	// 未读角标：只有启用未读统计的卡才需要逐条判定
+	flags := map[string]bool{}
+	if d.CountUnread {
+		ids := make([]string, 0, len(orders))
+		for i := range orders {
+			ids = append(ids, orders[i].ID)
+		}
+		flags, err = s.orders.UnreadFlags(ctx, op.UserID, ids)
+		if err != nil {
+			return nil, s.dbErr("dashboard: unread flags failed", err)
+		}
+	}
+
+	list := make([]DashboardOrder, 0, len(orders))
+	for i := range orders {
+		o := orders[i]
+		tag, tagType := ComputeDisplayTag(&o, false)
+		orderNo := ""
+		if o.OrderNo != nil {
+			orderNo = *o.OrderNo
+		}
+		urgencyLabel := o.Urgency
+		if v, ok := urgencyLabels[o.Urgency]; ok {
+			urgencyLabel = v
+		}
+		list = append(list, DashboardOrder{
+			ID:             o.ID,
+			OrderNo:        orderNo,
+			Description:    o.Description,
+			EnterpriseName: o.Enterprise.Name,
+			Room:           o.Room,
+			ReporterName:   o.Reporter.Nickname,
+			Urgency:        o.Urgency,
+			UrgencyLabel:   urgencyLabel,
+			DisplayTag:     tag,
+			DisplayTagType: tagType,
+			Status:         o.Status,
+			UpdatedAt:      o.UpdatedAt.Format("2006-01-02 15:04:05"),
+			Unread:         d.CountUnread && flags[o.ID],
+		})
+	}
+
+	return &DashboardCard{
+		Key:    d.Key,
+		Label:  d.Label,
+		Tag:    d.Tag,
+		Total:  stat.Total,
+		Unread: stat.Unread,
+		Orders: list,
+	}, nil
+}
+
+// DashboardCardDetail 单张看板卡的全量内容（突破每卡预览上限），
+// 供首页「查看全部」展开。提醒卡因 def.UnreadOnly 为真，仍只返回未读工单。
+func (s *DashboardService) DashboardCardDetail(
+	ctx context.Context, op Operator, enterpriseID, cardKey string,
+) (*DashboardCard, error) {
+	staff := op.IsStoreStaff()
+	var reviewerIDs []string
+	if !staff {
+		ids, err := s.access.ReviewerEnterpriseIDs(ctx, op.UserID)
+		if err != nil {
+			return nil, s.dbErr("dashboard: list reviewer enterprises failed", err)
+		}
+		reviewerIDs = ids
+	}
+	reviewer := len(reviewerIDs) > 0
+
+	// 基础过滤：数据权限（经营范围 / 审核单位），与 Dashboard 完全一致
+	base := repository.OrderAdminFilter{}
+	switch {
+	case staff:
+		if err := s.access.ApplyOrderScope(ctx, op, &base); err != nil {
+			return nil, err
+		}
+	case reviewer:
+		if enterpriseID != "" {
+			if err := s.access.CanManageEnterprise(ctx, enterpriseID, op.UserID, op.Role); err != nil {
+				return nil, err
+			}
+			base.EnterpriseID = enterpriseID
+		} else {
+			base.ScopeLimited = true
+			base.ScopeEnterpriseIDs = reviewerIDs
+		}
+	}
+
+	defs := buildCardDefs(op.IsPlainRepairer(), reviewer)
+	var target *cardDef
+	for i := range defs {
+		if defs[i].Key == cardKey {
+			target = &defs[i]
+			break
+		}
+	}
+	if target == nil {
+		return nil, apperrors.ErrInvalidParam.WithMessage("未知的卡片类型")
+	}
+	return s.buildCard(ctx, op, base, *target, true)
 }
 
 // MarkRead 标记某工单对当前用户已读（进详情页时调用，红点随之消失）。

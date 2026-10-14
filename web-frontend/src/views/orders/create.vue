@@ -233,7 +233,6 @@ const handleReset = () => {
     contact_phone: ''
   }
   imageFiles.value = []
-  uploadedUrls.clear()
   orderId.value = ''
   applyDefaults()
   ElMessage.info('已重置表单')

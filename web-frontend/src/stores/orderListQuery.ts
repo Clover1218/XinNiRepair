@@ -17,6 +17,8 @@ export const useOrderListQueryStore = defineStore('orderListQuery', {
     reporterName: '',
     keyword: '',
     urgency: '',
+    /** 本质标签筛选：unrepairable / customer_cancelled / pending_sign / signed（映射到 finish_outcome / signature_status） */
+    essenceFilter: '',
     dateRange: null as [string, string] | null,
     sortBy: 'submitted_at',
     sortOrder: 'desc' as 'asc' | 'desc',
@@ -42,6 +44,7 @@ export const useOrderListQueryStore = defineStore('orderListQuery', {
       this.reporterName = ''
       this.keyword = ''
       this.urgency = ''
+      this.essenceFilter = ''
       this.dateRange = null
       this.sortBy = 'submitted_at'
       this.sortOrder = 'desc'

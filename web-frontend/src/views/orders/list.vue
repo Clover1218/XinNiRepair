@@ -3,7 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { OfficeBuilding } from '@element-plus/icons-vue'
+import { OfficeBuilding, Filter } from '@element-plus/icons-vue'
 import OrderCardC from '@/components/OrderCardC.vue'
 import { adminAPI, fetchOrderOptions, type OrderListParams } from '@/api/admin'
 import { useUserStore } from '@/stores/user'
@@ -140,6 +140,10 @@ const reporterName = ref(queryStore.reporterName)
 const loading = ref(false)
 const list = ref<OrderListItem[]>([])
 const total = ref(0)
+/** 各状态实时计数（角标用），来自 /admin/orders 响应的 status_counts */
+const statusCounts = ref<Record<string, number>>({})
+/** 详细筛选抽屉显隐 */
+const drawerVisible = ref(false)
 
 // ── URL 承载筛选：首页区块「详情 →」带 ?status=xxx 直达此处，Tab 自动选中 ──
 /** 把当前 Tab（及审核员单位）写回 URL，刷新/分享/后退都能停在同一个 Tab */
@@ -210,8 +214,10 @@ const fetchList = async () => {
       params.date_to = `${dateRange.value[1]}T23:59:59+08:00`
     }
     const res = await adminAPI.getOrders(params)
+    // client 拦截器返回外层信封 { code, data, message }，内层 data 才是真实载荷
     list.value = res.data.list
     total.value = res.data.total
+    statusCounts.value = (res.data.status_counts as Record<string, number>) || {}
   } finally {
     loading.value = false
   }
@@ -251,6 +257,39 @@ const handleTabChange = () => {
   queryStore.touched = true
   syncUrl()
   fetchList()
+}
+
+/** 顶部状态按钮组点击：切换 Tab 并刷新 */
+const selectStatus = (val: string) => {
+  activeStatus.value = val
+  handleTabChange()
+}
+
+/** 状态按钮组角标：全部→all，其余用状态值本身（unfinished/pending_sign 等） */
+const statusCountOf = (val: string): number => {
+  const key = val === '' ? 'all' : val
+  return statusCounts.value[key] || 0
+}
+
+/** 第二行排序下拉：看板顺序 / 提交时间 / 更新时间（倒序） */
+const handleSortChange2 = () => {
+  if (sortBy.value === 'board') {
+    sortOrder.value = 'asc'
+  } else {
+    sortOrder.value = 'desc'
+  }
+  page.value = 1
+  fetchList()
+}
+
+/** 详细筛选抽屉内重置（仅清空抽屉里的字段） */
+const handleDrawerReset = () => {
+  categoryId.value = ''
+  propertyId.value = ''
+  urgency.value = ''
+  essenceFilter.value = ''
+  keyword.value = ''
+  dateRange.value = null
 }
 
 /** 审核员切换单位：重置分页并回写 URL */
@@ -499,7 +538,9 @@ onMounted(() => {
   }
   initFromQuery()
   fetchList()
-  loadEnterpriseOptions()
+  // 纯审核员没有 /admin/enterprises 权限（会 403），其企业下拉隐藏、改用单位切换条，
+  // 故跳过该请求，避免无谓报错噪音。
+  if (!reviewerOnly.value) loadEnterpriseOptions()
   loadCategoryOptions()
 })
 </script>
@@ -534,20 +575,26 @@ onMounted(() => {
         </span>
       </div>
 
-      <el-tabs v-model="activeStatus" @tab-change="handleTabChange">
-        <el-tab-pane
+      <!-- 顶部状态按钮组 + 实时角标（对齐小程序「审核 / 接单」页） -->
+      <div class="status-seg">
+        <button
           v-for="tab in statusTabs"
           :key="tab.value"
-          :label="tab.label"
-          :name="tab.value"
-        />
-      </el-tabs>
+          type="button"
+          :class="['seg-btn', { active: activeStatus === tab.value }]"
+          @click="selectStatus(tab.value)"
+        >
+          <span class="seg-label">{{ tab.label }}</span>
+          <span v-if="statusCountOf(tab.value)" class="seg-count">{{ statusCountOf(tab.value) }}</span>
+        </button>
+      </div>
 
+      <!-- 第二行：企业 + 报修人 + 排序 + 详细筛选 + 导出 -->
       <div class="filter-bar">
         <el-select
           v-if="!reviewerOnly"
           v-model="enterpriseId"
-          placeholder="按企业搜索"
+          placeholder="按企业"
           clearable
           filterable
           class="filter-enterprise"
@@ -558,37 +605,6 @@ onMounted(() => {
             :key="e.id"
             :label="e.name"
             :value="e.id"
-          />
-        </el-select>
-        <el-select
-          v-model="categoryId"
-          placeholder="项目大类"
-          clearable
-          filterable
-          class="filter-input"
-          @change="handleCategoryChange"
-        >
-          <el-option
-            v-for="c in categoryOptions"
-            :key="c.id"
-            :label="c.name"
-            :value="c.id"
-          />
-        </el-select>
-        <el-select
-          v-model="propertyId"
-          placeholder="问题类型（属性）"
-          clearable
-          filterable
-          :disabled="!categoryId"
-          class="filter-input"
-          @change="handleSearch"
-        >
-          <el-option
-            v-for="p in propertyOptions"
-            :key="p.id"
-            :label="p.name"
-            :value="p.id"
           />
         </el-select>
         <el-select
@@ -609,47 +625,19 @@ onMounted(() => {
             :value="r.id"
           />
         </el-select>
-        <el-input
-          v-model="keyword"
-          placeholder="工单号"
-          clearable
-          class="filter-input"
-          @keyup.enter="handleSearch"
-        />
         <el-select
-          v-model="urgency"
-          placeholder="紧急程度"
-          clearable
-          class="filter-urgency"
+          v-model="sortBy"
+          placeholder="排序"
+          class="filter-sort"
+          @change="handleSortChange2"
         >
-          <el-option label="普通" value="normal" />
-          <el-option label="紧急" value="urgent" />
-          <el-option label="非常紧急" value="very_urgent" />
+          <el-option label="看板顺序" value="board" />
+          <el-option label="提交时间（倒序）" value="submitted_at" />
+          <el-option label="更新时间（倒序）" value="updated_at" />
         </el-select>
-        <el-select
-          v-model="essenceFilter"
-          placeholder="本质标签"
-          clearable
-          class="filter-input"
-          @change="handleSearch"
-        >
-          <el-option label="不能修" value="unrepairable" />
-          <el-option label="客户取消" value="customer_cancelled" />
-          <el-option label="待补签" value="pending_sign" />
-          <el-option label="已签字" value="signed" />
-        </el-select>
-        <el-date-picker
-          v-model="dateRange"
-          type="daterange"
-          range-separator="至"
-          start-placeholder="开始日期"
-          end-placeholder="结束日期"
-          value-format="YYYY-MM-DD"
-          class="filter-date"
-        />
-        <el-button type="primary" @click="handleSearch">
-          <el-icon><Search /></el-icon>
-          搜索
+        <el-button @click="drawerVisible = true">
+          <el-icon><Filter /></el-icon>
+          详细筛选
         </el-button>
         <el-button @click="handleReset">重置</el-button>
         <div class="spacer" />
@@ -659,6 +647,92 @@ onMounted(() => {
           导出
         </el-button>
       </div>
+
+      <!-- 详细筛选抽屉：项目大类 / 属性 / 紧急度 / 本质标签 / 关键字 / 日期 -->
+      <el-drawer v-model="drawerVisible" title="详细筛选" direction="rtl" size="360px">
+        <el-form label-position="top">
+          <el-form-item label="项目大类">
+            <el-select
+              v-model="categoryId"
+              placeholder="项目大类"
+              clearable
+              filterable
+              class="drawer-full"
+              @change="handleCategoryChange"
+            >
+              <el-option
+                v-for="c in categoryOptions"
+                :key="c.id"
+                :label="c.name"
+                :value="c.id"
+              />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="问题类型（属性）">
+            <el-select
+              v-model="propertyId"
+              placeholder="问题类型"
+              clearable
+              filterable
+              :disabled="!categoryId"
+              class="drawer-full"
+              @change="handleSearch"
+            >
+              <el-option
+                v-for="p in propertyOptions"
+                :key="p.id"
+                :label="p.name"
+                :value="p.id"
+              />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="紧急程度">
+            <el-select v-model="urgency" placeholder="紧急程度" clearable class="drawer-full">
+              <el-option label="普通" value="normal" />
+              <el-option label="紧急" value="urgent" />
+              <el-option label="非常紧急" value="very_urgent" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="本质标签">
+            <el-select
+              v-model="essenceFilter"
+              placeholder="本质标签"
+              clearable
+              class="drawer-full"
+              @change="handleSearch"
+            >
+              <el-option label="不能修" value="unrepairable" />
+              <el-option label="客户取消" value="customer_cancelled" />
+              <el-option label="待补签" value="pending_sign" />
+              <el-option label="已签字" value="signed" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="工单号关键字">
+            <el-input
+              v-model="keyword"
+              placeholder="工单号"
+              clearable
+              class="drawer-full"
+              @keyup.enter="handleSearch"
+            />
+          </el-form-item>
+          <el-form-item label="提交日期">
+            <el-date-picker
+              v-model="dateRange"
+              type="daterange"
+              range-separator="至"
+              start-placeholder="开始日期"
+              end-placeholder="结束日期"
+              value-format="YYYY-MM-DD"
+              class="drawer-full"
+            />
+          </el-form-item>
+        </el-form>
+        <template #footer>
+          <el-button @click="handleDrawerReset">重置</el-button>
+          <el-button type="primary" @click="drawerVisible = false; handleSearch()">应用</el-button>
+        </template>
+      </el-drawer>
     </el-card>
 
     <el-card shadow="never">
@@ -920,6 +994,71 @@ onMounted(() => {
 
 .filter-date {
   width: 300px;
+}
+
+/* 顶部状态按钮组（对齐小程序审核/接单页） */
+.status-seg {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.seg-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border: 1px solid #dcdfe6;
+  border-radius: 16px;
+  background: #fff;
+  color: #606266;
+  font-size: 13px;
+  line-height: 1.2;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.seg-btn:hover {
+  border-color: #409eff;
+  color: #409eff;
+}
+
+.seg-btn.active {
+  border-color: #0f766e;
+  background: #0f766e;
+  color: #fff;
+}
+
+.seg-label {
+  font-weight: 500;
+}
+
+.seg-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  font-size: 12px;
+  font-weight: 600;
+  background: #f56c6c;
+  color: #fff;
+}
+
+.seg-btn.active .seg-count {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.filter-sort {
+  width: 160px;
+}
+
+.drawer-full {
+  width: 100%;
 }
 
 .spacer {

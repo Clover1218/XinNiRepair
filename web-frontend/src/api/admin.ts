@@ -47,6 +47,10 @@ export interface OrderListParams {
   reporter_id?: string
   sort_by?: string
   sort_order?: string
+  /** 本质标签筛选：映射到后端 finish_outcome（不能修 / 客户取消） */
+  finish_outcome?: string
+  /** 本质标签筛选：映射到后端 signature_status（待补签 / 已签字） */
+  signature_status?: string
 }
 
 export interface EnterpriseListParams {

@@ -262,6 +262,7 @@ func registerRoutes(r *gin.Engine, db *repository.DB, authH *handler.AuthHandler
 	dash.Use(middleware.JWTAuth(tokenSvc))
 	{
 		dash.GET("/dashboard", dashH.Dashboard)
+		dash.GET("/dashboard/card-detail", dashH.DashboardCardDetail) // 单张看板卡全量（首页「查看全部」展开）
 	}
 
 		// 管理后台接口 (第五章+第六章): 双层角色控制
