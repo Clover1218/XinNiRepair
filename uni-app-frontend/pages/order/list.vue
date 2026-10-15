@@ -10,7 +10,7 @@
     <template v-else>
       <!-- 工具栏 -->
       <view class="toolbar">
-        <view class="toolbar-title">{{ manageMode ? '工单' : '我的工单' }}</view>
+        <view class="toolbar-title">{{ toolbarTitle }}</view>
         <view class="toolbar-right">
           <view v-if="manageMode" class="tb-filter" :class="{ on: activeFilterCount > 0 }" @click="onOpenDrawer">
             <text>筛选</text>
@@ -71,28 +71,8 @@
         </view>
       </view>
 
-      <!-- ============ 管理模式：统计面板（审核员「统计」Tab） ============ -->
-      <view v-if="isStatsTab" class="stats-panel">
-        <view class="stats-hd">
-          <text class="stats-title">工单概览</text>
-          <text class="stats-sub">按当前单位域实时统计</text>
-        </view>
-        <view v-if="statsLoading" class="empty-text">加载中...</view>
-        <view v-else class="stats-grid">
-          <view
-            v-for="row in statsRows"
-            :key="row.key"
-            class="stats-card"
-            :class="'stats-card--' + row.type"
-          >
-            <text class="stats-num">{{ row.count }}</text>
-            <text class="stats-label">{{ row.label }}</text>
-          </view>
-        </view>
-      </view>
-
-      <!-- 普通模式：原文保留的多企业筛选 + 状态 Tab -->
-      <view v-else-if="enterpriseFilterOptions.length > 2" class="filter-bar">
+      <!-- ============ 普通模式：多企业筛选 + 状态 Tab ============ -->
+      <view v-if="!manageMode && enterpriseFilterOptions.length > 2" class="filter-bar">
         <picker
           mode="selector"
           :range="enterpriseFilterOptions"
@@ -121,8 +101,8 @@
         </view>
       </scroll-view>
 
-      <!-- 列表：统一工单卡片（统计 Tab 时隐藏，改由统计面板替代） -->
-      <view v-if="!isStatsTab" class="order-list">
+      <!-- 列表：统一工单卡片 -->
+      <view class="order-list">
         <order-card
           v-for="item in list"
           :key="item.id"
@@ -134,30 +114,6 @@
           <view v-if="item.status === 'rejected' && item.reject_reason" class="reject-bar">
             已退回：{{ item.reject_reason }}
           </view>
-
-          <!--
-            操作区：冒泡拦截放在原生 view 上（wd-button 是组件，组件事件上的 .stop 不生效）。
-            管理模式：卡片上不再提供就地操作（待审核的「审核通过」已移除，统一到详情页处理）。
-            普通模式：草稿/退回→编辑·提交·删除；已上报·待接单→取消。
-          -->
-          <template #actions>
-            <view
-              v-if="!manageMode && myActionable(item.status)"
-              class="card-actions"
-              @click.stop="stopCardClick"
-            >
-              <template v-if="item.status === 'draft' || item.status === 'rejected'">
-                <wd-button size="small" :custom-style="actBtnStyle" @click="editOrder(item.id)">编辑</wd-button>
-                <wd-button size="small" :custom-style="actBtnStyle" @click="submitDraft(item)">提交</wd-button>
-                <wd-button size="small" :custom-style="actBtnStyle" @click="deleteOrder(item)">删除</wd-button>
-              </template>
-              <template v-else>
-                <wd-button size="small" type="warning" :custom-style="actBtnStyle" @click="cancelOrder(item)">
-                  取消
-                </wd-button>
-              </template>
-            </view>
-          </template>
         </order-card>
 
         <!-- 空状态 -->
@@ -250,29 +206,7 @@
         </view>
       </wd-popup>
 
-      <!-- 取消工单弹窗（普通模式） -->
-      <wd-popup v-model="showCancelPopup" position="center" round custom-style="width: 86%;">
-        <view class="popup-body">
-          <view class="popup-title">取消工单</view>
-          <view class="popup-label">
-            取消原因<text class="popup-label-req">（必填，≤200字）</text>
-          </view>
-          <wd-textarea
-            v-model="cancelReason"
-            placeholder="请填写取消原因"
-            :maxlength="200"
-            show-word-limit
-            auto-height
-            custom-style="min-height: 160rpx; padding: 20rpx; background: #f5f6f8; border-radius: 12rpx;"
-          />
-          <view class="popup-actions">
-            <wd-button plain :custom-style="actBtnStyle" size="small" @click="showCancelPopup = false">取消</wd-button>
-            <wd-button type="danger" :custom-style="actBtnStyle" size="small" :loading="cancelSubmitting" @click="confirmCancel">
-              确认取消
-            </wd-button>
-          </view>
-        </view>
-      </wd-popup>
+      <!-- 取消工单弹窗已移至详情页：列表项不再就地展示任何操作按钮，统一引导进入详情页操作 -->
     </template>
   </view>
 </template>
@@ -289,28 +223,6 @@ import { ORDER_MODES, defaultModeFromRole } from '@/pages/order/modes'
 import { TAG_STATUS_GROUPS } from '@/pages/order/tags'
 import type { CategoryOption, PropertyOption, ReporterOption } from '@/types'
 import type { ModeTab, ModeConfig, OrderMode } from '@/pages/order/modes'
-
-/** 统计面板：展示的底层状态维度（与 status_counts 键一致，避免聚合重叠导致视觉重复计数） */
-const STATS_ORDER = ['reported', 'pending_accept', 'processing', 'pending_sign', 'completed', 'rejected', 'cancelled']
-const STATS_LABELS: Record<string, string> = {
-  reported: '待审核',
-  pending_accept: '待接单',
-  processing: '处理中',
-  pending_sign: '待补签',
-  completed: '已完成',
-  rejected: '已退回',
-  cancelled: '已取消'
-}
-/** 统计卡左侧色条语义（对齐 design token 四色） */
-const STATS_TYPES: Record<string, string> = {
-  reported: 'danger',
-  pending_accept: 'warning',
-  processing: 'primary',
-  pending_sign: 'warning',
-  completed: 'success',
-  rejected: 'danger',
-  cancelled: 'info'
-}
 
 export default defineComponent({
   setup() {
@@ -340,8 +252,6 @@ export default defineComponent({
       activeTab: 'all',
 
       /* ---- 首页跳转带来的 URL 上下文（onLoad 一次性消费） ---- */
-      /** 入口指定的页面 mode */
-      entryMode: '' as OrderMode | '',
       /** 入口指定的 Tab key */
       entryTab: '',
       /** 入口指定的企业（审核员单位视角） */
@@ -380,16 +290,7 @@ export default defineComponent({
       fcDateTo: '',
       fcKeyword: '',
       urgencyLabels: ['普通', '紧急', '非常紧急'] as string[],
-      urgencyKeys: ['normal', 'urgent', 'very_urgent'] as string[],
-
-      /* ---- 卡片操作 ---- */
-      actBtnStyle: 'margin-left: 16rpx; border-radius: 12rpx',
-      showCancelPopup: false,
-      cancelReason: '',
-      cancelTargetId: '',
-      cancelSubmitting: false,
-      /** 统计面板加载态 */
-      statsLoading: false
+      urgencyKeys: ['normal', 'urgent', 'very_urgent'] as string[]
     }
   },
   computed: {
@@ -424,18 +325,12 @@ export default defineComponent({
     modeTabs(): ModeTab[] {
       return ORDER_MODES[this.mode].tabs
     },
-    /** 当前是否处于「统计」Tab（仅 review 模式有，key='stats'） */
-    isStatsTab(): boolean {
-      return this.manageMode && this.activeTab === 'stats'
-    },
-    /** 统计面板数据：基于 status_counts 按状态维度聚合（无需额外接口、审核员跨单位也无需指定单单位） */
-    statsRows(): { key: string; label: string; count: number; type: string }[] {
-      return STATS_ORDER.map((k) => ({
-        key: k,
-        label: STATS_LABELS[k],
-        count: this.statusCounts[k] || 0,
-        type: STATS_TYPES[k]
-      }))
+    /** 工具栏标题：按 mode 区分（我的工单 / 审核工单 / 维修工单） */
+    toolbarTitle(): string {
+      if (this.mode === 'my_repair') return '我的工单'
+      if (this.mode === 'review') return '审核工单'
+      if (this.mode === 'worker_task') return '维修工单'
+      return '工单'
     },
     approvedEnterprises(): { enterprise_id: string; enterprise_name: string }[] {
       return (this.userStore.userInfo?.enterprises ?? []).filter((e) => e.status === 'approved')
@@ -556,11 +451,17 @@ export default defineComponent({
    */
   onLoad(options: Record<string, string>) {
     const q = options || {}
-    if (q.mode && ORDER_MODES[q.mode as OrderMode]) {
-      this.entryMode = q.mode as OrderMode
-    }
-    this.entryTab = q.tag || ''
-    this.entryEnterprise = q.enterprise || ''
+    const pending = this.orderStore.consumePendingJump()
+    // 入参 mode 优先；其次兼容旧入口经 store 中转的 pending.mode；都没有时按角色兜底。
+    // ⚠️ 这一步在 onLoad 一次性锁定 this.mode，init()(onShow) 不再回退到角色默认，
+    // 否则从详情页返回本页时 onShow 会把「我的工单」误重置成「审核工单」。
+    const wantMode =
+      (q.mode && ORDER_MODES[q.mode as OrderMode] ? (q.mode as OrderMode) : '') ||
+      ((pending && pending.mode) as OrderMode) ||
+      defaultModeFromRole()
+    this.mode = ORDER_MODES[wantMode] ? wantMode : defaultModeFromRole()
+    this.entryTab = q.tag || (pending && pending.status) || ''
+    this.entryEnterprise = q.enterprise || (pending && pending.enterprise) || ''
     this.entryOpenId = q.open || ''
   },
   onShow() {
@@ -568,14 +469,9 @@ export default defineComponent({
   },
   onPullDownRefresh() {
     const done = () => uni.stopPullDownRefresh()
-    if (this.isStatsTab) {
-      this.loadStats().finally(done)
-    } else {
-      this.loadList(true).finally(done)
-    }
+    this.loadList(true).finally(done)
   },
   onReachBottom() {
-    if (this.isStatsTab) return
     if (this.isLoggedIn && !this.finished && !this.loading) {
       this.loadList(false)
     }
@@ -596,16 +492,13 @@ export default defineComponent({
         /* 401 已由请求层静默续期处理 */
       }
 
-      // 入口上下文：优先 URL 参数（V1.7 首页直接 navigateTo），其次 store（旧入口兼容）。
-      // mode 用入口显式指定的值（兼顾审核员兼任成员等身份），否则按角色兜底。
-      const pending = this.orderStore.consumePendingJump()
-      const wantMode = this.entryMode || ((pending && pending.mode) as OrderMode) || defaultModeFromRole()
-      this.mode = ORDER_MODES[wantMode] ? wantMode : defaultModeFromRole()
-      const wantTab = this.entryTab || (pending && pending.status) || ''
-      const wantEnt = this.entryEnterprise || (pending && pending.enterprise) || ''
+      // 入口上下文：mode 已在 onLoad 锁定，这里只处理 Tab / 企业 / 自动打开。
+      // 仅在存在入口指定 Tab 时才切换 activeTab；从详情返回本页（wantTab 为空）时
+      // 保留用户当前所在的 Tab，不被重置到第一个。
+      const wantTab = this.entryTab || ''
+      const wantEnt = this.entryEnterprise || ''
 
       // URL 上下文一次性消费：从详情返回本页触发 onShow 时不再覆盖用户当前 Tab
-      this.entryMode = ''
       this.entryTab = ''
       this.entryEnterprise = ''
 
@@ -616,20 +509,23 @@ export default defineComponent({
         }
         await this.ensureManageOptions()
         await this.loadReporterOptions()
-        // 默认落到第一个配置 Tab（review 模式首个为「统计」）；入口带入的 Tab 不匹配时回退到首个
-        this.activeTab = this.modeTabs.some((t) => t.key === wantTab) ? wantTab : this.modeTabs[0]?.key || ''
+        // 入口带入的 Tab 优先；否则保持当前 Tab（从详情返回时不变），
+        // 仅在当前 activeTab 对本模式非法（首次进入的占位 'all'）时回退到首个配置 Tab。
+        if (wantTab) {
+          this.activeTab = this.modeTabs.some((t) => t.key === wantTab) ? wantTab : this.modeTabs[0]?.key || ''
+        } else if (!this.modeTabs.some((t) => t.key === this.activeTab)) {
+          this.activeTab = this.modeTabs[0]?.key || ''
+        }
       } else {
-        // 非管理模式（my_repair，走用户端 /orders）同样要套用入口带入的 Tab，
-        // 否则从首页看板点进来会停在上次 Tab，看不到对应状态的工单。默认落「全部」。
-        this.activeTab = this.modeTabs.some((t) => t.key === wantTab) ? wantTab : 'all'
+        // 非管理模式（my_repair，走用户端 /orders）套用入口带入的 Tab，默认落「全部」。
+        if (wantTab) {
+          this.activeTab = this.modeTabs.some((t) => t.key === wantTab) ? wantTab : 'all'
+        } else if (!this.modeTabs.some((t) => t.key === this.activeTab)) {
+          this.activeTab = 'all'
+        }
         this.buildEnterpriseFilter()
       }
-      // 统计 Tab 加载计数面板，其余 Tab 加载列表
-      if (this.isStatsTab) {
-        await this.loadStats()
-      } else {
-        await this.loadList(true)
-      }
+      await this.loadList(true)
       // 列表就位后再自动打开入口指定的详情，形成 首页 → 列表 → 详情 的返回栈
       this.consumeAutoOpen()
     },
@@ -656,15 +552,11 @@ export default defineComponent({
     onManageTab(value: string) {
       if (this.activeTab === value) return
       this.activeTab = value
-      if (value === 'stats') this.loadStats()
-      else this.loadList(true)
+      this.loadList(true)
     },
     onTabChange(e: { name: string }) {
       this.activeTab = e.name
       this.loadList(true)
-    },
-    myActionable(status: string): boolean {
-      return ['draft', 'rejected', 'reported', 'pending_accept'].includes(status)
     },
     /** 当前 Tab 对应 display_tag 枚举键（空串 = 不过滤，如「全部」） */
     currentStatusParam(): string {
@@ -743,24 +635,6 @@ export default defineComponent({
       this.totalPages = res.total_pages
       this.finished = this.page >= this.totalPages
       this.list = reset ? res.list : [...this.list, ...res.list]
-    },
-    /**
-     * 统计面板数据加载：复用列表接口返回的 status_counts（实时计数），
-     * 无需额外统计接口——既免去审核员必须指定 enterprise_id 的约束，
-     * 也能跨多单位聚合。仅传当前单位域筛选（fEnterpriseId）。
-     */
-    async loadStats() {
-      this.statsLoading = true
-      try {
-        const params: Record<string, unknown> = { page: 1, page_size: 1 }
-        if (this.fEnterpriseId) params.enterprise_id = this.fEnterpriseId
-        const data = await adminAPI.getOrders(params)
-        this.statusCounts = ((data as any) && (data as any).status_counts) || {}
-      } catch (e) {
-        console.error('加载统计失败', e)
-      } finally {
-        this.statsLoading = false
-      }
     },
 
     /* ==================== 管理模式：下拉数据源 ==================== */
@@ -911,76 +785,8 @@ export default defineComponent({
         : `/pages/order/detail?id=${orderId}`
       uni.navigateTo({ url })
     },
-    stopCardClick() {
-      // no-op：仅拦截冒泡
-    },
     createOrder() {
       uni.navigateTo({ url: '/pages/order/edit' })
-    },
-    editOrder(orderId: string) {
-      uni.navigateTo({ url: `/pages/order/edit?id=${orderId}` })
-    },
-
-    /* ==================== 普通模式：卡片操作 ==================== */
-
-    submitDraft(item: any) {
-      const that = this
-      uni.showModal({
-        title: '提交报修',
-        content: '提交后工单将上报本单位审核员审核，确认提交？',
-        success: async (res) => {
-          if (!res.confirm) return
-          try {
-            await orderAPI.submit(item.id)
-            uni.showToast({ title: '提交成功', icon: 'success' })
-            that.loadList(true)
-          } catch (e) {
-            /* 后端错误已 Toast */
-          }
-        }
-      })
-    },
-    cancelOrder(item: any) {
-      this.cancelTargetId = item.id
-      this.cancelReason = ''
-      this.showCancelPopup = true
-    },
-    async confirmCancel() {
-      const reason = (this.cancelReason || '').trim()
-      if (!reason) {
-        uni.showToast({ title: '请填写取消原因', icon: 'none' })
-        return
-      }
-      if (this.cancelSubmitting) return
-      this.cancelSubmitting = true
-      try {
-        await orderAPI.cancel(this.cancelTargetId, { reason })
-        uni.showToast({ title: '已取消', icon: 'success' })
-        this.showCancelPopup = false
-        this.loadList(true)
-      } catch (e) {
-        console.error('取消失败', e)
-      } finally {
-        this.cancelSubmitting = false
-      }
-    },
-    deleteOrder(item: any) {
-      const that = this
-      uni.showModal({
-        title: '删除草稿',
-        content: '确定删除该草稿吗？删除后不可恢复',
-        confirmColor: '#dc2626',
-        success: async (res) => {
-          if (!res.confirm) return
-          try {
-            await orderAPI.remove(item.id)
-            uni.showToast({ title: '已删除', icon: 'success' })
-            that.loadList(true)
-          } catch (e) {
-            console.error('删除失败', e)
-          }
-        }
-      })
     },
     buildEnterpriseFilter() {
       this.enterpriseFilterOptions = [
@@ -1223,17 +1029,6 @@ export default defineComponent({
     border-radius: 10rpx;
     line-height: 1.5;
   }
-  .amount-line {
-    margin-top: 16rpx;
-    font-size: 28rpx;
-    font-weight: 600;
-    color: var(--xn-primary);
-  }
-  .card-actions {
-    display: flex;
-    justify-content: flex-end;
-    margin-top: 24rpx;
-  }
 }
 
 .empty,
@@ -1338,92 +1133,5 @@ export default defineComponent({
   display: flex;
   padding: 28rpx 0 40rpx;
   gap: 20rpx;
-}
-
-/* 弹窗 */
-.popup-body {
-  padding: 36rpx 32rpx 28rpx;
-  background-color: var(--xn-surface);
-  border-radius: 20rpx;
-}
-.popup-title {
-  font-size: 32rpx;
-  font-weight: 600;
-  color: var(--xn-text-900);
-}
-.popup-label {
-  margin-top: 24rpx;
-  font-size: 26rpx;
-  color: var(--xn-text-700);
-}
-.popup-label-req {
-  color: var(--xn-st-red);
-}
-.popup-actions {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: 28rpx;
-}
-
-/* 统计面板（审核员「统计」Tab） */
-.stats-panel {
-  padding: 24rpx;
-  background-color: var(--xn-bg);
-}
-.stats-hd {
-  display: flex;
-  align-items: baseline;
-  margin-bottom: 20rpx;
-}
-.stats-title {
-  font-size: 30rpx;
-  font-weight: 600;
-  color: var(--xn-text-900);
-}
-.stats-sub {
-  margin-left: 16rpx;
-  font-size: 24rpx;
-  color: var(--xn-text-400);
-}
-.stats-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 16rpx;
-}
-.stats-card {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 30rpx 0;
-  background-color: var(--xn-surface);
-  border-radius: var(--xn-radius-card);
-  border-left: 6rpx solid var(--xn-text-400);
-}
-.stats-num {
-  font-size: 42rpx;
-  font-weight: 700;
-  color: var(--xn-text-900);
-  line-height: 1.2;
-}
-.stats-label {
-  margin-top: 8rpx;
-  font-size: 24rpx;
-  color: var(--xn-text-500);
-}
-.stats-card--warning {
-  border-left-color: var(--xn-st-orange);
-}
-.stats-card--primary {
-  border-left-color: var(--xn-primary);
-}
-.stats-card--success {
-  border-left-color: var(--xn-st-teal);
-}
-.stats-card--danger {
-  border-left-color: var(--xn-st-red);
-}
-.stats-card--info {
-  border-left-color: var(--xn-text-400);
 }
 </style>

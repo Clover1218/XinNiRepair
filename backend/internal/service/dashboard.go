@@ -49,12 +49,13 @@ type DashboardOrder struct {
 
 // DashboardCard 一张状态卡
 type DashboardCard struct {
-	Key    string           `json:"key"`
-	Label  string           `json:"label"`
-	Tag    string           `json:"tag"`
-	Total  int64            `json:"total"`
-	Unread int64            `json:"unread"`
-	Orders []DashboardOrder `json:"orders"`
+	Key      string           `json:"key"`
+	Label    string           `json:"label"`
+	Tag      string           `json:"tag"`
+	Total    int64            `json:"total"`
+	Unread   int64            `json:"unread"`
+	Personal bool             `json:"personal"`
+	Orders   []DashboardOrder `json:"orders"`
 }
 
 // DashboardResult 首页看板响应
@@ -80,6 +81,8 @@ type cardDef struct {
 	UnreadOnly bool
 	// CountUnread 是否计算未读数
 	CountUnread bool
+	// Personal 是否「我报修的」个人工单（首页用其归到「我的」分组）
+	Personal bool
 }
 
 // DashboardService 首页看板服务
@@ -131,7 +134,8 @@ func buildCardDefs(plainRepairer, reviewer bool) []cardDef {
 	} else {
 		// ③ 普通用户 / 单位审核员 / 超管：我报修的进行中 + 提醒（已完工·已退回未读）
 		defs = append(defs, cardDef{
-			Key: "in_progress", Label: "进行中", Tag: "in_progress",
+			Key: "in_progress", Label: "工单状态", Tag: "in_progress",
+			Personal: true,
 			Statuses: []string{
 				string(model.OrderReported),
 				string(model.OrderPendingAccept),
@@ -142,6 +146,7 @@ func buildCardDefs(plainRepairer, reviewer bool) []cardDef {
 		})
 		defs = append(defs, cardDef{
 			Key: "notice", Label: "提醒", Tag: "",
+			Personal: true,
 			Statuses: []string{
 				string(model.OrderCompleted),
 				string(model.OrderRejected),
@@ -290,12 +295,13 @@ func (s *DashboardService) buildCard(
 	}
 
 	return &DashboardCard{
-		Key:    d.Key,
-		Label:  d.Label,
-		Tag:    d.Tag,
-		Total:  stat.Total,
-		Unread: stat.Unread,
-		Orders: list,
+		Key:      d.Key,
+		Label:    d.Label,
+		Tag:      d.Tag,
+		Total:    stat.Total,
+		Unread:   stat.Unread,
+		Personal: d.Personal,
+		Orders:   list,
 	}, nil
 }
 

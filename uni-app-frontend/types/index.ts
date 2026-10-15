@@ -540,6 +540,11 @@ export interface DashboardCard {
   total: number
   /** 其中未读工单数（卡片标题旁角标；仅「提醒」卡启用） */
   unread: number
+  /**
+   * 是否「我报修的」个人工单（首页据此归到「我的」分组；
+   * 业务员/审核员的工作卡为 false，普通用户与审核员的「进行中/提醒」卡为 true）。
+   */
+  personal?: boolean
   /** 最近 N 条工单 */
   orders: DashboardOrder[]
 }

@@ -59,6 +59,11 @@
 		--xn-space: 16px;
 		--xn-gap: 12px;
 
+		/* ===== 导航栏安全区域（修复自定义 tabBar 遮挡内容底部） ===== */
+		/* 自定义 tabBar 实际占位 = 50px(≈100rpx) + 安全区；内容容器底部留白 = 该值 + 安全区 + 20px 呼吸位 */
+		--tabbar-height: 100rpx;
+		--safe-bottom: env(safe-area-inset-bottom);
+
 		/* 覆盖 wot-design-uni 主题色。
 		   其 $-color-theme 定义为 var(--wot-color-theme, $default-theme)，
 		   因此在 page 上赋值即可全局生效，无需改编译配置。 */

@@ -237,7 +237,8 @@ export default defineComponent({
 
 <style lang="scss" scoped>
 .stats {
-  padding: 24rpx 24rpx 40rpx;
+  /* 底部留出 tabBar 高度 + 安全区 + 20px 呼吸位，避免最后一块面板被固定导航栏遮挡 */
+  padding: 24rpx 24rpx calc(var(--tabbar-height, 100rpx) + var(--safe-bottom, 0px) + 20px);
 }
 
 .seg {

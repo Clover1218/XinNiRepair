@@ -321,7 +321,15 @@ export default defineComponent({
       setTimeout(() => uni.navigateBack(), 800)
       return
     }
-    this.loadDetail()
+  },
+  /**
+   * 每次显示都重载：从本页进入编辑页（navigateTo）保存后 navigateBack 触发的是 onShow，
+   * 若只在 onLoad 拉取，编辑保存的改动不会反映到详情（任务3）。
+   */
+  onShow() {
+    if (this.orderId) {
+      this.loadDetail()
+    }
   },
   methods: {
     async loadDetail() {

@@ -12,83 +12,76 @@
       </view>
     </view>
 
-    <!-- 多单位审核员：单位切换条 -->
-    <view v-if="showUnitSwitch" class="unit-bar">
-      <text class="unit-hint">您担任多个单位的审核员</text>
-      <picker mode="selector" :range="unitNames" :value="unitIndex" @change="onUnitChange">
-        <view class="unit-sel">
-          <text class="unit-sel-txt">{{ activeUnitName }}</text>
-          <text class="unit-sel-arw">▾</text>
-        </view>
-      </picker>
-    </view>
-
-    <!-- 上半：待办看板（按角色出卡，空卡不显示） -->
+    <!-- 上半：待办看板（按角色出卡；个人工单归「我的」组、其余归「待办」组；空卡不显示） -->
     <view class="board">
-      <view class="board-hd">
-        <text class="board-title">待办</text>
-        <text v-if="unreadTotal > 0" class="board-unread">{{ unreadTotal }} 条未读</text>
-      </view>
-
       <view v-if="loading && !cards.length" class="board-tip">加载中…</view>
 
       <template v-else>
-        <view v-for="c in visibleCards" :key="c.key" class="bcard">
-          <!-- 卡头：点击进该状态的工单列表 -->
-          <view class="bcard-hd" @click="goCard(c)">
-            <text class="bcard-label">{{ c.label }}</text>
-            <text class="bcard-total">({{ c.total }})</text>
-            <text v-if="c.unread > 0" class="bcard-badge">{{ c.unread > 99 ? '99+' : c.unread }}</text>
-            <text class="bcard-more">›</text>
+        <template v-for="sec in boardSections" :key="sec.title">
+          <!-- 分组小标题（与「待办」同源样式） -->
+          <view class="board-hd">
+            <text class="board-title">{{ sec.title }}</text>
+            <text v-if="unreadTotal > 0 && sec.title === unreadSectionTitle" class="board-unread">{{ unreadTotal }} 条未读</text>
           </view>
 
-          <!-- 卡体：最近几条工单，点击直达工单详情（返回键落回首页） -->
-          <view v-if="!c.orders.length" class="bcard-empty">暂无</view>
-          <view v-else class="bcard-list">
+          <view v-for="c in sec.cards" :key="c.key" class="bcard">
+            <!-- 卡头：点击进该状态的工单列表 -->
+            <view class="bcard-hd" @click="goCard(c)">
+              <text class="bcard-label">{{ c.label }}</text>
+              <text class="bcard-total">({{ c.total }})</text>
+              <text v-if="c.unread > 0" class="bcard-badge">{{ c.unread > 99 ? '99+' : c.unread }}</text>
+              <text class="bcard-more">›</text>
+            </view>
+
+            <!-- 卡体：最近几条工单，点击直达工单详情（返回键落回首页） -->
+            <view v-if="!c.orders.length" class="bcard-empty">暂无</view>
+            <view v-else class="bcard-list">
+              <view
+                v-for="o in c.orders"
+                :key="o.id"
+                class="orow"
+                @click="goDetail(c, o)"
+              >
+                <view class="orow-dot" :class="{ 'orow-dot-on': o.unread }"></view>
+                <text class="orow-tag" :class="tagCls(o.display_tag_type)">{{ o.display_tag }}</text>
+                <text class="orow-desc">{{ o.description || '（无故障描述）' }}</text>
+                <text class="orow-ent">{{ o.enterprise_name }}</text>
+              </view>
+            </view>
+
+            <!-- 卡底：展开态恒显示「收起」；未展开且仅当还有更多工单时显示「查看全部」 -->
             <view
-              v-for="o in c.orders"
-              :key="o.id"
-              class="orow"
-              @click="goDetail(c, o)"
+              v-if="expandedKeys[c.key] || c.total > c.orders.length"
+              class="bcard-foot"
+              @click="expandCard(c)"
             >
-              <view class="orow-dot" :class="{ 'orow-dot-on': o.unread }"></view>
-              <text class="orow-tag" :class="tagCls(o.display_tag_type)">{{ o.display_tag }}</text>
-              <text class="orow-desc">{{ o.description || '（无故障描述）' }}</text>
+              <text class="bcard-foot-txt">
+                {{ expandedKeys[c.key] ? '收起' : '查看全部 ' + c.total + ' 条' }}
+              </text>
+              <text class="bcard-foot-arw">{{ expandedKeys[c.key] ? '▲' : '▼' }}</text>
             </view>
           </view>
-
-          <!-- 卡底：仍有更多工单时，展开查看全部（突破 3 条预览上限） -->
-          <view
-            v-if="c.total > c.orders.length"
-            class="bcard-foot"
-            @click="expandCard(c)"
-          >
-            <text class="bcard-foot-txt">
-              {{ expandedKeys[c.key] ? '收起' : '查看全部 ' + c.total + ' 条' }}
-            </text>
-            <text class="bcard-foot-arw">{{ expandedKeys[c.key] ? '▲' : '▼' }}</text>
-          </view>
-        </view>
+        </template>
 
         <view v-if="!visibleCards.length" class="board-tip">当前没有与您相关的待办</view>
       </template>
     </view>
 
-    <!-- 下半：服务入口（常驻，不再受待办数量门控） -->
+    <!-- 下半：服务入口（线性 SVG 图标栅格） -->
     <view class="svc">
       <view class="svc-title">服务</view>
-      <view class="entry-grid">
+      <view class="svc-grid" :style="{ gridTemplateColumns: 'repeat(' + svcColumns + ', 1fr)' }">
         <view
           v-for="e in serviceEntries"
           :key="e.key"
-          class="entry-card"
+          class="svc-item"
           @click="onEntry(e)"
         >
-          <view class="entry-ico" :class="e.cls">
-            <text class="entry-ico-txt">{{ e.icon }}</text>
-          </view>
-          <text class="entry-title">{{ e.title }}</text>
-          <text v-if="e.sub" class="entry-sub">{{ e.sub }}</text>
+          <view
+            class="svc-ico"
+            :style="{ backgroundImage: 'url(' + iconUri(e.icon) + ')' }"
+          ></view>
+          <text class="svc-label">{{ e.title }}</text>
         </view>
       </view>
     </view>
@@ -101,6 +94,7 @@ import { useUserStore } from '@/stores/user'
 import { dashboardAPI } from '@/api'
 import { isStoreStaff, isUnitReviewer, isSuperAdmin, reviewerEnterprises } from '@/utils/auth'
 import { setTabBarSelected } from '@/utils/tabbar'
+import { serviceIconUri } from './icons'
 import type { DashboardCard, DashboardOrder } from '@/types'
 
 /**
@@ -146,10 +140,9 @@ function orderTag(key: string, status: string): string {
 
 interface ServiceEntry {
   key: string
+  /** 图标 key（pages/home/icons.ts PATHS） */
   icon: string
   title: string
-  sub: string
-  cls: string
   action: () => void
 }
 
@@ -161,8 +154,6 @@ export default defineComponent({
       cards: [] as DashboardCard[],
       unreadTotal: 0,
       loading: false,
-      /** 审核员当前选中的单位 */
-      activeUnitId: '',
       /** init 防并发令牌：快速切换 tab / 双 onShow 时以最新一次为准 */
       initToken: 0,
       /** 各卡片展开态（key → 是否已展开全部） */
@@ -203,27 +194,30 @@ export default defineComponent({
         ? `${date} · 您有 ${this.unreadTotal} 项新进展`
         : `${date} · 暂无新进展`
     },
-    /** 本人担任审核员的单位 */
-    unitList(): { enterprise_id: string; enterprise_name: string }[] {
-      return reviewerEnterprises()
-    },
-    unitNames(): string[] {
-      return this.unitList.map((u) => u.enterprise_name)
-    },
-    unitIndex(): number {
-      const i = this.unitList.findIndex((u) => u.enterprise_id === this.activeUnitId)
-      return i < 0 ? 0 : i
-    },
-    /** 仅多单位才显示切换条 */
-    showUnitSwitch(): boolean {
-      return isUnitReviewer() && this.unitList.length > 1
-    },
-    activeUnitName(): string {
-      return this.unitList[this.unitIndex]?.enterprise_name || '我的单位'
-    },
     /** 空卡隐藏：后端已过滤一层，这里再兜一次底 */
     visibleCards(): DashboardCard[] {
       return this.cards.filter((c) => c.total > 0)
+    },
+    /** 个人工单卡（「我报修的」：后端 personal=true）→ 归「我的」分组 */
+    personalCards(): DashboardCard[] {
+      return this.visibleCards.filter((c) => c.personal)
+    },
+    /** 角色工作卡（待审核 / 待接单 / 处理中 …）→ 归「待办」分组 */
+    workCards(): DashboardCard[] {
+      return this.visibleCards.filter((c) => !c.personal)
+    },
+    /** 看板分组：个人在前、工作在后；空组不出现 */
+    boardSections(): { title: string; cards: DashboardCard[] }[] {
+      const secs: { title: string; cards: DashboardCard[] }[] = []
+      if (this.personalCards.length) secs.push({ title: '我的', cards: this.personalCards })
+      if (this.workCards.length) secs.push({ title: '待办', cards: this.workCards })
+      return secs
+    },
+    /** 未读总数挂在首个分组标题上（个人组优先） */
+    unreadSectionTitle(): string {
+      if (this.personalCards.length) return '我的'
+      if (this.workCards.length) return '待办'
+      return ''
     },
     /** 下半部分服务入口（严格按角色互斥：审核员 / 业务员 / 普通用户） */
     serviceEntries(): ServiceEntry[] {
@@ -231,34 +225,26 @@ export default defineComponent({
         return [
           {
             key: 'ent_manage',
-            icon: '企',
+            icon: 'ent',
             title: '企业管理',
-            sub: '成员与邀请码',
-            cls: 'reviewer',
             action: () => this.goEnterpriseManage()
           },
           {
             key: 'my_orders',
-            icon: '单',
+            icon: 'my',
             title: '我的工单',
-            sub: '我报修的',
-            cls: 'plain',
             action: () => this.goList('my_repair', '')
           },
           {
             key: 'create',
-            icon: '报',
+            icon: 'fix',
             title: '报修',
-            sub: '提交新工单',
-            cls: 'primary',
             action: () => this.goCreate()
           },
           {
             key: 'review',
-            icon: '审',
+            icon: 'rev',
             title: '审核工单',
-            sub: '本单位待审核',
-            cls: 'reviewer',
             action: () => this.goList('review', 'pending_review')
           }
         ]
@@ -267,18 +253,14 @@ export default defineComponent({
         return [
           {
             key: 'hall',
-            icon: '接',
+            icon: 'hall',
             title: '接单大厅',
-            sub: '可接的工单',
-            cls: 'staff',
             action: () => this.goList('worker_task', 'pending_accept')
           },
           {
             key: 'my_repair_work',
-            icon: '修',
+            icon: 'my',
             title: '我的维修',
-            sub: '我接的工单',
-            cls: 'staff',
             action: () => this.goList('worker_task', 'mine')
           }
         ]
@@ -286,21 +268,21 @@ export default defineComponent({
       return [
         {
           key: 'my_orders',
-          icon: '单',
+          icon: 'my',
           title: '我的工单',
-          sub: '查看处理进度与结果',
-          cls: 'plain',
           action: () => this.goList('my_repair', '')
         },
         {
           key: 'create',
-          icon: '报',
+          icon: 'fix',
           title: '报修',
-          sub: '提交新工单',
-          cls: 'primary',
           action: () => this.goCreate()
         }
       ]
+    },
+    /** 图标栅格列数：≤4 按实际项数均分一行（审核员 4、业务员/普通 2） */
+    svcColumns(): number {
+      return Math.min(this.serviceEntries.length, 4) || 1
     }
   },
   methods: {
@@ -322,18 +304,14 @@ export default defineComponent({
       }
       // 若期间又触发了一次 init（快速切换 tab / 双 onShow），放弃本次，以最新为准
       if (token !== this.initToken) return
-      if (!this.activeUnitId) {
-        this.activeUnitId = this.unitList[0]?.enterprise_id || ''
-      }
       this.fetchDashboard()
     },
 
     async fetchDashboard() {
       this.loading = true
       try {
-        // 审核员带上当前所选单位；其余角色后端忽略该参数
-        const params = isUnitReviewer() && this.activeUnitId ? { enterprise_id: this.activeUnitId } : undefined
-        const res = await dashboardAPI.get(params)
+        // 看板按角色出卡：拉取本人全部相关工单（审核员含其全部单位，不再按单单位筛选）
+        const res = await dashboardAPI.get()
         this.cards = res.cards || []
         this.unreadTotal = res.unread_total || 0
         // 记录每张卡的预览快照，供「查看全部」收起时还原
@@ -347,12 +325,6 @@ export default defineComponent({
       } finally {
         this.loading = false
       }
-    },
-
-    /** 切换单位：按新单位重拉看板 */
-    onUnitChange(e: { detail: { value: number } }) {
-      this.activeUnitId = this.unitList[e.detail.value]?.enterprise_id || ''
-      this.fetchDashboard()
     },
 
     /** 点击卡片标题 → 工单列表并选中对应 Tab */
@@ -386,10 +358,7 @@ export default defineComponent({
       }
       this.loadingCardKey = c.key
       try {
-        const res = await dashboardAPI.getCardDetail(
-          c.key,
-          isUnitReviewer() ? this.activeUnitId : undefined
-        )
+        const res = await dashboardAPI.getCardDetail(c.key)
         if (res && res.orders) {
           this.previewMap[c.key] = c.orders
           c.orders = res.orders
@@ -444,6 +413,11 @@ export default defineComponent({
       e.action()
     },
 
+    /** 图标 key → data-uri 背景图 */
+    iconUri(key: string): string {
+      return serviceIconUri(key)
+    },
+
     /** display_tag_type → 胶囊配色 */
     tagCls(type: string): string {
       switch (type) {
@@ -473,7 +447,8 @@ export default defineComponent({
 
 <style lang="scss" scoped>
 .home {
-  padding: 24rpx 24rpx 40rpx;
+  /* 底部留出 tabBar 高度 + 安全区 + 20px 呼吸位，避免最后一张卡片被固定导航栏遮挡 */
+  padding: 24rpx 24rpx calc(var(--tabbar-height, 100rpx) + var(--safe-bottom, 0px) + 20px);
 }
 
 /* 问候区 */
@@ -507,39 +482,6 @@ export default defineComponent({
   background: var(--xn-primary-soft);
   color: var(--xn-primary);
   font-size: 22rpx;
-}
-
-/* 单位切换条 */
-.unit-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 20rpx 24rpx;
-  margin-bottom: 24rpx;
-  background: var(--xn-surface);
-  border: 1rpx solid var(--xn-border);
-  border-radius: var(--xn-radius-card);
-}
-.unit-hint {
-  font-size: 26rpx;
-  color: var(--xn-text-500);
-}
-.unit-sel {
-  display: flex;
-  align-items: center;
-  padding: 8rpx 20rpx;
-  background: var(--xn-primary-soft);
-  border-radius: var(--xn-radius-sm);
-}
-.unit-sel-txt {
-  font-size: 26rpx;
-  color: var(--xn-primary);
-  font-weight: 500;
-}
-.unit-sel-arw {
-  margin-left: 8rpx;
-  font-size: 22rpx;
-  color: var(--xn-primary);
 }
 
 /* 待办看板 */
@@ -665,6 +607,19 @@ export default defineComponent({
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* 每条工单来自的企业（右对齐，超长截断；与 Web 端看板一致） */
+.orow-ent {
+  flex-shrink: 0;
+  max-width: 200rpx;
+  margin-left: 12rpx;
+  padding-left: 12rpx;
+  border-left: 1rpx solid var(--xn-border);
+  font-size: 22rpx;
+  color: var(--xn-text-400);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* 状态胶囊配色（与卡片组件一致的四色语义） */
 .tag-warning {
@@ -688,7 +643,7 @@ export default defineComponent({
   color: var(--xn-text-600);
 }
 
-/* 服务入口 */
+/* 服务入口：纯净图标栅格（无卡片、无底色） */
 .svc {
   margin-top: 8rpx;
 }
@@ -700,63 +655,26 @@ export default defineComponent({
   color: var(--xn-text-700);
 }
 
-.entry-grid {
+.svc-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16rpx;
+  row-gap: 16rpx;
 }
-.entry-card {
-  padding: 24rpx 20rpx;
-  background: var(--xn-surface);
-  border: 1rpx solid var(--xn-border);
-  border-radius: var(--xn-radius-card);
-}
-.entry-ico {
-  width: 56rpx;
-  height: 56rpx;
-  border-radius: 14rpx;
+.svc-item {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: center;
-  margin-bottom: 14rpx;
+  padding: 12rpx 0;
 }
-.entry-ico-txt {
-  font-size: 26rpx;
-  font-weight: 600;
+.svc-ico {
+  width: 64rpx;
+  height: 64rpx;
+  background-size: contain;
+  background-repeat: no-repeat;
+  background-position: center;
 }
-.entry-ico.primary {
-  background: var(--xn-primary-soft);
-}
-.entry-ico.primary .entry-ico-txt {
-  color: var(--xn-primary);
-}
-.entry-ico.staff {
-  background: #fff7ed;
-}
-.entry-ico.staff .entry-ico-txt {
-  color: #ea580c;
-}
-.entry-ico.reviewer {
-  background: #fffbeb;
-}
-.entry-ico.reviewer .entry-ico-txt {
-  color: #b45309;
-}
-.entry-ico.plain {
-  background: var(--xn-tag-bg);
-}
-.entry-ico.plain .entry-ico-txt {
+.svc-label {
+  margin-top: 12rpx;
+  font-size: 24rpx;
   color: var(--xn-text-700);
-}
-.entry-title {
-  display: block;
-  font-size: 28rpx;
-  color: var(--xn-text-900);
-}
-.entry-sub {
-  display: block;
-  margin-top: 6rpx;
-  font-size: 22rpx;
-  color: var(--xn-text-500);
 }
 </style>

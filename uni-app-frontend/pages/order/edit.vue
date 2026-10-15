@@ -524,6 +524,8 @@ export default defineComponent({
       }
       this.form.contact_name = user?.nickname || ''
       this.form.contact_phone = /^1\d{10}$/.test(user?.phone || '') ? String(user?.phone) : ''
+      // 紧急程度默认「普通」（normal）；编辑已有工单时由 applyDetail 覆盖为服务端值
+      this.form.urgency = 'normal'
       if (user && this.form.enterprise_id) {
         this.form.room = readLastRoom(user.id, this.form.enterprise_id)
       }

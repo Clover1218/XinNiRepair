@@ -1,5 +1,6 @@
 <template>
   <view class="oc" @click="onClick">
+    <view class="oc-row">
     <!-- 缩略图（64px 对齐 Web；图片缺失用 image 图标占位） -->
     <view class="oc-thumb">
       <image v-if="firstImage" class="oc-thumb-img" :src="firstImage" mode="aspectFill"></image>
@@ -48,11 +49,14 @@
         </template>
       </view>
     </view>
+    <!-- 引导箭头：列表态不展示任何操作按钮，统一引导进入详情页再操作 -->
+    <view class="oc-arrow" aria-hidden="true">
+      <wd-icon name="arrow-right" size="36rpx" color="#cbd5e1"></wd-icon>
+    </view>
+    </view>
 
     <!-- 额外信息位（如退回提示） -->
     <slot />
-    <!-- 操作位（如草稿的 编辑/提交/删除），调用方需自行 @click.stop 拦截冒泡 -->
-    <slot name="actions" />
   </view>
 </template>
 
@@ -139,11 +143,25 @@ export default defineComponent({
 <style lang="scss" scoped>
 .oc {
   display: flex;
+  flex-direction: column;
   align-items: stretch;
   padding: 24rpx 28rpx;
   background: var(--xn-surface);
   border: 2rpx solid var(--xn-border);
   border-radius: 20rpx;
+}
+.oc-row {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+}
+/* 引导箭头：紧跟正文右侧、垂直居中，提示「点击进入详情」 */
+.oc-arrow {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  margin-left: 12rpx;
+  padding-left: 8rpx;
 }
 
 /* 缩略图 64px */

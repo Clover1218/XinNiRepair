@@ -320,7 +320,9 @@ func (s *AdminOrderService) ListOrders(ctx context.Context, op Operator, f repos
 	// 仅在把 processing 作为唯一筛选项时收敛：若调用方显式请求了包含 processing 的多个状态
 	// （例如「未完成」= 待审核+待接单+处理中），此时再强制 repairer_id 会把其余状态的工单
 	// 静默吞掉，导致聚合页看起来"少数据"。
-	if op.IsPlainRepairer() && len(f.Status) == 1 && f.Status[0] == string(model.OrderProcessing) {
+	// 维修业务员查看「处理中」：仅当本请求已显式要求「我的」(repairer_id=me，handler 已翻译为 op.UserID)
+	// 才收敛为本人接的单；审核员在 review 模式(未传 repairer_id)保持本单位全范围视角，不强行收窄。
+	if op.IsPlainRepairer() && f.RepairerID == op.UserID && len(f.Status) == 1 && f.Status[0] == string(model.OrderProcessing) {
 		f.RepairerID = op.UserID
 	}
 
@@ -332,6 +334,21 @@ func (s *AdminOrderService) ListOrders(ctx context.Context, op Operator, f repos
 	byStatusCounts, cErr := s.orders.CountByStatusForAdmin(ctx, countFilter)
 	if cErr != nil {
 		return nil, s.dbErr("count orders by status failed", cErr)
+	}
+	// V1.8：维修业务员「我的」视角(repairer_id=me)角标隔离：
+	// processing / pending_sign 仅统计本人接的单，避免从全经营范围角标泄漏他人工单量；
+	// 审核员 review 视角(未传 repairer_id)保持本单位全范围角标（不收敛）。
+	if op.IsPlainRepairer() && f.RepairerID == op.UserID {
+		meFilter := f
+		meFilter.Status = []string{string(model.OrderProcessing)}
+		meFilter.RepairerID = op.UserID
+		meFilter.SignatureStatus = "" // pending_sign 派生计数按本人统计（跨 processing/completed）
+		meCounts, mcErr := s.orders.CountByStatusForAdmin(ctx, meFilter)
+		if mcErr != nil {
+			return nil, s.dbErr("count repairer orders by status failed", mcErr)
+		}
+		byStatusCounts[string(model.OrderProcessing)] = meCounts[string(model.OrderProcessing)]
+		byStatusCounts[pendingSignFilterValue] = meCounts[pendingSignFilterValue]
 	}
 	unfinishedCount := byStatusCounts[string(model.OrderReported)] +
 		byStatusCounts[string(model.OrderPendingAccept)] +

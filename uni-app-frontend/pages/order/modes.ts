@@ -63,12 +63,11 @@ export const ORDER_MODES: Record<OrderMode, ModeConfig> = {
     ]
   },
 
-  // ── 审核员：统计 / 待审核 / 处理中 / 结束；不可新建 ──
+  // ── 审核员：待审核 / 处理中 / 结束；不可新建（统计已下放到独立「统计」tabBar 页）──
   review: {
     showCreate: false,
     source: 'admin',
     tabs: [
-      { key: 'stats', tag: '', label: '统计' },
       { key: 'pending_review', tag: 'pending_review', label: '待审核', sort: 'board' },
       { key: 'processing', tag: 'processing', label: '处理中', sort: 'board' },
       { key: 'ended', tag: 'ended', label: '结束' }

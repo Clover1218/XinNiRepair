@@ -44,16 +44,9 @@
         <text class="ent-add" @click="goJoin">+ 添加</text>
       </view>
       <view class="ent-list">
-        <view
-          v-for="ent in enterprises"
-          :key="ent.enterprise_id"
-          class="ent-card"
-          :class="{ current: ent.enterprise_id === currentEnterpriseId }"
-          @click="onSwitchEnterprise(ent)"
-        >
+        <view v-for="ent in enterprises" :key="ent.enterprise_id" class="ent-card">
           <view class="ent-name-wrap">
             <text class="ent-name">{{ ent.enterprise_name }}</text>
-            <text v-if="ent.enterprise_id === currentEnterpriseId" class="ent-check">✓</text>
             <text v-if="ent.role === 'reviewer' || ent.role === 'admin'" class="ent-badge reviewer">
               审核员
             </text>
@@ -80,7 +73,7 @@
           class="entry-card"
           @click="entry.action"
         >
-          <view class="entry-icon" :class="entry.cls">{{ entry.icon }}</view>
+          <view class="entry-icon" :style="{ backgroundImage: 'url(' + iconUri(entry.icon) + ')' }"></view>
           <view class="entry-text">
             <view class="entry-title">{{ entry.title }}</view>
             <view class="entry-sub">{{ entry.sub }}</view>
@@ -117,8 +110,9 @@ import { maskPhone, roleLabel, memberStatusLabel } from '@/utils/format'
 import { isStoreStaff, reviewerEnterprises, serviceEntryVisibility } from '@/utils/auth'
 import { setTabBarSelected } from '@/utils/tabbar'
 import { useOrderStore } from '@/stores/order'
+import { serviceIconUri } from '@/pages/home/icons'
 import type { OrderMode } from '@/pages/order/modes'
-import type { EnterpriseBrief, PlatformRole } from '@/types'
+import type { PlatformRole } from '@/types'
 
 const ROLE_TEXT: Record<number, string> = {
   0: '普通用户',
@@ -149,9 +143,6 @@ export default defineComponent({
     enterprises() {
       return this.enterpriseStore.enterprises
     },
-    currentEnterpriseId() {
-      return this.enterpriseStore.currentEnterpriseId
-    },
     avatarUrl() {
       return this.userInfo?.avatar_url || ''
     },
@@ -174,7 +165,6 @@ export default defineComponent({
       title: string
       sub: string
       icon: string
-      cls: 'reviewer' | 'staff'
       action: () => void
     }[] {
       const vis = serviceEntryVisibility() as Record<string, boolean>
@@ -183,39 +173,34 @@ export default defineComponent({
         title: string
         sub: string
         icon: string
-        cls: 'reviewer' | 'staff'
         action: () => void
       }[] = [
         {
           key: 'myOrders',
           title: '我的工单',
           sub: '我提交的报修记录',
-          icon: '📋',
-          cls: 'staff',
+          icon: 'my',
           action: () => this.goOrderList('my_repair')
         },
         {
           key: 'reviewOrders',
           title: '审核工单',
           sub: '待我审核的单位工单',
-          icon: '✅',
-          cls: 'reviewer',
+          icon: 'rev',
           action: () => this.goOrderList('review')
         },
         {
           key: 'repairOrders',
           title: '处理工单',
           sub: '待我接单与处理',
-          icon: '🔧',
-          cls: 'staff',
+          icon: 'fix',
           action: () => this.goOrderList('worker_task')
         },
         {
           key: 'enterprise',
           title: '企业管理',
           sub: '客户单位与成员管理',
-          icon: '🏢',
-          cls: 'reviewer',
+          icon: 'ent',
           action: () => this.goEnterpriseManage()
         }
       ]
@@ -285,15 +270,9 @@ export default defineComponent({
     goOrderList(mode: OrderMode) {
       uni.navigateTo({ url: `/pages/order/list?mode=${mode}` })
     },
-    /** V1.2：切换企业 = 纯本地上下文切换（approved 才可切换） */
-    onSwitchEnterprise(ent: EnterpriseBrief) {
-      if (ent.status !== 'approved') {
-        uni.showToast({ title: '该企业申请尚未通过，暂不可切换', icon: 'none' })
-        return
-      }
-      if (ent.enterprise_id === this.currentEnterpriseId) return
-      this.enterpriseStore.setCurrent(ent.enterprise_id)
-      uni.showToast({ title: `已切换到「${ent.enterprise_name}」`, icon: 'none' })
+    /** 入口图标 key → data-uri 背景图（与首页服务区同一套线性图标） */
+    iconUri(key: string): string {
+      return serviceIconUri(key)
     },
     async onLogout() {
       const res = await uni.showModal({ title: '提示', content: '确定退出登录吗？' })
@@ -308,7 +287,8 @@ export default defineComponent({
 <style lang="scss" scoped>
 .page {
   min-height: 100vh;
-  padding: 20rpx 24rpx;
+  /* 底部留出 tabBar 高度 + 安全区 + 20px 呼吸位，避免「退出登录」等被固定导航栏遮挡 */
+  padding: 20rpx 24rpx calc(var(--tabbar-height, 100rpx) + var(--safe-bottom, 0px) + 20px);
   box-sizing: border-box;
 }
 
@@ -406,19 +386,11 @@ export default defineComponent({
     width: 72rpx;
     height: 72rpx;
     border-radius: 16rpx;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 36rpx;
+    background-color: #f1f4f6;
+    background-size: 40rpx 40rpx;
+    background-repeat: no-repeat;
+    background-position: center;
     flex-shrink: 0;
-
-    &.reviewer {
-      background: rgba(255, 193, 7, 0.14);
-    }
-
-    &.staff {
-      background: rgba(15, 118, 110, 0.12);
-    }
   }
 
   .entry-text {
@@ -469,12 +441,6 @@ export default defineComponent({
     border-radius: 20rpx;
     padding: 28rpx;
     margin-bottom: 20rpx;
-    border: 2rpx solid transparent;
-
-    &.current {
-      border-color: #0f766e;
-      background-color: rgba(15, 118, 110, 0.04);
-    }
 
     .ent-name-wrap {
       display: flex;
@@ -484,13 +450,6 @@ export default defineComponent({
         font-size: 30rpx;
         font-weight: 600;
         color: #1a1a1a;
-      }
-
-      .ent-check {
-        margin-left: 12rpx;
-        color: #0f766e;
-        font-size: 28rpx;
-        font-weight: 700;
       }
 
       .ent-badge {
@@ -548,6 +507,7 @@ export default defineComponent({
 }
 
 .link-list {
+  margin-top: 20rpx;
   background-color: #ffffff;
   border-radius: 20rpx;
   overflow: hidden;

@@ -298,6 +298,9 @@ func (r *OrderRepository) CountByStatusForAdmin(ctx context.Context, f OrderAdmi
 	if f.ReporterID != "" {
 		base = base.Where("repair_orders.reporter_id = ?", f.ReporterID)
 	}
+	if f.RepairerID != "" {
+		base = base.Where("repair_orders.repairer_id = ?", f.RepairerID)
+	}
 	if f.SignatureStatus != "" {
 		base = base.Where("repair_orders.signature_status = ?", f.SignatureStatus)
 	}
