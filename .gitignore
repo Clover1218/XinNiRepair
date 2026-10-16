@@ -32,11 +32,16 @@ unpackage/
 
 # ── 编辑器/IDE ──
 .vscode/*
+**/.vscode
+backend/bin/
 !.vscode/extensions.json
 .idea/
 .hbuilderx/
 .workbuddy/*
 .workbuddy/memory
+.tmp_shots/*
+.playwright-mcp/*
+icons/*
 *.suo
 *.ntvs*
 *.njsproj
