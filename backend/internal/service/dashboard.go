@@ -6,9 +6,9 @@
 //   - orders ：该卡最近 N 条工单（点进去直达详情）
 //
 // 卡片矩阵：
-//   - 企业审核员：待审核（本单位，审完才消除）+ 进行中（我报修的）+ 提醒（我报修的已完工/已退回未读）
+//   - 企业审核员：待审核（本单位，审完才消除）+ 进行中（我报修的）+ 提醒（我报修的已完工/已退回/已取消未读）
 //   - 维修业务员：处理中（我接的，含待补签）+ 待接单（业务范围内可接）
-//   - 普通用户  ：进行中（我报修的）+ 提醒（我报修的已完工/已退回未读）
+//   - 普通用户  ：进行中（我报修的）+ 提醒（我报修的已完工/已退回/已取消未读）
 //
 // 未读判定：order_timeline.created_at > order_reads.last_viewed_at 且该动态非我所为。
 // 只有「提醒」卡做未读收敛——进行中/待审核/待接单属于「待办」，不做未读，避免红点噪音。
@@ -132,7 +132,7 @@ func buildCardDefs(plainRepairer, reviewer bool) []cardDef {
 			Sort:     repository.SortBoard,
 		})
 	} else {
-		// ③ 普通用户 / 单位审核员 / 超管：我报修的进行中 + 提醒（已完工·已退回未读）
+		// ③ 普通用户 / 单位审核员 / 超管：我报修的进行中 + 提醒（已完工·已退回·已取消未读）
 		defs = append(defs, cardDef{
 			Key: "in_progress", Label: "工单状态", Tag: "in_progress",
 			Personal: true,
@@ -150,6 +150,7 @@ func buildCardDefs(plainRepairer, reviewer bool) []cardDef {
 			Statuses: []string{
 				string(model.OrderCompleted),
 				string(model.OrderRejected),
+				string(model.OrderCancelled),
 			},
 			ReporterMe:  true,
 			Sort:        repository.SortBoard,

@@ -56,9 +56,32 @@ const hasFinanceData = computed(() => {
 })
 /** 早期状态（草稿/待审核/待接单）尚未产生费用，强制隐藏对账信息卡 */
 const noFinanceStatuses = ['draft', 'reported', 'pending_accept']
-const showFinance = computed(
-  () => hasFinanceData.value && !noFinanceStatuses.includes(detail.value?.status ?? '')
-)
+/** 处理中/待接单下，对账数据是否仍为默认值（金额 0、数量 0/1、单价 0，且无任何人工填写内容）→ 一并隐藏 */
+const isFinanceDefault = computed(() => {
+  const d = detail.value
+  if (!d) return true
+  const m = d.metadata
+  return (
+    !d.amount &&
+    !d.unit_price &&
+    (!d.quantity || d.quantity <= 1) &&
+    !d.repair_content &&
+    !d.remark &&
+    !(d.receipts && d.receipts.length > 0) &&
+    !(m &&
+      (m.repair_result ||
+        m.repair_method ||
+        m.warranty_period ||
+        m.repair_duration != null))
+  )
+})
+const showFinance = computed(() => {
+  const st = detail.value?.status ?? ''
+  if (noFinanceStatuses.includes(st)) return false
+  if (!hasFinanceData.value) return false
+  if ((st === 'processing' || st === 'pending_accept') && isFinanceDefault.value) return false
+  return true
+})
 const financeEditVisible = computed(() =>
   visibleActions.value.some(a => a.action === 'update_finance')
 )

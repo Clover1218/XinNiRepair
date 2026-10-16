@@ -75,26 +75,17 @@
     <view class="section">
       <view class="section-title">② 在哪里？</view>
 
-      <picker
-        mode="selector"
-        :range="enterpriseOptions"
-        range-key="name"
-        :value="enterpriseIndex"
-        @change="onEnterpriseChange"
+      <!-- 报修单位：整行可点击（多企业时弹出底部企业选择器，单企业时纯文本展示防困惑） -->
+      <view
+        class="form-cell"
+        :class="{ 'is-clickable': hasMultipleEnterprises }"
+        @click="onEnterpriseClick"
       >
-        <view class="form-cell">
-          <view class="cell-label">报修单位</view>
-          <view class="cell-value" :class="{ 'is-placeholder': !form.enterprise_id }">
-            {{ enterpriseLabel || '请选择单位' }}
-            <text class="cell-arrow">›</text>
-          </view>
+        <view class="cell-label">报修单位</view>
+        <view class="cell-value" :class="{ 'is-placeholder': !form.enterprise_id }">
+          {{ enterpriseLabel || '请选择单位' }}
+          <text v-if="hasMultipleEnterprises" class="cell-arrow">›</text>
         </view>
-      </picker>
-
-      <!-- 多单位时的「切换单位」提示（切换后立即同步全局上下文） -->
-      <view v-if="enterpriseOptions.length > 1" class="ent-hint">
-        <text class="ent-hint-text">默认单位：{{ enterpriseLabel || '未选择' }}，可在下方切换</text>
-        <text class="ent-hint-btn" @click.stop="switchEnterprise">切换单位</text>
       </view>
 
       <!-- 位置：手填 + 常驻 chips + 聚焦历史浮层 -->
@@ -340,8 +331,9 @@ export default defineComponent({
     isNewDraft(): boolean {
       return !this.orderId
     },
-    enterpriseIndex(): number {
-      return this.enterpriseOptions.findIndex((o) => o.id === this.form.enterprise_id)
+    /** 是否有多个企业：决定「报修单位」行是否可点击切换（单企业纯文本展示） */
+    hasMultipleEnterprises(): boolean {
+      return this.enterpriseOptions.length > 1
     },
     enterpriseLabel(): string {
       const o = this.enterpriseOptions.find((x) => x.id === this.form.enterprise_id)
@@ -609,9 +601,9 @@ export default defineComponent({
       this.propertyOptions = []
     },
     /* ---------- 字典选择 ---------- */
-    onEnterpriseChange(e: { detail: { value: number } }) {
-      const opt = this.enterpriseOptions[e.detail.value]
-      if (opt) this.form.enterprise_id = opt.id
+    /** 点击「报修单位」行：多企业弹出底部企业选择器，单企业/无企业不响应 */
+    onEnterpriseClick() {
+      if (this.hasMultipleEnterprises) this.switchEnterprise()
     },
     /** 多单位切换：同时更新本单与「我的企业」全局上下文 */
     switchEnterprise() {
@@ -629,7 +621,6 @@ export default defineComponent({
             if (remembered) this.form.room = remembered
           }
           this.loadRoomHistory()
-          uni.showToast({ title: `已切换默认单位：${opt.name}`, icon: 'none' })
         },
         fail: () => {}
       })
@@ -1321,6 +1312,13 @@ export default defineComponent({
     padding-right: 24rpx;
   }
 
+  /* 可点击行（多企业切换）：轻微按压反馈，提示整行可点 */
+  &.is-clickable {
+    &:active {
+      background-color: #f7f8fa;
+    }
+  }
+
   .cell-input {
     flex: 1;
     font-size: 28rpx;
@@ -1357,8 +1355,10 @@ export default defineComponent({
     }
 
     .cell-arrow {
-      margin-left: 8rpx;
-      color: #cccccc;
+      margin-left: 18rpx;
+      color: #9aa0a6;
+      font-size: 34rpx;
+      font-weight: 700;
     }
   }
 }
@@ -1409,21 +1409,6 @@ export default defineComponent({
   font-size: 30rpx;
   color: #c8c9cc;
   margin-left: 12rpx;
-}
-
-/* 多单位切换提示 */
-.ent-hint {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16rpx 0 8rpx;
-  font-size: 24rpx;
-  color: #8a8f99;
-
-  .ent-hint-btn {
-    color: #4a7cf7;
-    flex-shrink: 0;
-  }
 }
 
 /* 设备类型 / 问题类别 两级弹层 */

@@ -29,7 +29,6 @@
             <view class="bcard-hd" @click="goCard(c)">
               <text class="bcard-label">{{ c.label }}</text>
               <text class="bcard-total">({{ c.total }})</text>
-              <text v-if="c.unread > 0" class="bcard-badge">{{ c.unread > 99 ? '99+' : c.unread }}</text>
               <text class="bcard-more">›</text>
             </view>
 
@@ -128,12 +127,14 @@ function cardTag(key: string): string {
 
 /**
  * 卡内单条工单 → 目标 Tab key。
- * 「提醒」卡混装已完工与已退回，按该工单自身状态落到对应 Tab（已完成 / 已退回）；
+ * 「提醒」卡混装已完工/已退回/已取消，按该工单自身状态落到对应 Tab（已完成/已退回/已取消）；
  * 其余卡沿用卡片本身的 Tab。
  */
 function orderTag(key: string, status: string): string {
   if (key === 'notice') {
-    return status === 'completed' ? 'finished' : 'rejected'
+    if (status === 'completed') return 'finished'
+    if (status === 'cancelled') return 'closed'
+    return 'rejected'
   }
   return cardTag(key)
 }
@@ -533,16 +534,6 @@ export default defineComponent({
   margin-left: 8rpx;
   font-size: 26rpx;
   color: var(--xn-text-500);
-}
-.bcard-badge {
-  margin-left: 12rpx;
-  min-width: 32rpx;
-  padding: 2rpx 12rpx;
-  border-radius: 18rpx;
-  background: #dc2626;
-  color: #fff;
-  font-size: 22rpx;
-  text-align: center;
 }
 .bcard-more {
   margin-left: auto;

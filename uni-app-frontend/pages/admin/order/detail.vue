@@ -732,7 +732,23 @@ export default defineComponent({
     isLongDesc(): boolean {
       return (this.detail?.description || '').length > 60
     },
-    /** 对账卡可见：店方 + 有对账数据 + 非早期状态（金额敏感，审核员隐藏） */
+    /** 对账数据是否仍为默认值（金额 0、数量 0/1、单价 0，且无任何人工填写内容） */
+    isFinanceDefault(): boolean {
+      const d = this.detail
+      if (!d) return true
+      const md = d.metadata
+      return (
+        !d.amount &&
+        !d.unit_price &&
+        (!d.quantity || d.quantity <= 1) &&
+        !d.repair_content &&
+        !d.remark &&
+        !(d.receipts && d.receipts.length > 0) &&
+        !(md && (md.repair_result || md.repair_method || md.warranty_period || md.repair_duration != null))
+      )
+    },
+    /** 对账卡可见：店方 + 有对账数据 + 非早期状态（金额敏感，审核员隐藏）；
+     *  处理中/待接单且对账数据全为默认值时也隐藏（避免显示无意义的 ¥0.00 卡） */
     showFinance(): boolean {
       if (!isStoreStaff()) return false
       const d = this.detail
@@ -741,7 +757,11 @@ export default defineComponent({
       if (early.includes(d.status)) return false
       const hasFinance =
         d.amount != null || d.quantity != null || d.unit_price != null || !!d.repair_content
-      return !!hasFinance
+      if (!hasFinance) return false
+      if ((d.status === 'processing' || d.status === 'pending_accept') && this.isFinanceDefault) {
+        return false
+      }
+      return true
     },
     /** 对账编辑入口：仅店方在已完成状态可见 */
     financeEditVisible(): boolean {

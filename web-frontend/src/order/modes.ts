@@ -152,11 +152,13 @@ export function cardKeyToTag(key: string): string {
 
 /**
  * 卡片内单条工单 → 目标 Tab tag。
- * 「提醒」卡混装已完工与已退回，按该工单自身 status 落到对应 Tab；其余沿用卡片本身。
+ * 「提醒」卡混装已完工/已退回/已取消，按该工单自身 status 落到对应 Tab；其余沿用卡片本身。
  */
 export function orderStatusToTag(key: string, status: string): string {
   if (key === 'notice') {
-    return status === 'completed' ? 'finished' : 'rejected'
+    if (status === 'completed') return 'finished'
+    if (status === 'cancelled') return 'closed'
+    return 'rejected'
   }
   return cardKeyToTag(key)
 }

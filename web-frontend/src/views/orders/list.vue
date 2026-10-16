@@ -307,7 +307,7 @@ const reporterSelectWidth = computed(() => {
 
 /** Tab 角标：
  *  - review 仅「待审核」显示未读红点（处理中/结束不显示）；
- *  - my_repair 仅「待补签 / 已退回 / 已完工」显示未读红点；
+ *  - my_repair 仅「待补签 / 已退回 / 已完成 / 已取消」显示未读红点；
  *  - worker_task（维修业务员）仅「处理中 / 待补签」显示角标，且一律取自稳定的
  *    workerCounts（repairer_id=me 视角），不受当前 Tab 是否带 repairer_id 收敛影响，
  *    切到任意 Tab 都稳定挂着；其余 Tab（我的维修 / 待接单 / 结束）不显示。
@@ -315,7 +315,7 @@ const reporterSelectWidth = computed(() => {
 const statusCountOf = (tab: ModeTab): number => {
   if (!tab.tag) return 0
   if (mode.value === 'review' && tab.key !== 'pending_review') return 0
-  if (mode.value === 'my_repair' && !['pending_sign', 'rejected', 'finished'].includes(tab.key)) return 0
+  if (mode.value === 'my_repair' && !['pending_sign', 'rejected', 'finished', 'closed'].includes(tab.key)) return 0
   if (mode.value === 'worker_task') {
     if (tab.key === 'processing') return workerCounts.value['processing'] || 0
     if (tab.key === 'pending_sign') return workerCounts.value['pending_sign'] || 0
