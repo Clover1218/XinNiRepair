@@ -3,7 +3,11 @@ import { User, Location, OfficeBuilding, Picture } from '@element-plus/icons-vue
 import type { OrderListItem } from '@/types'
 import { formatDateTime } from '@/utils/format'
 
-const props = defineProps<{ row: OrderListItem }>()
+const props = defineProps<{
+  row: OrderListItem
+  /** 已按企业筛选时隐藏企业行（信息冗余，卡片更紧凑） */
+  hideEnterprise?: boolean
+}>()
 const emit = defineEmits<{ (e: 'click', row: OrderListItem): void }>()
 
 // 放大后的状态展示（颜色 + 文案），含 V1.5 本质标签（待补签等）
@@ -35,6 +39,7 @@ function statusView(row: OrderListItem) {
     </div>
     <div class="oc-body">
       <div class="oc-top">
+        <span v-if="row.unread" class="oc-unread-dot" title="有未读动态" />
         <div class="oc-desc" :title="row.description">{{ row.description || '（无故障描述）' }}</div>
         <div v-if="row.amount && row.amount > 0" class="oc-amount">
           ¥{{ Number(row.amount).toFixed(2) }}
@@ -54,13 +59,16 @@ function statusView(row: OrderListItem) {
       <div class="oc-meta">
         <div class="oc-line">
           <el-icon class="oc-ico"><User /></el-icon>
-          <span class="oc-val" :title="row.reporter.nickname">{{ row.reporter.nickname }}</span>
+          <!-- 用户端 /orders 行不含 reporter（全是本人单），判空回退为「本人」，避免渲染抛错 -->
+          <span class="oc-val" :title="row.reporter?.nickname || '本人'">
+            {{ row.reporter?.nickname || '本人' }}
+          </span>
           <span class="oc-sep">|</span>
           <el-icon class="oc-ico"><Location /></el-icon>
           <span class="oc-val oc-val--flex" :title="row.room">{{ row.room || '未填地点' }}</span>
         </div>
-        <!-- 企业单独一行 -->
-        <div class="oc-line">
+        <!-- 企业单独一行（已选企业筛选时隐藏） -->
+        <div v-if="!hideEnterprise" class="oc-line">
           <el-icon class="oc-ico"><OfficeBuilding /></el-icon>
           <span class="oc-val oc-val--flex" :title="row.enterprise_name">{{ row.enterprise_name }}</span>
         </div>
@@ -123,9 +131,17 @@ function statusView(row: OrderListItem) {
 
 .oc-top {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 8px;
+}
+
+.oc-unread-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #dc2626;
+  flex-shrink: 0;
 }
 
 .oc-desc {

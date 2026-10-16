@@ -129,6 +129,29 @@ func (n *OrderNotifier) NotifyOrderReject(ctx context.Context, order *model.Repa
 	n.send(ctx, openid, tplOrderReject, data, order.ID)
 }
 
+// NotifyOrderReturnedToPool 工单退单回池通知 (V1.9: return_to_pool)
+//
+// 使用模板: 工单状态提醒 (tplOrderReject，与退回同一模板)
+// 字段: thing34=工单标题 character_string10=工单编号 phrase7=工单状态 thing17=退单原因 time16=操作时间
+// 仅通知报修人：让其知道工单重新排队等待其他维修员接单。
+func (n *OrderNotifier) NotifyOrderReturnedToPool(ctx context.Context, order *model.RepairOrder, reason string) {
+	if order == nil {
+		return
+	}
+	openid, ok := n.reporterOpenid(ctx, order.ReporterID)
+	if !ok {
+		return
+	}
+	data := map[string]SubscribeMessageData{
+		"thing34":            {Value: truncateUTF8(orderProjectLabel(order), 20)},
+		"character_string10": {Value: orderNo(order)},
+		"phrase7":            {Value: "退回待接单"},
+		"thing17":            {Value: truncateUTF8(reason, 20)},
+		"time16":             {Value: time.Now().Format("2006-01-02 15:04:05")},
+	}
+	n.send(ctx, openid, tplOrderReject, data, order.ID)
+}
+
 // NotifyOrderComplete 工单完结通知
 //
 // 使用模板: 报修工单完结通知 (tplOrderComplete)

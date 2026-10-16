@@ -4,6 +4,7 @@ import type {
   DictionaryCategoryTree,
   DictionaryProblem,
   DictionaryProperty,
+  DashboardCard,
   DashboardResult,
   EnterpriseDetail,
   EnterpriseListItem,
@@ -36,6 +37,10 @@ export interface OrderListParams {
   status?: string
   urgency?: string
   keyword?: string
+  /** display_tag 枚举键（英文；'' 表示不过滤；与 status 二选一，优先级高于 status） */
+  display_tag?: string
+  /** 仅「我接的单」（后端只认字面量 'me'，不接受任意 UUID 防越权）；维修员「我的维修」Tab 用 */
+  repairer_id?: string
   /** 企业精确筛选（下拉选择；单位审核员必传且限定本单位） */
   enterprise_id?: string
   /** 项目大类筛选（V1.4） */
@@ -104,6 +109,12 @@ export const adminAPI = {
   // 标记工单已读：进详情页时调用，写入「该用户 × 该工单」的已读时间，首页红点消失
   markOrderRead: (orderId: string) => client.post(`/orders/${orderId}/read`),
 
+  // 首页看板单卡全量（突破每卡预览上限；首页「查看全部」展开）
+  getDashboardCard: (key: string, enterpriseId?: string) =>
+    client.get<DashboardCard>('/dashboard/card-detail', {
+      params: enterpriseId ? { key, enterprise_id: enterpriseId } : { key }
+    }),
+
   // 5.17 工单汇总统计（含今日概况；店方可全域/审核员限本单位）
   getOrderStats: (params: { enterprise_id?: string; start?: string; end?: string }) =>
     client.get<OrderStats>('/admin/orders/stats', { params }),
@@ -135,6 +146,10 @@ export const adminAPI = {
   // 5.5 退回工单（reported：审核员/店方；pending_accept/processing：仅店方）
   rejectOrder: (orderId: string, reason: string) =>
     client.post(`/admin/orders/${orderId}/reject`, { reason }),
+
+  // V1.9 退单回池（processing → pending_accept；仅接单人本人或超管，清财务字段+清旧收据图）
+  returnOrder: (orderId: string, reason: string) =>
+    client.post(`/admin/orders/${orderId}/return`, { reason }),
 
   // 5.6 完工登记（仅店方；req② 三结果：result=complete/customer_cancelled/unrepairable）
   // 当 result=complete 时，sign_mode=signed(已签字,必填收据) | pending_sign(稍后补签,保持处理中)

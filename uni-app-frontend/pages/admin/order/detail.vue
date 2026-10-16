@@ -264,6 +264,31 @@
       </view>
     </wd-popup>
 
+    <!-- 退单回池弹窗 -->
+    <wd-popup v-model="showReturnPopup" position="center" round custom-style="width: 86%;">
+      <view class="popup-body">
+        <view class="popup-title">退单回池</view>
+        <view class="popup-label">
+          退单原因<text class="popup-label-req">（必填，2-200字）</text>
+        </view>
+        <view class="popup-tip">退单后工单回到「待接单」公共池，将清空维修/财务信息与上一任收据图。</view>
+        <wd-textarea
+          v-model="returnReason"
+          placeholder="请填写退单原因，如：现场无配件需返厂、超出维修范围等"
+          :maxlength="200"
+          show-word-limit
+          auto-height
+          custom-style="min-height: 160rpx; padding: 20rpx; background: #f5f6f8; border-radius: 12rpx;"
+        />
+        <view class="popup-actions">
+          <wd-button plain round size="small" @click="showReturnPopup = false">取消</wd-button>
+          <wd-button type="danger" round size="small" :loading="submitting" @click="confirmReturn">
+            确认退单
+          </wd-button>
+        </view>
+      </view>
+    </wd-popup>
+
     <!-- 完工弹窗（对齐 Web 最新版：结单结果 + 客户签字；仅“完成”展示对账信息块） -->
     <wd-popup v-model="showCompletePopup" position="center" round custom-style="width: 90%;">
       <view class="popup-body complete-body">
@@ -638,6 +663,8 @@ export default defineComponent({
       // 弹窗显隐
       showRejectPopup: false,
       rejectReason: '',
+      showReturnPopup: false,
+      returnReason: '',
       showCompletePopup: false,
       showFinancePopup: false,
       // 通用确认弹窗（审核通过 / 接单维修 / 重新打开）
@@ -887,6 +914,8 @@ export default defineComponent({
           return 'success'
         case 'reject':
           return 'danger'
+        case 'return_to_pool':
+          return 'danger'
         case 'accept':
           return 'warning'
         case 'audit':
@@ -901,6 +930,11 @@ export default defineComponent({
       if (act.action === 'reject') {
         this.showRejectPopup = true
         this.rejectReason = ''
+        return
+      }
+      if (act.action === 'return_to_pool') {
+        this.showReturnPopup = true
+        this.returnReason = ''
         return
       }
       if (act.action === 'complete') {
@@ -978,6 +1012,29 @@ export default defineComponent({
       } catch (e) {
         console.error('退回失败', e)
         uni.showToast({ title: '退回失败，请重试', icon: 'none' })
+      } finally {
+        this.submitting = false
+      }
+    },
+    /** 退单回池：processing → pending_accept（仅接单人/超管，清财务+清旧收据图） */
+    async confirmReturn() {
+      const reason = this.returnReason.trim()
+      const action = this.actionButtons.find((a) => a.action === 'return_to_pool')
+      const minLength = action?.reason_min_length || 2
+      if (reason.length < minLength) {
+        uni.showToast({ title: `退单原因至少${minLength}字`, icon: 'none' })
+        return
+      }
+      if (this.submitting) return
+      this.submitting = true
+      try {
+        await adminAPI.returnOrder(this.orderId, reason)
+        uni.showToast({ title: '已退单回池', icon: 'success' })
+        this.showReturnPopup = false
+        this.loadDetail()
+      } catch (e) {
+        console.error('退单失败', e)
+        uni.showToast({ title: '退单失败，请重试', icon: 'none' })
       } finally {
         this.submitting = false
       }

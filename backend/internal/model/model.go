@@ -142,6 +142,10 @@ const (
 	ActionUnaudit ActionType = "unaudit" // 撤回审核：pending_accept → reported（未接单时，问题 #1/#22）
 	ActionSign    ActionType = "sign"    // 客户补签：上传签字单并置 signed（正式完工）
 	ActionDeferSign ActionType = "defer_sign" // 稍后补签：完成结单但暂不写 completed_at，留待补签
+	// V1.9: 退单回池：processing → pending_accept（接单人/超管操作；清财务字段 + 清旧收据图，回公共池重派）
+	ActionReturnToPool ActionType = "return_to_pool"
+	// V1.9: 退单回池时清理上一任师傅的收据图（时间轴留痕）
+	ActionCleanupReceipts ActionType = "cleanup_receipts"
 )
 
 // SignMode 完工登记中「客户签字」子模式（仅 result=complete 时生效）。
@@ -179,7 +183,7 @@ var ValidTransitions = map[OrderStatus][]OrderStatus{
 	OrderReported: {OrderPendingAccept, OrderRejected, OrderCancelled}, // 审核通过 / 退回 / 取消
 	// V1.5: 新增撤回审核（问题 #1/#22）—— 未接单时可撤销审核让报修人重新修改
 	OrderPendingAccept: {OrderProcessing, OrderRejected, OrderCancelled, OrderReported}, // 接单 / 退回 / 取消 / 撤回审核
-	OrderProcessing:    {OrderCompleted, OrderRejected, OrderCancelled},                 // 完工 / 退回 / 结单取消(不能修·客户原因取消)
+	OrderProcessing:    {OrderCompleted, OrderRejected, OrderCancelled, OrderPendingAccept}, // 完工 / 退回 / 结单取消 / 退单回池(处理中→待接单)
 	OrderRejected:      {OrderReported, OrderCancelled},                                 // 重新提交（报修人修改后）/ 取消
 	OrderCompleted:     {OrderProcessing},                                               // 重新打开（维修业务员）
 	OrderCancelled:     {},                                                              // 终态

@@ -69,6 +69,8 @@ var actionLabels = map[string]string{
 	"update_finance": "修改对账信息",
 	"sign":           "补签完工",
 	"defer_sign":     "稍后补签",
+	"return_to_pool": "退单回池",
+	"cleanup_receipts": "清理收据图",
 }
 
 // ────────────────────────────────────────────
@@ -273,12 +275,17 @@ type OrderListItem struct {
 	ReceiptUploaded bool   `json:"receipt_uploaded"`
 	SignatureStatus string `json:"signature_status"`
 	FinishOutcome   string `json:"finish_outcome"`
+	// V1.8 列表卡片小红点：存在他人新动态且当前用户未读
+	Unread bool `json:"unread"`
 }
 
 // OrderListResult 我的工单列表 (4.6)
 type OrderListResult struct {
 	List       []OrderListItem `json:"list"`
 	Pagination Pagination      `json:"pagination"`
+	// UnreadCounts 各状态未读工单数（红点提醒用）：key 与后端管理端同构（状态值 + pending_sign）；
+	// 存在「他人新动态且我未读」的工单时才 >0，进详情页标记已读后随之减少。
+	UnreadCounts map[string]int64 `json:"unread_counts"`
 }
 
 // ImageItem 图片信息
@@ -763,6 +770,10 @@ func (s *OrderService) List(ctx context.Context, userID, enterpriseID, status, d
 	if err != nil {
 		return nil, s.dbErr("count receipts failed", err)
 	}
+	unreadFlags, err := s.orders.UnreadFlags(ctx, userID, orderIDs)
+	if err != nil {
+		return nil, s.dbErr("check unread flags failed", err)
+	}
 
 	list := make([]OrderListItem, 0, len(orders))
 	for _, o := range orders {
@@ -792,12 +803,18 @@ func (s *OrderService) List(ctx context.Context, userID, enterpriseID, status, d
 			ReceiptUploaded: receiptUploaded,
 			SignatureStatus: o.SignatureStatus,
 			FinishOutcome:   o.FinishOutcome,
+			Unread:          unreadFlags[o.ID],
 		})
 	}
 
 	totalPages := int(total) / pageSize
 	if int(total)%pageSize > 0 {
 		totalPages++
+	}
+	// 我的工单未读聚合（待补签 / 已退回 / 已完工 红点用）
+	unreadCounts, ucErr := s.orders.CountUnreadByStatusForReporter(ctx, userID, enterpriseID, userID)
+	if ucErr != nil {
+		return nil, s.dbErr("count unread orders failed", ucErr)
 	}
 	return &OrderListResult{
 		List: list,
@@ -807,6 +824,7 @@ func (s *OrderService) List(ctx context.Context, userID, enterpriseID, status, d
 			PageSize:   pageSize,
 			TotalPages: totalPages,
 		},
+		UnreadCounts: unreadCounts,
 	}, nil
 }
 

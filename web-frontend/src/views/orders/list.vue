@@ -3,14 +3,21 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { OfficeBuilding, Filter } from '@element-plus/icons-vue'
+import { ArrowDown, Download } from '@element-plus/icons-vue'
 import OrderCardC from '@/components/OrderCardC.vue'
 import { adminAPI, fetchOrderOptions, type OrderListParams } from '@/api/admin'
+import { orderAPI, type UserOrderListParams } from '@/api/order'
 import { useUserStore } from '@/stores/user'
 import { useOrderListQueryStore } from '@/stores/orderListQuery'
+import {
+  ORDER_MODES,
+  resolveMode,
+  type OrderMode,
+  type ModeTab
+} from '@/order/modes'
+import { TAG_STATUS_GROUPS } from '@/order/tags'
 import type {
   CategoryOption,
-  EnterpriseListItem,
   OrderListItem,
   ReporterOption,
   Urgency
@@ -21,66 +28,41 @@ const router = useRouter()
 const route = useRoute()
 const userStore = useUserStore()
 
-// 既非店方也非审核员：不允许停留本页
+// 仅店方/审核员可停留本页（纯普通用户不进后台，由路由守卫拦截）
 if (!userStore.isStoreStaff && !userStore.hasReviewerRole) {
   router.replace('/')
 }
 
 // ─────────────────────────────────────────────────────────
-// 角色化状态 Tab
-// 同一套状态、只换标签，不是两套数据：pending_accept 对维修员是「待接单」
-// （要去接的活），对审核员是「已审核通过」（已批过的单）。行级状态胶囊
-// 仍显示真实状态，因此不会误导。
+// mode 驱动：my_repair(用户端) / review / worker_task(管理端)
+// Tab 一律由 ORDER_MODES[mode].tabs 配置渲染，禁止按原始 status 硬编码。
 // ─────────────────────────────────────────────────────────
-interface StatusTab {
-  label: string
-  value: string
+const mode = ref<OrderMode>('my_repair')
+const activeTabKey = ref<string>('')
+
+/** 从 URL ?mode=&tag=&enterprise=&reporter= 解析并落定 mode / 当前 Tab；URL 优先于会话记忆 */
+const initModeAndTab = () => {
+  const qMode = typeof route.query.mode === 'string' ? route.query.mode : undefined
+  mode.value = resolveMode(qMode, {
+    isStoreStaff: userStore.isStoreStaff,
+    hasReviewerRole: userStore.hasReviewerRole
+  })
+  const qEnt = typeof route.query.enterprise === 'string' ? route.query.enterprise : ''
+  if (qEnt) enterpriseId.value = qEnt
+  const qRep = typeof route.query.reporter === 'string' ? route.query.reporter : ''
+  if (qRep) reporterId.value = qRep
+  const qTag = typeof route.query.tag === 'string' ? route.query.tag : ''
+  activeTabKey.value = tabs.value.some(t => t.key === qTag) ? qTag : tabs.value[0].key
 }
-/** 「未完成」= 还没干完的单：待审核 + 待接单 + 处理中（按约定排除「已取消」） */
-const UNFINISHED = 'reported,pending_accept,processing'
 
-const storeTabs = (): StatusTab[] => [
-  { label: '全部', value: '' },
-  { label: '待接单', value: 'pending_accept' },
-  { label: '处理中', value: 'processing' },
-  { label: '已完成', value: 'completed' },
-  { label: '已取消', value: 'cancelled' },
-  { label: '未完成', value: UNFINISHED }
-]
-
-const reviewerTabs = (): StatusTab[] => [
-  { label: '全部', value: '' },
-  { label: '待审核', value: 'reported' },
-  { label: '已审核通过', value: 'pending_accept' },
-  { label: '处理中', value: 'processing' },
-  { label: '已完成', value: 'completed' },
-  { label: '已取消', value: 'cancelled' },
-  { label: '未完成', value: UNFINISHED }
-]
-
-/** 兼任多角色时 Tab 取并集：以店方为主线，补入仅审核员才有的「待审核」 */
-const statusTabs = computed<StatusTab[]>(() => {
-  if (userStore.isStoreStaff && userStore.hasReviewerRole) {
-    const tabs = storeTabs()
-    tabs.splice(1, 0, { label: '待审核', value: 'reported' })
-    return tabs
-  }
-  return userStore.isStoreStaff ? storeTabs() : reviewerTabs()
-})
-
-/** 该角色的默认 Tab：进来就落在"该动手"的那一栏 */
-const defaultStatus = computed(() => {
-  if (userStore.hasReviewerRole) return 'reported'
-  if (userStore.isStoreStaff) return 'pending_accept'
-  return ''
-})
-
-/** 纯审核员（非店方）：后端强制限定本单位，前端必须选单位 */
-const reviewerOnly = computed(() => !userStore.isStoreStaff && userStore.hasReviewerRole)
-const reviewerUnits = computed(() => userStore.reviewerEnterprises)
-/** 多单位时出现「切换单位」信息提示 */
-const showUnitSwitch = computed(() => reviewerOnly.value && reviewerUnits.value.length > 1)
-const activeUnitId = ref('')
+const modeConfig = computed(() => ORDER_MODES[mode.value])
+const tabs = computed<ModeTab[]>(() => modeConfig.value.tabs)
+const isUserSource = computed(() => modeConfig.value.source === 'mine')
+const activeTab = computed<ModeTab | undefined>(
+  () => tabs.value.find(t => t.key === activeTabKey.value) || tabs.value[0]
+)
+/** 该 Tab 是否使用看板排序（状态优先级 + 更新时间倒序） */
+const isBoardTab = computed(() => activeTab.value?.sort === 'board')
 
 // 视图模式：C=紧凑卡片 / D=合并表格，可切换并记忆
 type OrderViewMode = 'card' | 'table'
@@ -120,7 +102,6 @@ const urgencyMap: Record<Urgency, { label: string; color: string; dots: number }
 // 筛选/分页/排序会话态（存 Pinia，返回本页不重置）
 const queryStore = useOrderListQueryStore()
 const {
-  activeStatus,
   enterpriseId,
   categoryId,
   propertyId,
@@ -137,87 +118,146 @@ const {
 
 const reporterName = ref(queryStore.reporterName)
 
+/**
+ * 「按时间」控件状态：
+ * - 看板 Tab（待审核 / 处理中 / 待接单 / 我的维修 …）排序由后端 board 优先级决定，
+ *   时间排序不生效 → 置为静默态（title 提示「看板顺序」），点击无动作；
+ * - 其余 Tab（结束 / 草稿 / 已退回 …）交由「按时间 ↑↓」控制提交时间正/倒序。
+ */
+const timeSortArrow = computed(() => (sortOrder.value === 'asc' ? '↑' : '↓'))
+/** 「用户」筛选占位文案：未选企业时后端报修人接口会拒答，故灰显提示先选企业 */
+const reporterPlaceholder = computed(() => (enterpriseId.value ? '全部用户' : '请先选择企业'))
+
 const loading = ref(false)
 const list = ref<OrderListItem[]>([])
 const total = ref(0)
-/** 各状态实时计数（角标用），来自 /admin/orders 响应的 status_counts */
+/** 各状态实时计数（角标用），来自 /admin/orders 响应的 status_counts；用户端无此字段则留空 */
 const statusCounts = ref<Record<string, number>>({})
-/** 详细筛选抽屉显隐 */
-const drawerVisible = ref(false)
+/** 各状态未读工单数（红点提醒用），来自列表响应的 unread_counts；对齐小程序提醒逻辑 */
+const unreadCounts = ref<Record<string, number>>({})
+/**
+ * 维修业务员（worker_task）专属：「我接的单」视角下的稳定角标计数。
+ * 后台 status_counts 会随当前 Tab 的 repairer_id 收敛而波动（repairer_id=me 时只数本人，
+ * 无 repairer_id 时数全经营范围），导致「处理中 / 待补签」角标在切换 Tab 时忽有忽无。
+ * 故单独用 repairer_id=me、不带 display_tag 的请求拉一份稳定计数，专供这两个 Tab 角标使用。
+ */
+const workerCounts = ref<Record<string, number>>({})
+/** 详细筛选展开栏显隐（点击「详细筛选」在下一行展开，不再用右侧抽屉） */
+const advVisible = ref(false)
+/** 已启用的详细筛选项数量（用于按钮角标提示） */
+const advActiveCount = computed(() => {
+  let n = 0
+  if (categoryId.value) n++
+  if (propertyId.value) n++
+  if (urgency.value) n++
+  if (essenceFilter.value) n++
+  if (keyword.value.trim()) n++
+  if (dateRange.value) n++
+  return n
+})
 
-// ── URL 承载筛选：首页区块「详情 →」带 ?status=xxx 直达此处，Tab 自动选中 ──
-/** 把当前 Tab（及审核员单位）写回 URL，刷新/分享/后退都能停在同一个 Tab */
+/** 把当前 mode / Tab / 企业 / 报修人写回 URL，刷新/分享/后退都能停在同一个视图 */
 const syncUrl = () => {
-  const query: Record<string, string> = {}
-  if (activeStatus.value) query.status = activeStatus.value
-  if (reviewerOnly.value && activeUnitId.value) query.enterprise = activeUnitId.value
+  const query: Record<string, string> = { mode: mode.value, tag: activeTabKey.value }
+  if (enterpriseId.value) query.enterprise = enterpriseId.value
+  if (reporterId.value) query.reporter = reporterId.value
   router.replace({ name: 'OrderList', query })
 }
 
-/** 初始化顺序：URL 参数 > 会话记忆 > 角色默认 Tab */
-const initFromQuery = () => {
-  if (reviewerOnly.value) {
-    const qEnt = typeof route.query.enterprise === 'string' ? route.query.enterprise : ''
-    activeUnitId.value = reviewerUnits.value.some(u => u.enterprise_id === qEnt)
-      ? qEnt
-      : reviewerUnits.value[0]?.enterprise_id || ''
+/** 当前页内状态是否已与 URL query 一致（一致则 watcher 无需重复拉取） */
+const queryMatchesState = (q: Record<string, unknown>) =>
+  q.mode === mode.value &&
+  q.tag === activeTabKey.value &&
+  (q.enterprise || '') === enterpriseId.value &&
+  (q.reporter || '') === reporterId.value
+
+/** 构造「我接的单」稳定角标计数请求参数（repairer_id=me，不带 display_tag，复用当前高级筛选） */
+const buildWorkerCountParams = (): OrderListParams => {
+  const p: OrderListParams = { page: 1, page_size: 1, repairer_id: 'me' }
+  if (enterpriseId.value) p.enterprise_id = enterpriseId.value
+  if (categoryId.value) p.category_id = categoryId.value
+  if (propertyId.value) p.property_id = propertyId.value
+  if (reporterId.value) p.reporter_id = reporterId.value
+  if (keyword.value.trim()) p.keyword = keyword.value.trim()
+  if (urgency.value) p.urgency = urgency.value
+  if (essenceFilter.value === 'unrepairable' || essenceFilter.value === 'customer_cancelled') {
+    p.finish_outcome = essenceFilter.value
+  } else if (essenceFilter.value === 'pending_sign' || essenceFilter.value === 'signed') {
+    p.signature_status = essenceFilter.value
   }
-  const qStatus = typeof route.query.status === 'string' ? route.query.status : undefined
-  if (qStatus !== undefined && statusTabs.value.some(t => t.value === qStatus)) {
-    activeStatus.value = qStatus
-    queryStore.touched = true
-  } else if (!queryStore.touched) {
-    activeStatus.value = defaultStatus.value
+  if (dateRange.value) {
+    p.date_from = `${dateRange.value[0]}T00:00:00+08:00`
+    p.date_to = `${dateRange.value[1]}T23:59:59+08:00`
   }
+  return p
 }
-
-// 项目大类选项（完整保留嵌套属性，供"项目属性"筛选联动）
-const categoryOptions = ref<CategoryOption[]>([])
-/** 当前大类下的项目属性选项 */
-const propertyOptions = computed(() => {
-  if (!categoryId.value) return []
-  const c = categoryOptions.value.find(x => x.id === categoryId.value)
-  return (c?.properties || []).map(p => ({ id: p.id, name: p.name }))
-})
-
-// 报修人筛选（远程搜索，来源 /admin/orders/reporters）
-const reporterOptions = ref<ReporterOption[]>([])
-const reporterSearching = ref(false)
-let reporterTimer: ReturnType<typeof setTimeout> | undefined
 
 const fetchList = async () => {
   loading.value = true
   try {
-    const params: OrderListParams = {
-      page: page.value,
-      page_size: pageSize.value,
-      sort_by: sortBy.value,
-      sort_order: sortOrder.value
+    const tab = activeTab.value
+    if (isUserSource.value) {
+      // 用户端 GET /orders：仅支持 display_tag + sort(''|'board') + enterprise_id
+      const params: UserOrderListParams = {
+        page: page.value,
+        page_size: pageSize.value,
+        sort: isBoardTab.value ? 'board' : ''
+      }
+      if (tab?.tag) params.display_tag = tab.tag
+      if (enterpriseId.value) params.enterprise_id = enterpriseId.value
+      // 其余筛选（分类/报修人/紧急度/关键字/日期）用户端不支持，一律忽略
+      const res = await orderAPI.list(params)
+      list.value = res.data.list
+      // 用户端 /orders 的总数在 pagination.total（与管理端 /admin/orders 的顶层 total 不同）
+      total.value = res.data.pagination?.total ?? 0
+      statusCounts.value = {} // 用户端不返回 status_counts
+      unreadCounts.value = (res.data.unread_counts as Record<string, number>) || {}
+    } else {
+      // 管理端 GET /admin/orders：支持 display_tag / repairer_id=me / sort_by / 全部筛选
+      const params: OrderListParams = {
+        page: page.value,
+        page_size: pageSize.value
+      }
+      if (tab?.tag) params.display_tag = tab.tag
+      if (tab?.repairerMe) params.repairer_id = 'me'
+      if (isBoardTab.value) {
+        // 看板类 Tab：状态优先级 + 更新时间（与首页看板一致）
+        params.sort_by = 'board'
+        params.sort_order = 'asc'
+      } else {
+        // 其余 Tab：提交时间排序，方向由「按时间 ↑↓」控制
+        params.sort_by = sortBy.value || 'submitted_at'
+        params.sort_order = sortOrder.value
+      }
+      if (enterpriseId.value) params.enterprise_id = enterpriseId.value
+      if (categoryId.value) params.category_id = categoryId.value
+      if (propertyId.value) params.property_id = propertyId.value
+      if (reporterId.value) params.reporter_id = reporterId.value
+      if (keyword.value.trim()) params.keyword = keyword.value.trim()
+      if (urgency.value) params.urgency = urgency.value
+      // V1.5 本质标签筛选：映射到后端派生字段（finish_outcome / signature_status）
+      if (essenceFilter.value === 'unrepairable' || essenceFilter.value === 'customer_cancelled') {
+        params.finish_outcome = essenceFilter.value
+      } else if (essenceFilter.value === 'pending_sign' || essenceFilter.value === 'signed') {
+        params.signature_status = essenceFilter.value
+      }
+      if (dateRange.value) {
+        params.date_from = `${dateRange.value[0]}T00:00:00+08:00`
+        params.date_to = `${dateRange.value[1]}T23:59:59+08:00`
+      }
+      // 维修业务员：并行拉一份「我接的单」稳定计数，专供处理中/待补签角标（不受当前 Tab 的 repairer_id 收敛影响）
+      const cntReq =
+        mode.value === 'worker_task' ? adminAPI.getOrders(buildWorkerCountParams()) : null
+      const res = await adminAPI.getOrders(params)
+      list.value = res.data.list
+      total.value = res.data.total
+      statusCounts.value = (res.data.status_counts as Record<string, number>) || {}
+      unreadCounts.value = (res.data.unread_counts as Record<string, number>) || {}
+      if (cntReq) {
+        const cntRes = await cntReq
+        workerCounts.value = (cntRes.data.status_counts as Record<string, number>) || {}
+      }
     }
-    if (activeStatus.value) params.status = activeStatus.value
-    // 纯审核员走"切换单位"，其余走搜索栏的企业下拉
-    const entId = reviewerOnly.value ? activeUnitId.value : enterpriseId.value
-    if (entId) params.enterprise_id = entId
-    if (categoryId.value) params.category_id = categoryId.value
-    if (propertyId.value) params.property_id = propertyId.value
-    if (reporterId.value) params.reporter_id = reporterId.value
-    if (keyword.value.trim()) params.keyword = keyword.value.trim()
-    if (urgency.value) params.urgency = urgency.value
-    // V1.5 本质标签筛选：映射到后端派生字段（finish_outcome / signature_status）
-    if (essenceFilter.value === 'unrepairable' || essenceFilter.value === 'customer_cancelled') {
-      params.finish_outcome = essenceFilter.value
-    } else if (essenceFilter.value === 'pending_sign' || essenceFilter.value === 'signed') {
-      params.signature_status = essenceFilter.value
-    }
-    if (dateRange.value) {
-      params.date_from = `${dateRange.value[0]}T00:00:00+08:00`
-      params.date_to = `${dateRange.value[1]}T23:59:59+08:00`
-    }
-    const res = await adminAPI.getOrders(params)
-    // client 拦截器返回外层信封 { code, data, message }，内层 data 才是真实载荷
-    list.value = res.data.list
-    total.value = res.data.total
-    statusCounts.value = (res.data.status_counts as Record<string, number>) || {}
   } finally {
     loading.value = false
   }
@@ -228,11 +268,71 @@ const handleSearch = () => {
   fetchList()
 }
 
-/** 企业变化：报修人候选随企业域变化，清空已选报修人 */
+/** 点击 Tab → 选中并刷新（写回 URL） */
+const selectTab = (key: string) => {
+  activeTabKey.value = key
+  queryStore.touched = true
+  syncUrl()
+  fetchList()
+}
+
+/**
+ * 预估文本渲染宽度（13px / 500 字号）：CJK 与全角标点按 14px，ASCII 按 7.5px。
+ * el-select 内部 search input 有默认固有宽度，靠 CSS 无法让胶囊贴合文字，
+ * 因此按展示文案长度反算宽度并内联下发，实现「宽度随文字长度变化」。
+ */
+function estimateTextWidth(text: string): number {
+  let w = 0
+  for (const ch of text) {
+    w += /[\u4e00-\u9fa5\u3000-\u303f\uff00-\uffef]/.test(ch) ? 14 : 7.5
+  }
+  return Math.ceil(w)
+}
+
+/** 胶囊内 el-select 的宽度 = 文案宽度 + 下拉箭头/内边距（约 24px，值紧贴箭头），上限 240px */
+const selectWidthOf = (text: string): number =>
+  Math.min(Math.max(estimateTextWidth(text) + 24, 58), 240)
+
+/** 企业筛选：未选时按 placeholder「全部企业」定宽，选中后按企业名定宽 */
+const enterpriseSelectWidth = computed(() => {
+  const name = enterpriseOptions.value.find(e => e.id === enterpriseId.value)?.name
+  return selectWidthOf(name || '全部企业')
+})
+
+/** 用户筛选：未选/禁用时按当前 placeholder，选中后按用户昵称定宽 */
+const reporterSelectWidth = computed(() => {
+  const nickname = reporterOptions.value.find(r => r.id === reporterId.value)?.nickname
+  return selectWidthOf(nickname || reporterPlaceholder.value)
+})
+
+/** Tab 角标：
+ *  - review 仅「待审核」显示未读红点（处理中/结束不显示）；
+ *  - my_repair 仅「待补签 / 已退回 / 已完工」显示未读红点；
+ *  - worker_task（维修业务员）仅「处理中 / 待补签」显示角标，且一律取自稳定的
+ *    workerCounts（repairer_id=me 视角），不受当前 Tab 是否带 repairer_id 收敛影响，
+ *    切到任意 Tab 都稳定挂着；其余 Tab（我的维修 / 待接单 / 结束）不显示。
+ *  未读数据来自 unread_counts，进详情页标记已读后随之减少。 */
+const statusCountOf = (tab: ModeTab): number => {
+  if (!tab.tag) return 0
+  if (mode.value === 'review' && tab.key !== 'pending_review') return 0
+  if (mode.value === 'my_repair' && !['pending_sign', 'rejected', 'finished'].includes(tab.key)) return 0
+  if (mode.value === 'worker_task') {
+    if (tab.key === 'processing') return workerCounts.value['processing'] || 0
+    if (tab.key === 'pending_sign') return workerCounts.value['pending_sign'] || 0
+    return 0
+  }
+  const useUnread = mode.value === 'review' || mode.value === 'my_repair'
+  const source = useUnread ? unreadCounts.value : statusCounts.value
+  const statuses = TAG_STATUS_GROUPS[tab.tag] || []
+  return statuses.reduce((sum, k) => sum + (source[k] || 0), 0)
+}
+
+/** 企业变化：报修人候选随企业域变化，清空已选报修人并重拉候选 */
 const handleEnterpriseChange = () => {
   reporterId.value = ''
   reporterName.value = ''
   reporterOptions.value = []
+  loadReporterOptions()
   handleSearch()
 }
 
@@ -246,36 +346,22 @@ const handleReset = () => {
   queryStore.reset()
   reporterName.value = ''
   reporterOptions.value = []
-  // 重置后回到"该动手"的角色默认 Tab，而不是「全部」
-  activeStatus.value = defaultStatus.value
+  activeTabKey.value = tabs.value[0].key
   syncUrl()
   fetchList()
 }
 
-const handleTabChange = () => {
-  page.value = 1
-  queryStore.touched = true
-  syncUrl()
-  fetchList()
-}
-
-/** 顶部状态按钮组点击：切换 Tab 并刷新 */
-const selectStatus = (val: string) => {
-  activeStatus.value = val
-  handleTabChange()
-}
-
-/** 状态按钮组角标：全部→all，其余用状态值本身（unfinished/pending_sign 等） */
-const statusCountOf = (val: string): number => {
-  const key = val === '' ? 'all' : val
-  return statusCounts.value[key] || 0
-}
-
-/** 第二行排序下拉：看板顺序 / 提交时间 / 更新时间（倒序） */
-const handleSortChange2 = () => {
-  if (sortBy.value === 'board') {
-    sortOrder.value = 'asc'
+/**
+ * 「按时间 ↑↓」：非看板 Tab 切换提交时间正/倒序。
+ * 看板类 Tab 的排序由后端看板优先级决定（与首页一致），此处不生效，直接忽略。
+ */
+const toggleTimeSort = () => {
+  if (isBoardTab.value) return
+  if (sortBy.value === 'submitted_at') {
+    sortOrder.value = sortOrder.value === 'desc' ? 'asc' : 'desc'
   } else {
+    // 此前按表格列排序 → 回到按提交时间，默认倒序
+    sortBy.value = 'submitted_at'
     sortOrder.value = 'desc'
   }
   page.value = 1
@@ -292,13 +378,6 @@ const handleDrawerReset = () => {
   dateRange.value = null
 }
 
-/** 审核员切换单位：重置分页并回写 URL */
-const handleUnitChange = () => {
-  page.value = 1
-  syncUrl()
-  fetchList()
-}
-
 // 表格列排序（sortable="custom"，服务端排序）
 const handleSortChange = ({
   prop,
@@ -308,7 +387,6 @@ const handleSortChange = ({
   order: 'ascending' | 'descending' | null
 }) => {
   if (order === null) {
-    // 取消排序：恢复默认（提交时间倒序）
     sortBy.value = 'submitted_at'
     sortOrder.value = 'desc'
   } else {
@@ -342,39 +420,61 @@ const exportRepairerId = ref('')
 const exportDateRange = ref<[string, string] | null>(null)
 const exportFields = ref<string[]>(['order_no', 'time', 'content', 'quantity', 'unit_price', 'amount', 'remark'])
 const exporting = ref(false)
-const enterpriseOptions = ref<EnterpriseListItem[]>([])
-// 维修员(业务员)选项（5.15：导出弹窗业务员模式下拉）
+/** 企业下拉候选（管理端筛选 + 导出弹窗共用；仅含 id/name） */
+interface EntOption {
+  id: string
+  name: string
+}
+const enterpriseOptions = ref<EntOption[]>([])
 const repairerOptions = ref<Array<{ id: string; nickname: string; avatar_url: string }>>([])
 
-// 加载企业列表（搜索栏企业下拉 / 导出弹窗共用）
+/**
+ * 企业候选来源分两类：
+ * - 店方/超管（role>=1）：接口 /admin/enterprises（挂 RequirePlatformAdmin，role>=1 可调）
+ * - 纯单位审核员（role=0 + membership.role=1）：接口会 403，只能取登录时下发的单位清单
+ * 与小程序 `ensureManageOptions` 完全一致的取数口径。
+ */
 const loadEnterpriseOptions = async () => {
   if (enterpriseOptions.value.length) return
-  const res = await adminAPI.getEnterprises({ page: 1, page_size: 100 })
-  enterpriseOptions.value = res.data.list
+  if (userStore.isStoreStaff) {
+    const res = await adminAPI.getEnterprises({ page: 1, page_size: 100 })
+    enterpriseOptions.value = res.data.list.map(e => ({ id: e.id, name: e.name }))
+  } else {
+    enterpriseOptions.value = userStore.reviewerEnterprises.map(e => ({
+      id: e.enterprise_id,
+      name: e.enterprise_name
+    }))
+  }
 }
 
-// 加载项目大类选项（保留嵌套属性，供项目属性筛选联动）
 const loadCategoryOptions = async () => {
   if (categoryOptions.value.length) return
   const res = await fetchOrderOptions()
   categoryOptions.value = res.data.categories
 }
 
-// 报修人筛选：远程按昵称关键字搜索候选（企业域随当前企业筛选）
-const onReporterRemote = (q: string) => {
-  if (reporterTimer) clearTimeout(reporterTimer)
-  reporterTimer = setTimeout(async () => {
-    reporterSearching.value = true
-    try {
-      const res = await adminAPI.getReporters({
-        ...(enterpriseId.value ? { enterprise_id: enterpriseId.value } : {}),
-        ...(q?.trim() ? { keyword: q.trim() } : {})
-      })
-      reporterOptions.value = res.data.list
-    } finally {
-      reporterSearching.value = false
+/**
+ * 报修人候选：按当前「企业」域拉取（后端对审核员/业务员强制要求 enterprise_id，
+ * 全部企业时不调接口，候选仅留「全部用户」，彻底规避 403 / uuid 解析 500）。
+ * getReporters 最多返回 200 条，直接用 filterable 下拉即可，无需远程搜索。
+ */
+const loadReporterOptions = async () => {
+  if (!enterpriseId.value) {
+    reporterOptions.value = []
+    return
+  }
+  reporterSearching.value = true
+  try {
+    const res = await adminAPI.getReporters({ enterprise_id: enterpriseId.value })
+    const list = res.data.list || []
+    // 已选报修人若不在新候选内（如跨企业切换），保留其条目以回显
+    if (reporterId.value && !list.some(o => o.id === reporterId.value) && reporterName.value) {
+      list.unshift({ id: reporterId.value, nickname: reporterName.value, avatar_url: null })
     }
-  }, 300)
+    reporterOptions.value = list
+  } finally {
+    reporterSearching.value = false
+  }
 }
 
 const handleReporterChange = (val: string) => {
@@ -383,14 +483,12 @@ const handleReporterChange = (val: string) => {
   handleSearch()
 }
 
-// 加载维修员列表（5.15：导出弹窗业务员模式下拉）
 const loadRepairerOptions = async () => {
   if (repairerOptions.value.length) return
   const res = await adminAPI.getRepairers()
   repairerOptions.value = res.data.list
 }
 
-// 导出可选字段（5.14 可用字段表）
 const exportFieldOptions = [
   { value: 'order_no', label: '工单号' },
   { value: 'time', label: '日期' },
@@ -449,8 +547,6 @@ const handleExport = async () => {
       fields: exportFields.value
     })
     const blob = res.data as Blob
-    // 解析 Content-Disposition 中的 filename（后端用 mime.FormatMediaType，
-    // 中文文件名走 RFC 5987 形式 filename*=utf-8''...，需优先匹配）
     const disposition = res.headers['content-disposition'] as string | undefined
     let filename = '工单导出.xlsx'
     if (disposition) {
@@ -474,7 +570,7 @@ const handleExport = async () => {
   }
 }
 
-// ---- 待审核行就地快操作：审核通过 / 退回（与 /review 同源逻辑，省去进详情页） ----
+// ---- 待审核行就地快操作：审核通过 / 退回 ----
 const auditingId = ref('')
 
 const handleAudit = async (row: OrderListItem) => {
@@ -529,116 +625,133 @@ const handleRejectSubmit = async () => {
   }
 }
 
-onMounted(() => {
-  // 从会话态恢复"报修人"选中项的回显（远程选项列表已随页面卸载清空）
+// 项目大类选项（完整保留嵌套属性，供"项目属性"筛选联动）
+const categoryOptions = ref<CategoryOption[]>([])
+const propertyOptions = computed(() => {
+  if (!categoryId.value) return []
+  const c = categoryOptions.value.find(x => x.id === categoryId.value)
+  return (c?.properties || []).map(p => ({ id: p.id, name: p.name }))
+})
+
+// 报修人筛选（按企业域拉取，来源 /admin/orders/reporters）
+const reporterOptions = ref<ReporterOption[]>([])
+const reporterSearching = ref(false)
+
+onMounted(async () => {
   const rid = queryStore.reporterId
   const rname = queryStore.reporterName
-  if (rid && rname && !reporterOptions.value.some(o => o.id === rid)) {
-    reporterOptions.value = [{ id: rid, nickname: rname, avatar_url: null }]
+  if (rid && rname) {
+    reporterName.value = rname
+    if (!reporterOptions.value.some(o => o.id === rid)) {
+      reporterOptions.value = [{ id: rid, nickname: rname, avatar_url: null }]
+    }
   }
-  initFromQuery()
+  initModeAndTab()
+  await loadEnterpriseOptions()
+  if (enterpriseId.value) await loadReporterOptions()
+  await loadCategoryOptions()
   fetchList()
-  // 纯审核员没有 /admin/enterprises 权限（会 403），其企业下拉隐藏、改用单位切换条，
-  // 故跳过该请求，避免无谓报错噪音。
-  if (!reviewerOnly.value) loadEnterpriseOptions()
-  loadCategoryOptions()
 })
+
+// 从其它路由（如首页卡片）带 ?mode=&tag= 进入时，重新落定视图并拉取。
+// 本页 syncUrl 写回的 query 变化（切 Tab/筛选）已在事件里自行 fetchList，跳过避免双倍请求。
+watch(
+  () => route.query,
+  q => {
+    if (route.name !== 'OrderList') return
+    if (queryMatchesState(q as Record<string, unknown>)) return
+    initModeAndTab()
+    fetchList()
+  }
+)
 </script>
 
 <template>
   <div>
     <el-card shadow="never" class="filter-card">
-      <!-- 多单位时：出现「切换单位」信息提示 -->
-      <div v-if="showUnitSwitch" class="unit-bar">
-        <el-icon class="unit-icon"><Switch /></el-icon>
-        <span class="unit-hint">
-          您担任 {{ reviewerUnits.length }} 个单位的审核员，请切换单位查看对应工单
-        </span>
-        <el-select
-          v-model="activeUnitId"
-          size="small"
-          class="unit-select"
-          @change="handleUnitChange"
-        >
-          <el-option
-            v-for="u in reviewerUnits"
-            :key="u.enterprise_id"
-            :label="u.enterprise_name"
-            :value="u.enterprise_id"
-          />
-        </el-select>
-      </div>
-      <div v-else-if="reviewerOnly" class="unit-bar unit-bar--plain">
-        <el-icon class="unit-icon"><OfficeBuilding /></el-icon>
-        <span class="unit-hint">
-          当前单位：{{ reviewerUnits[0]?.enterprise_name || '—' }}（仅显示本单位工单）
-        </span>
-      </div>
-
-      <!-- 顶部状态按钮组 + 实时角标（对齐小程序「审核 / 接单」页） -->
+      <!-- 顶部 Tab（由 ORDER_MODES[mode].tabs 配置驱动，display_tag 英文键，绝不用中文查库） + 实时角标 -->
       <div class="status-seg">
         <button
-          v-for="tab in statusTabs"
-          :key="tab.value"
+          v-for="tab in tabs"
+          :key="tab.key"
           type="button"
-          :class="['seg-btn', { active: activeStatus === tab.value }]"
-          @click="selectStatus(tab.value)"
+          :class="['seg-btn', { active: activeTabKey === tab.key }]"
+          @click="selectTab(tab.key)"
         >
           <span class="seg-label">{{ tab.label }}</span>
-          <span v-if="statusCountOf(tab.value)" class="seg-count">{{ statusCountOf(tab.value) }}</span>
+          <span v-if="statusCountOf(tab)" class="seg-count">{{ statusCountOf(tab) }}</span>
         </button>
       </div>
 
-      <!-- 第二行：企业 + 报修人 + 排序 + 详细筛选 + 导出 -->
+      <!-- 第二行：企业(默认全部企业) + 用户(默认全部用户，未选企业时灰显「请先选择企业」) + 按时间排序 -->
+      <!-- 筛选器对齐小程序胶囊样式：浅灰底胶囊 + 灰色标签前缀 + 黑色筛选文字 -->
       <div class="filter-bar">
-        <el-select
-          v-if="!reviewerOnly"
-          v-model="enterpriseId"
-          placeholder="按企业"
-          clearable
-          filterable
-          class="filter-enterprise"
-          @change="handleEnterpriseChange"
+        <div class="pill-filter">
+          <span class="pill-label">企业</span>
+          <el-select
+            v-model="enterpriseId"
+            placeholder="全部企业"
+            clearable
+            filterable
+            class="pill-select"
+            :style="{ width: `${enterpriseSelectWidth}px` }"
+            popper-class="pill-select-popper"
+            @change="handleEnterpriseChange"
+          >
+            <el-option
+              v-for="e in enterpriseOptions"
+              :key="e.id"
+              :label="e.name"
+              :value="e.id"
+            />
+          </el-select>
+        </div>
+        <div v-if="!isUserSource" class="pill-filter">
+          <span class="pill-label">用户</span>
+          <el-select
+            v-model="reporterId"
+            :placeholder="reporterPlaceholder"
+            clearable
+            filterable
+            :disabled="!enterpriseId"
+            :loading="reporterSearching"
+            class="pill-select"
+            :style="{ width: `${reporterSelectWidth}px` }"
+            popper-class="pill-select-popper"
+            @change="handleReporterChange"
+          >
+            <el-option
+              v-for="r in reporterOptions"
+              :key="r.id"
+              :label="r.nickname"
+              :value="r.id"
+            />
+          </el-select>
+        </div>
+
+        <!-- 按时间 ↑↓：非看板 Tab 控制提交时间正/倒序；看板类 Tab 由后端优先级决定，此处不生效 -->
+        <button
+          v-if="!isUserSource"
+          type="button"
+          class="time-sort on"
+          :title="isBoardTab ? '该状态按看板顺序排列（与首页一致），不随此切换' : '点击切换提交时间 倒序/正序'"
+          @click="toggleTimeSort"
         >
-          <el-option
-            v-for="e in enterpriseOptions"
-            :key="e.id"
-            :label="e.name"
-            :value="e.id"
-          />
-        </el-select>
-        <el-select
-          v-model="reporterId"
-          placeholder="报修人"
-          clearable
-          filterable
-          remote
-          :remote-method="onReporterRemote"
-          :loading="reporterSearching"
-          class="filter-input"
-          @change="handleReporterChange"
+          <span>按时间</span>
+          <span class="time-sort-arrow">{{ timeSortArrow }}</span>
+        </button>
+
+        <button
+          v-if="!isUserSource"
+          type="button"
+          class="adv-toggle"
+          :class="{ on: advVisible }"
+          @click="advVisible = !advVisible"
         >
-          <el-option
-            v-for="r in reporterOptions"
-            :key="r.id"
-            :label="r.nickname"
-            :value="r.id"
-          />
-        </el-select>
-        <el-select
-          v-model="sortBy"
-          placeholder="排序"
-          class="filter-sort"
-          @change="handleSortChange2"
-        >
-          <el-option label="看板顺序" value="board" />
-          <el-option label="提交时间（倒序）" value="submitted_at" />
-          <el-option label="更新时间（倒序）" value="updated_at" />
-        </el-select>
-        <el-button @click="drawerVisible = true">
-          <el-icon><Filter /></el-icon>
-          详细筛选
-        </el-button>
+          <span>详细筛选</span>
+          <span v-if="advActiveCount" class="adv-badge">{{ advActiveCount }}</span>
+          <el-icon class="adv-arrow" :class="{ expanded: advVisible }"><ArrowDown /></el-icon>
+        </button>
         <el-button @click="handleReset">重置</el-button>
         <div class="spacer" />
         <!-- 导出为店方专属能力（5.14），单位审核员不展示 -->
@@ -646,18 +759,24 @@ onMounted(() => {
           <el-icon><Download /></el-icon>
           导出
         </el-button>
+        <!-- 视图切换并入筛选行（右上角），不再单独占一行 -->
+        <el-radio-group v-model="viewMode" size="small" class="view-switch">
+          <el-radio-button value="card">卡片 (C)</el-radio-button>
+          <el-radio-button value="table">表格 (D)</el-radio-button>
+        </el-radio-group>
       </div>
 
-      <!-- 详细筛选抽屉：项目大类 / 属性 / 紧急度 / 本质标签 / 关键字 / 日期 -->
-      <el-drawer v-model="drawerVisible" title="详细筛选" direction="rtl" size="360px">
-        <el-form label-position="top">
-          <el-form-item label="项目大类">
+      <!-- 详细筛选：点击按钮后在下一行就地展开（仅管理端），不再走右侧抽屉 -->
+      <div v-if="advVisible && !isUserSource" class="adv-panel">
+        <div class="adv-grid">
+          <div class="adv-item">
+            <div class="adv-label">项目大类</div>
             <el-select
               v-model="categoryId"
-              placeholder="项目大类"
+              placeholder="全部大类"
               clearable
               filterable
-              class="drawer-full"
+              class="adv-full"
               @change="handleCategoryChange"
             >
               <el-option
@@ -667,15 +786,16 @@ onMounted(() => {
                 :value="c.id"
               />
             </el-select>
-          </el-form-item>
-          <el-form-item label="问题类型（属性）">
+          </div>
+          <div class="adv-item">
+            <div class="adv-label">问题类型（属性）</div>
             <el-select
               v-model="propertyId"
-              placeholder="问题类型"
+              placeholder="全部类型"
               clearable
               filterable
               :disabled="!categoryId"
-              class="drawer-full"
+              class="adv-full"
               @change="handleSearch"
             >
               <el-option
@@ -685,20 +805,28 @@ onMounted(() => {
                 :value="p.id"
               />
             </el-select>
-          </el-form-item>
-          <el-form-item label="紧急程度">
-            <el-select v-model="urgency" placeholder="紧急程度" clearable class="drawer-full">
+          </div>
+          <div class="adv-item">
+            <div class="adv-label">紧急程度</div>
+            <el-select
+              v-model="urgency"
+              placeholder="全部紧急度"
+              clearable
+              class="adv-full"
+              @change="handleSearch"
+            >
               <el-option label="普通" value="normal" />
               <el-option label="紧急" value="urgent" />
               <el-option label="非常紧急" value="very_urgent" />
             </el-select>
-          </el-form-item>
-          <el-form-item label="本质标签">
+          </div>
+          <div class="adv-item">
+            <div class="adv-label">本质标签</div>
             <el-select
               v-model="essenceFilter"
-              placeholder="本质标签"
+              placeholder="全部标签"
               clearable
-              class="drawer-full"
+              class="adv-full"
               @change="handleSearch"
             >
               <el-option label="不能修" value="unrepairable" />
@@ -706,17 +834,19 @@ onMounted(() => {
               <el-option label="待补签" value="pending_sign" />
               <el-option label="已签字" value="signed" />
             </el-select>
-          </el-form-item>
-          <el-form-item label="工单号关键字">
+          </div>
+          <div class="adv-item">
+            <div class="adv-label">工单号关键字</div>
             <el-input
               v-model="keyword"
-              placeholder="工单号"
+              placeholder="输入工单号后回车"
               clearable
-              class="drawer-full"
+              class="adv-full"
               @keyup.enter="handleSearch"
             />
-          </el-form-item>
-          <el-form-item label="提交日期">
+          </div>
+          <div class="adv-item">
+            <div class="adv-label">提交日期</div>
             <el-date-picker
               v-model="dateRange"
               type="daterange"
@@ -724,26 +854,18 @@ onMounted(() => {
               start-placeholder="开始日期"
               end-placeholder="结束日期"
               value-format="YYYY-MM-DD"
-              class="drawer-full"
+              class="adv-full adv-date"
             />
-          </el-form-item>
-        </el-form>
-        <template #footer>
-          <el-button @click="handleDrawerReset">重置</el-button>
-          <el-button type="primary" @click="drawerVisible = false; handleSearch()">应用</el-button>
-        </template>
-      </el-drawer>
+          </div>
+        </div>
+        <div class="adv-actions">
+          <el-button link type="primary" @click="handleDrawerReset">清空详细筛选</el-button>
+          <el-button size="small" type="primary" @click="handleSearch">应用</el-button>
+        </div>
+      </div>
     </el-card>
 
     <el-card shadow="never">
-      <div class="list-toolbar">
-        <span class="toolbar-title">工单列表</span>
-        <el-radio-group v-model="viewMode" size="small">
-          <el-radio-button value="card">卡片视图 (C)</el-radio-button>
-          <el-radio-button value="table">表格视图 (D)</el-radio-button>
-        </el-radio-group>
-      </div>
-
       <el-table
         v-if="viewMode === 'table'"
         v-loading="loading"
@@ -766,13 +888,21 @@ onMounted(() => {
             </div>
           </template>
         </el-table-column>
-        <el-table-column prop="reporter" label="报修人" width="150" sortable="custom">
+        <!-- 报修人列仅管理端数据源显示：用户端 /orders 行不含 reporter（owner 隔离全是本人单），
+             且历史数据可能缺 reporter，模板一律判空，避免渲染抛错导致整页卡死（转圈不消失） -->
+        <el-table-column
+          v-if="!isUserSource"
+          prop="reporter"
+          label="报修人"
+          width="150"
+          sortable="custom"
+        >
           <template #default="{ row }">
             <div class="reporter">
-              <el-avatar :size="24" :src="row.reporter.avatar_url">
-                {{ row.reporter.nickname?.charAt(0) }}
+              <el-avatar :size="24" :src="row.reporter?.avatar_url">
+                {{ row.reporter?.nickname?.charAt(0) }}
               </el-avatar>
-              <span>{{ row.reporter.nickname }}</span>
+              <span>{{ row.reporter?.nickname || '—' }}</span>
             </div>
           </template>
         </el-table-column>
@@ -825,6 +955,7 @@ onMounted(() => {
           v-for="row in list"
           :key="row.id"
           :row="row"
+          :hide-enterprise="!!enterpriseId"
           @click="goDetail(row)"
         />
         <div v-if="!loading && !list.length" class="card-empty">暂无工单</div>
@@ -932,46 +1063,6 @@ onMounted(() => {
   margin-bottom: 16px;
 }
 
-/* 多单位审核员：「切换单位」信息提示条 */
-.unit-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
-  padding: 8px 12px;
-  border: 1px solid #b3d8ff;
-  border-radius: 8px;
-  background-color: #ecf5ff;
-}
-
-.unit-bar--plain {
-  border-color: #e4e7ed;
-  background-color: #f5f7fa;
-}
-
-.unit-icon {
-  color: #409eff;
-  flex-shrink: 0;
-}
-
-.unit-bar--plain .unit-icon {
-  color: #909399;
-}
-
-.unit-hint {
-  font-size: 13px;
-  color: #409eff;
-}
-
-.unit-bar--plain .unit-hint {
-  color: #606266;
-}
-
-.unit-select {
-  width: 280px;
-  margin-left: auto;
-}
-
 .filter-bar {
   display: flex;
   align-items: center;
@@ -980,81 +1071,181 @@ onMounted(() => {
   padding-top: 4px;
 }
 
-.filter-enterprise {
-  width: 180px;
-}
-
-.filter-input {
-  width: 170px;
-}
-
-.filter-urgency {
-  width: 130px;
-}
-
-.filter-date {
-  width: 300px;
-}
-
-/* 顶部状态按钮组（对齐小程序审核/接单页） */
-.status-seg {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 14px;
-}
-
-.seg-btn {
+/* 筛选胶囊（对齐小程序）：浅灰底 + 灰色标签前缀 + 黑色筛选文字，宽度随文字长度自适应 */
+.pill-filter {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 14px;
+  gap: 10px;
+  height: 32px;
+  padding: 0 14px 0 18px;
+  background: #eef2f4;
+  border-radius: 16px;
+  transition: background 0.15s ease;
+}
+
+.pill-filter:hover {
+  background: #e3e9ee;
+}
+
+.pill-label {
+  font-size: 13px;
+  color: #6b7280;
+  flex-shrink: 0;
+}
+
+/* 胶囊宽度随选中值长度自适应：宽度由 JS 按文字长度估算后内联下发 */
+.pill-select {
+  max-width: 240px;
+  flex: 0 0 auto;
+}
+
+/* 胶囊内的 el-select：去边框去底色，文字黑色加粗；压缩值与箭头间距 */
+.pill-filter :deep(.el-select__wrapper) {
+  background: transparent;
+  box-shadow: none !important;
+  min-height: 32px;
+  padding: 0 0 0 2px;
+  gap: 2px;
+  font-size: 13px;
+}
+
+.pill-filter :deep(.el-select__selection) {
+  gap: 0;
+  margin-right: 0;
+}
+
+.pill-filter :deep(.el-select__suffix) {
+  margin-left: 0;
+  gap: 0;
+}
+
+.pill-filter :deep(.el-select__placeholder),
+.pill-filter :deep(.el-select__selected-item) {
+  color: #111827;
+  font-weight: 500;
+}
+
+/* 禁用态（未选企业时的用户筛选）：文字仍保持深灰可读，光标不变 */
+.pill-filter :deep(.el-select__wrapper.is-disabled) {
+  cursor: not-allowed;
+}
+
+.pill-filter :deep(.el-select__wrapper.is-disabled .el-select__placeholder),
+.pill-filter :deep(.el-select__wrapper.is-disabled .el-select__selected-item) {
+  color: #6b7280;
+}
+
+/* 「按时间 ↑↓」胶囊：与状态 Tab 同苍岭绿语义，非看板 Tab 生效，看板 Tab 置静默态 */
+.time-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 7px 14px;
+  border: 1px solid var(--xn-primary-light-5);
+  border-radius: 16px;
+  background: var(--xn-primary-light-9);
+  color: var(--xn-primary);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.time-sort:hover {
+  border-color: var(--xn-primary);
+}
+
+.time-sort.on {
+  border-color: var(--xn-primary);
+}
+
+.time-sort-arrow {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+/* ── 详细筛选：按钮 + 就地展开面板（下一行） ── */
+.adv-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 7px 12px;
   border: 1px solid #dcdfe6;
   border-radius: 16px;
   background: #fff;
   color: #606266;
   font-size: 13px;
-  line-height: 1.2;
+  line-height: 1;
   cursor: pointer;
   transition: all 0.15s ease;
 }
 
-.seg-btn:hover {
-  border-color: #409eff;
-  color: #409eff;
+.adv-toggle:hover,
+.adv-toggle.on {
+  border-color: var(--xn-primary);
+  color: var(--xn-primary);
 }
 
-.seg-btn.active {
-  border-color: #0f766e;
-  background: #0f766e;
-  color: #fff;
+.adv-arrow {
+  font-size: 14px;
+  line-height: 1;
+  transition: transform 0.2s ease;
 }
 
-.seg-label {
-  font-weight: 500;
+.adv-arrow.expanded {
+  transform: rotate(180deg);
 }
 
-.seg-count {
+.adv-badge {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
-  border-radius: 9px;
-  font-size: 12px;
-  font-weight: 600;
-  background: #f56c6c;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--xn-primary);
   color: #fff;
+  font-size: 11px;
+  font-weight: 600;
 }
 
-.seg-btn.active .seg-count {
-  background: rgba(255, 255, 255, 0.25);
+.adv-panel {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--xn-border-soft);
 }
 
-.filter-sort {
-  width: 160px;
+.adv-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 12px 16px;
+}
+
+.adv-item {
+  min-width: 0;
+}
+
+.adv-label {
+  font-size: 12px;
+  color: var(--xn-text-500);
+  margin-bottom: 6px;
+}
+
+.adv-full {
+  width: 100%;
+}
+
+.adv-date {
+  max-width: 260px;
+}
+
+.adv-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 12px;
 }
 
 .drawer-full {
@@ -1108,18 +1299,75 @@ onMounted(() => {
   cursor: pointer;
 }
 
-/* 工具栏：视图切换 */
-.list-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 14px;
+/* 视图切换（并入筛选行右端） */
+.view-switch {
+  margin-left: 8px;
+  flex-shrink: 0;
 }
 
-.toolbar-title {
-  font-size: 15px;
+/* 顶部状态按钮组（对齐小程序审核/接单页） */
+.status-seg {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.seg-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border: 1px solid #dcdfe6;
+  border-radius: 16px;
+  background: #fff;
+  color: #606266;
+  font-size: 13px;
+  line-height: 1.2;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.seg-btn:hover {
+  border-color: #409eff;
+  color: #409eff;
+}
+
+.seg-btn.active {
+  border-color: #0f766e;
+  background: #0f766e;
+  color: #fff;
+}
+
+.seg-label {
+  font-weight: 500;
+}
+
+.seg-count {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  border: 2px solid #fff;
+  font-size: 11px;
   font-weight: 600;
-  color: #303133;
+  line-height: 1;
+  background: #f56c6c;
+  color: #fff;
+  box-sizing: border-box;
+}
+
+.seg-btn.active .seg-count {
+  background: #f56c6c;
+  color: #fff;
 }
 
 /* D 布局：工单内容主列（项目 + 故障描述 + 金额） */

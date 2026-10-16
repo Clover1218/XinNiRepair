@@ -33,10 +33,10 @@ function statusViewOf(d?: OrderDetail | null) {
   return { text: d.display_tag || d.status_label, cls: detailStatusClassMap[d.status] || 'st-gray' }
 }
 
-// 是否为店方（维修员/超管），决定对账信息卡可见性（金额敏感，审核员隐藏）
-const isStoreStaff = computed(() => userStore.isStoreStaff)
+// 对账信息卡不再按角色隐藏（V1.7.1 起审核员/报修人也可查看金额）；
+// 店方专属操作（编辑对账等）由 visibleActions 的 update_finance 控制，无需本地角色判断
 
-/** 对账信息卡：有对账数据（数量/单价/金额/维修内容/备注/收据/附加信息）才展示，且仅店方可见 */
+/** 对账信息卡：有对账数据（数量/单价/金额/维修内容/备注/收据/附加信息）才展示，所有角色可见 */
 const hasFinanceData = computed(() => {
   const d = detail.value
   if (!d) return false
@@ -57,14 +57,17 @@ const hasFinanceData = computed(() => {
 /** 早期状态（草稿/待审核/待接单）尚未产生费用，强制隐藏对账信息卡 */
 const noFinanceStatuses = ['draft', 'reported', 'pending_accept']
 const showFinance = computed(
-  () =>
-    isStoreStaff.value &&
-    hasFinanceData.value &&
-    !noFinanceStatuses.includes(detail.value?.status ?? '')
+  () => hasFinanceData.value && !noFinanceStatuses.includes(detail.value?.status ?? '')
 )
 const financeEditVisible = computed(() =>
   visibleActions.value.some(a => a.action === 'update_finance')
 )
+
+/** 对账信息卡：是否存在维修附加信息（结果/保修/时长） */
+const hasRepairMeta = computed(() => {
+  const m = detail.value?.metadata
+  return !!(m && (m.repair_result || m.warranty_period || m.repair_duration != null))
+})
 
 /** 故障描述折叠（超 60 字折叠，点「查看全文」展开） */
 const descExpanded = ref(false)
@@ -165,6 +168,10 @@ function tlNodeClass(action?: string): string {
     case 'reject':
     case 'cancel':
       return 'tl-red'
+    case 'return_to_pool':
+      return 'tl-orange'
+    case 'cleanup_receipts':
+      return 'tl-gray'
     default:
       return 'tl-gray'
   }
@@ -182,7 +189,8 @@ const fetchDetail = async () => {
   }
 }
 
-// ── 动作可见性：店方全量；单位审核员仅 audit（reported 审核通过）与 reported 退回 ──
+// ── 动作可见性：店方全量；单位审核员仅 audit（reported 审核通过）与 reported/pending_accept 退回 ──
+// V1.9：放开审核员在 pending_accept 的「退回」（后端 CanAccessOrder 已放行，仅 Web 此前裁剪了按钮）
 const userStore = useUserStore()
 const visibleActions = computed<AvailableAction[]>(() => {
   const actions = detail.value?.available_actions ?? []
@@ -190,7 +198,8 @@ const visibleActions = computed<AvailableAction[]>(() => {
   return actions.filter(
     a =>
       a.action === 'audit' ||
-      (a.action === 'reject' && detail.value?.status === 'reported')
+      (a.action === 'reject' &&
+        (detail.value?.status === 'reported' || detail.value?.status === 'pending_accept'))
   )
 })
 
@@ -265,6 +274,39 @@ const openRejectDialog = (action: AvailableAction) => {
   rejectMinLength.value = action.reason_min_length ?? 2
   rejectReason.value = ''
   rejectDialogVisible.value = true
+}
+
+// ---- 退单回池（弹窗填写原因，≥2 字；V1.9） ----
+const returnDialogVisible = ref(false)
+const returnReason = ref('')
+const returnMinLength = ref(2)
+const returning = ref(false)
+
+const handleReturnSubmit = async () => {
+  const reason = returnReason.value.trim()
+  if (reason.length < returnMinLength.value) {
+    ElMessage.warning(`退单原因至少 ${returnMinLength.value} 个字`)
+    return
+  }
+  if (reason.length > 200) {
+    ElMessage.warning('退单原因不能超过 200 字')
+    return
+  }
+  returning.value = true
+  try {
+    await adminAPI.returnOrder(orderId, reason)
+    ElMessage.success('已退单回池')
+    returnDialogVisible.value = false
+    await fetchDetail()
+  } finally {
+    returning.value = false
+  }
+}
+
+const openReturnDialog = (action: AvailableAction) => {
+  returnMinLength.value = action.reason_min_length ?? 2
+  returnReason.value = ''
+  returnDialogVisible.value = true
 }
 
 // ---- 完工（弹窗：维修备注 + 对账信息 + 收据上传） ----
@@ -692,6 +734,8 @@ const handleUpdateFinance = async () => {
 const handleAction = (action: AvailableAction) => {
   if (action.action === 'reject') {
     openRejectDialog(action)
+  } else if (action.action === 'return_to_pool') {
+    openReturnDialog(action)
   } else if (action.action === 'complete') {
     openCompleteDialog()
   } else if (action.action === 'sign') {
@@ -786,7 +830,7 @@ onMounted(fetchDetail)
         </div>
       </section>
 
-      <!-- 第四组 · 对账信息卡（仅店方可见；与故障详情同级，左列展示金额/维修操作内容/收据） -->
+      <!-- 第四组 · 对账信息卡（全角色可见；与故障详情同级，左列展示金额/维修操作内容/收据） -->
       <section v-if="showFinance" class="xn-card finance-card">
         <div class="xn-card-title">
           对账信息
@@ -823,53 +867,51 @@ onMounted(fetchDetail)
           </div>
         </div>
 
-        <div class="fin-divider"></div>
+        <!-- 维修操作内容 / 维修备注 / 维修附加信息：任一存在才显示内容区 -->
+        <template v-if="detail.repair_content || detail.remark || hasRepairMeta">
+          <div class="fin-divider"></div>
 
-        <!-- 维修操作内容 -->
-        <div v-if="detail.repair_content" class="fin-section">
-          <div class="fin-subtitle">维修操作内容</div>
-          <div class="fin-text">{{ detail.repair_content }}</div>
-        </div>
+          <!-- 维修操作内容 -->
+          <div v-if="detail.repair_content" class="fin-section">
+            <div class="fin-subtitle">维修操作内容</div>
+            <div class="fin-text">{{ detail.repair_content }}</div>
+          </div>
 
-        <!-- 维修备注 -->
-        <div v-if="detail.remark" class="fin-section">
-          <div class="fin-subtitle">维修备注</div>
-          <div class="fin-text">{{ detail.remark }}</div>
-        </div>
+          <!-- 维修备注 -->
+          <div v-if="detail.remark" class="fin-section">
+            <div class="fin-subtitle">维修备注</div>
+            <div class="fin-text">{{ detail.remark }}</div>
+          </div>
 
-        <!-- 维修附加信息 -->
-        <template v-if="detail.metadata">
-          <div
-            v-if="detail.metadata.repair_result || detail.metadata.warranty_period || detail.metadata.repair_duration != null"
-            class="fin-section"
-          >
+          <!-- 维修附加信息 -->
+          <div v-if="hasRepairMeta" class="fin-section">
             <div class="fin-subtitle">维修附加信息</div>
             <div class="fin-text">
-              <span v-if="detail.metadata.repair_result">结果：{{ detail.metadata.repair_result }}</span>
-              <span v-if="detail.metadata.warranty_period"> · 保修：{{ detail.metadata.warranty_period }}</span>
-              <span v-if="detail.metadata.repair_duration != null"> · 时长：{{ detail.metadata.repair_duration }} 分钟</span>
+              <span v-if="detail.metadata?.repair_result">结果：{{ detail.metadata.repair_result }}</span>
+              <span v-if="detail.metadata?.warranty_period"> · 保修：{{ detail.metadata.warranty_period }}</span>
+              <span v-if="detail.metadata?.repair_duration != null"> · 时长：{{ detail.metadata.repair_duration }} 分钟</span>
             </div>
           </div>
         </template>
 
-        <div class="fin-divider"></div>
-
-        <!-- 收据 -->
-        <div class="fin-section">
-          <div class="fin-subtitle">收据</div>
-          <div v-if="receiptUrls.length" class="img-strip">
-            <el-image
-              v-for="(url, index) in receiptUrls"
-              :key="url"
-              :src="url"
-              :preview-src-list="receiptUrls"
-              :initial-index="index"
-              fit="cover"
-              preview-teleported
-            />
+        <!-- 收据：仅当存在收据图片时展示，避免空卡出现多余横线 -->
+        <template v-if="receiptUrls.length">
+          <div class="fin-divider"></div>
+          <div class="fin-section">
+            <div class="fin-subtitle">收据</div>
+            <div class="img-strip">
+              <el-image
+                v-for="(url, index) in receiptUrls"
+                :key="url"
+                :src="url"
+                :preview-src-list="receiptUrls"
+                :initial-index="index"
+                fit="cover"
+                preview-teleported
+              />
+            </div>
           </div>
-          <div v-else class="fin-receipt-empty">暂无收据</div>
-        </div>
+        </template>
       </section>
       </div><!-- /xn-col-main -->
       <div class="xn-col xn-col-side">
@@ -1015,6 +1057,28 @@ onMounted(fetchDetail)
         <el-button @click="rejectDialogVisible = false">取消</el-button>
         <el-button type="danger" :loading="rejecting" @click="handleRejectSubmit">
           确认退回
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 退单回池弹窗 -->
+    <el-dialog v-model="returnDialogVisible" title="退单回池" width="480px">
+      <el-form label-position="top">
+        <el-form-item label="退单原因（将通知报修人，工单重回待接单池等待其他维修员接单）">
+          <el-input
+            v-model="returnReason"
+            type="textarea"
+            :rows="4"
+            :maxlength="200"
+            show-word-limit
+            :placeholder="`请输入退单原因，至少 ${returnMinLength} 个字`"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="returnDialogVisible = false">取消</el-button>
+        <el-button type="warning" :loading="returning" @click="handleReturnSubmit">
+          确认退单
         </el-button>
       </template>
     </el-dialog>
@@ -1685,6 +1749,8 @@ onMounted(fetchDetail)
 .fin-detail .kv {
   flex-direction: row;
   align-items: center;
+  /* 覆盖通用 .kv 的 space-between：明细项内容紧挨，避免键值被拉开后挤压换行 */
+  justify-content: flex-start;
   gap: 6px;
   padding: 0;
 }

@@ -104,6 +104,8 @@ export interface OrderListItem {
   contact?: string
   /** 故障图缩略图（V1.3 卡片展示，取首图） */
   images?: OrderImage[]
+  /** V1.8 列表卡片未读红点：存在他人新动态且我未读 */
+  unread?: boolean
 }
 
 /** 报修人筛选下拉选项（GET /admin/orders/reporters，来源于历史工单报修人） */
@@ -139,7 +141,7 @@ export interface FinanceInfo {
 
 /** 可执行动作（5.2 available_actions；store 全量，审核员由前端按角色裁剪） */
 export interface AvailableAction {
-  action: 'audit' | 'accept' | 'complete' | 'reject' | 'reopen' | 'update_finance' | 'sign' | 'defer_sign'
+  action: 'audit' | 'accept' | 'complete' | 'reject' | 'reopen' | 'update_finance' | 'sign' | 'defer_sign' | 'return_to_pool'
   label: string
   to_status: string
   require_reason?: boolean
@@ -212,6 +214,8 @@ export interface PageResult<T> {
 /** 工单列表响应（含状态 Tab 实时角标计数 status_counts，key 为状态值 + 聚合键 unfinished） */
 export interface OrderListResult extends PageResult<OrderListItem> {
   status_counts: Record<string, number>
+  /** 各状态未读工单数（红点提醒用），key 与 status_counts 同构（状态值 + pending_sign） */
+  unread_counts?: Record<string, number>
 }
 
 /** 企业列表项（5.8） */
@@ -536,6 +540,8 @@ export interface DashboardCard {
   total: number
   /** 其中未读工单数（卡片标题旁角标） */
   unread: number
+  /** 是否为「我报修的」个人工单（首页据此归到「我的」分组，与角色工作卡区分） */
+  personal?: boolean
   /** 最近 1-2 条工单 */
   orders: DashboardOrder[]
 }

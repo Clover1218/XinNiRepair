@@ -331,6 +331,106 @@ func (r *OrderRepository) CountByStatusForAdmin(ctx context.Context, f OrderAdmi
 	return result, nil
 }
 
+// CountUnreadByStatusForAdmin 与管理端角标同构的「未读」聚合：
+// 在 CountByStatusForAdmin 的各筛选基础上叠加工单级未读判定(unreadCond)，
+// 返回各状态未读数 + 派生的 pending_sign 未读数，供列表 Tab 未读红点使用。
+func (r *OrderRepository) CountUnreadByStatusForAdmin(ctx context.Context, f OrderAdminFilter, userID string) (map[string]int64, error) {
+	scopeCond, scopeArgs, visible := applyScope(f)
+	if !visible {
+		return map[string]int64{}, nil
+	}
+	base := r.db.WithContext(ctx).Model(&model.RepairOrder{}).
+		Joins("JOIN users ON users.id = repair_orders.reporter_id")
+	if scopeCond != "" {
+		base = base.Where(scopeCond, scopeArgs...)
+	}
+	if f.Urgency != "" {
+		base = base.Where("repair_orders.urgency = ?", f.Urgency)
+	}
+	if f.Keyword != "" {
+		like := "%" + f.Keyword + "%"
+		base = base.Where("repair_orders.order_no LIKE ?", like)
+	}
+	if f.EnterpriseID != "" {
+		base = base.Where("repair_orders.enterprise_id = ?", f.EnterpriseID)
+	}
+	if f.CategoryID != "" {
+		base = base.Where("repair_orders.category_id = ?", f.CategoryID)
+	}
+	if f.PropertyID != "" {
+		base = base.Where("repair_orders.property_id = ?", f.PropertyID)
+	}
+	if f.DateFrom != nil {
+		base = base.Where("repair_orders.submitted_at >= ?", *f.DateFrom)
+	}
+	if f.DateTo != nil {
+		base = base.Where("repair_orders.submitted_at <= ?", *f.DateTo)
+	}
+	if f.ReporterID != "" {
+		base = base.Where("repair_orders.reporter_id = ?", f.ReporterID)
+	}
+	if f.RepairerID != "" {
+		base = base.Where("repair_orders.repairer_id = ?", f.RepairerID)
+	}
+	if f.SignatureStatus != "" {
+		base = base.Where("repair_orders.signature_status = ?", f.SignatureStatus)
+	}
+	if f.FinishOutcome != "" {
+		base = base.Where("repair_orders.finish_outcome = ?", f.FinishOutcome)
+	}
+	// 叠加工单级未读判定（他人有新增动态且我未查看）
+	base = base.Where(unreadCond, userID, userID)
+
+	var pendingSignCount int64
+	if err := base.Session(&gorm.Session{}).
+		Where("repair_orders.signature_status = ?", string(model.SignaturePendingSign)).
+		Count(&pendingSignCount).Error; err != nil {
+		return nil, err
+	}
+	var rows []OrderStatusCount
+	if err := base.Select("repair_orders.status as status, COUNT(*) as count").
+		Group("repair_orders.status").
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	result := make(map[string]int64, len(rows)+1)
+	for _, row := range rows {
+		result[row.Status] = row.Count
+	}
+	result["pending_sign"] = pendingSignCount
+	return result, nil
+}
+
+// CountUnreadByStatusForReporter 用户端「我的工单」未读聚合：
+// 在报修人视角(等同 ListByReporter 的过滤)基础上叠加未读判定，供 my_repair 列表 Tab 红点。
+func (r *OrderRepository) CountUnreadByStatusForReporter(ctx context.Context, reporterID, enterpriseID, opUserID string) (map[string]int64, error) {
+	base := r.db.WithContext(ctx).Model(&model.RepairOrder{}).
+		Where("repair_orders.reporter_id = ?", reporterID)
+	if enterpriseID != "" {
+		base = base.Where("repair_orders.enterprise_id = ?", enterpriseID)
+	}
+	base = base.Where(unreadCond, opUserID, opUserID)
+
+	var pendingSignCount int64
+	if err := base.Session(&gorm.Session{}).
+		Where("repair_orders.signature_status = ?", string(model.SignaturePendingSign)).
+		Count(&pendingSignCount).Error; err != nil {
+		return nil, err
+	}
+	var rows []OrderStatusCount
+	if err := base.Select("repair_orders.status as status, COUNT(*) as count").
+		Group("repair_orders.status").
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	result := make(map[string]int64, len(rows)+1)
+	for _, row := range rows {
+		result[row.Status] = row.Count
+	}
+	result["pending_sign"] = pendingSignCount
+	return result, nil
+}
+
 // ── 5.17 本单位工单汇总统计 (V1.3 C20) ──
 
 // OrderStatsAggregate 汇总统计的行级聚合结果（service 层再补零/组装配 DTO）

@@ -124,6 +124,10 @@ export const adminAPI = {
   rejectOrder: (orderId: string, reason: string) =>
     http.post<AdminOrderDetail>(`/admin/orders/${orderId}/reject`, { reason }),
 
+  /** V1.9 退单回池 processing → pending_accept（仅接单人/超管，清财务+清旧收据图） */
+  returnOrder: (orderId: string, reason: string) =>
+    http.post<AdminOrderDetail>(`/admin/orders/${orderId}/return`, { reason }),
+
   /** 完工登记 */
   completeOrder: (orderId: string, data: CompleteOrderInput) =>
     http.post<AdminOrderDetail>(`/admin/orders/${orderId}/complete`, data as unknown as Record<string, unknown>),

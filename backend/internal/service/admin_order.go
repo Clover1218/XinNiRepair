@@ -77,6 +77,8 @@ type AdminOrderItem struct {
 	ReceiptUploaded bool   `json:"receipt_uploaded"`
 	SignatureStatus string `json:"signature_status"`
 	FinishOutcome   string `json:"finish_outcome"`
+	// V1.8 列表卡片小红点：存在他人新动态且当前用户未读
+	Unread bool `json:"unread"`
 }
 
 // AdminOrderList 管理端工单分页结果 (5.1)
@@ -89,6 +91,9 @@ type AdminOrderList struct {
 	// StatusCounts 各状态实时计数（角标用）：key 为状态值（reported/pending_accept/...），
 	// 另含聚合键 "unfinished"（待审核+待接单+处理中）。不含 f.Status 自身，角标互不影响。
 	StatusCounts map[string]int64 `json:"status_counts"`
+	// UnreadCounts 各状态未读工单数（红点提醒用）：key 与 StatusCounts 同构；
+	// 存在「他人新动态且我未读」的工单时才 >0，进详情页标记已读后随之减少。
+	UnreadCounts map[string]int64 `json:"unread_counts"`
 }
 
 // AdminAction 管理端可执行动作 (5.2)
@@ -335,6 +340,11 @@ func (s *AdminOrderService) ListOrders(ctx context.Context, op Operator, f repos
 	if cErr != nil {
 		return nil, s.dbErr("count orders by status failed", cErr)
 	}
+	// 同步计算未读聚合（供列表 Tab 未读红点；key 与 byStatusCounts 同构）
+	unreadCounts, uErr := s.orders.CountUnreadByStatusForAdmin(ctx, countFilter, op.UserID)
+	if uErr != nil {
+		return nil, s.dbErr("count unread orders by status failed", uErr)
+	}
 	// V1.8：维修业务员「我的」视角(repairer_id=me)角标隔离：
 	// processing / pending_sign 仅统计本人接的单，避免从全经营范围角标泄漏他人工单量；
 	// 审核员 review 视角(未传 repairer_id)保持本单位全范围角标（不收敛）。
@@ -349,6 +359,12 @@ func (s *AdminOrderService) ListOrders(ctx context.Context, op Operator, f repos
 		}
 		byStatusCounts[string(model.OrderProcessing)] = meCounts[string(model.OrderProcessing)]
 		byStatusCounts[pendingSignFilterValue] = meCounts[pendingSignFilterValue]
+		meUnread, muErr := s.orders.CountUnreadByStatusForAdmin(ctx, meFilter, op.UserID)
+		if muErr != nil {
+			return nil, s.dbErr("count repairer unread orders failed", muErr)
+		}
+		unreadCounts[string(model.OrderProcessing)] = meUnread[string(model.OrderProcessing)]
+		unreadCounts[pendingSignFilterValue] = meUnread[pendingSignFilterValue]
 	}
 	unfinishedCount := byStatusCounts[string(model.OrderReported)] +
 		byStatusCounts[string(model.OrderPendingAccept)] +
@@ -397,6 +413,10 @@ func (s *AdminOrderService) ListOrders(ctx context.Context, op Operator, f repos
 	if err != nil {
 		return nil, s.dbErr("count receipts failed", err)
 	}
+	unreadFlags, err := s.orders.UnreadFlags(ctx, op.UserID, orderIDs)
+	if err != nil {
+		return nil, s.dbErr("check unread flags failed", err)
+	}
 
 	list := make([]AdminOrderItem, 0, len(orders))
 	for _, o := range orders {
@@ -431,6 +451,7 @@ func (s *AdminOrderService) ListOrders(ctx context.Context, op Operator, f repos
 			ReceiptUploaded:  receiptUploaded,
 			SignatureStatus:  o.SignatureStatus,
 			FinishOutcome:    o.FinishOutcome,
+			Unread:           unreadFlags[o.ID],
 		})
 	}
 
@@ -445,6 +466,7 @@ func (s *AdminOrderService) ListOrders(ctx context.Context, op Operator, f repos
 		PageSize:     pageSize,
 		TotalPages:   totalPages,
 		StatusCounts: statusCounts,
+		UnreadCounts: unreadCounts,
 	}, nil
 }
 
@@ -1121,6 +1143,97 @@ func (s *AdminOrderService) Reject(ctx context.Context, op Operator, orderID, re
 	return s.appendAdminTimeline(ctx, order, op.UserID, string(model.ActionReject), from, string(model.OrderRejected), reason, ip)
 }
 
+// ReturnToPool 退单回池 (V1.9): processing → pending_accept
+//
+// 业务背景：维修员接单处理中，到达现场发现修不了/需换人，可主动「退单」，
+// 工单清掉接单人归属与财务信息后重新进入待接单公共池，由其他维修员重新接单。
+//
+// 权限：仅接单人本人（或超级管理员）可退单；单位审核员(role=0)与他人工单被服务端拦截。
+// 同时该动作已被加入 ownerOnlyActions，维修业务员(非超管)面对他人接单的工单时
+// adminAvailableActions 不再返回，避免前端展示不可用按钮。
+//
+// 清场规则（按需求确认 ③ 调整）：
+//   - 状态回 pending_accept；清空 RepairerID/AcceptedAt/SignatureStatus/CompletedAt/RejectReason
+//   - 重置财务字段 RepairContent/Quantity/UnitPrice/Metadata（让池中的工单干干净净）
+//   - 保留 AuditedAt/AuditedBy（仍是「审核通过待接单」）
+//   - 旧收据图 status 全部置 deleted（不留给下一任师傅），并在时间轴留痕
+//   - 退单原因存 order_timeline.remark（不新增 DB 列，与 Reject 一致）
+func (s *AdminOrderService) ReturnToPool(ctx context.Context, op Operator, orderID, reason, ip string) error {
+	reason = strings.TrimSpace(reason)
+	n := len([]rune(reason))
+	if n < 2 || n > 200 {
+		return apperrors.ErrRejectReasonTooShort.WithMessage("退单原因需为2-200字")
+	}
+	if err := s.access.StaffOnly(op); err != nil {
+		return err
+	}
+
+	order, err := s.loadOrder(ctx, orderID)
+	if err != nil {
+		return err
+	}
+	if order.Status != string(model.OrderProcessing) {
+		return apperrors.ErrOrderCannotEdit.WithMessage("仅 processing（处理中/待补签）状态的工单可退单回池")
+	}
+	// 归属校验：仅接单人本人或超级管理员可退单（未接单时无归属，不拦截；但 processing 必有接单人）
+	if err := ensureOrderOwner(op, order); err != nil {
+		return err
+	}
+
+	from := order.Status
+
+	// 退单前先统计旧收据图数量（用于时间轴留痕），随后整体置 deleted
+	oldReceiptCount, cErr := s.images.CountActive(ctx, orderID, string(model.ImageReceipt))
+	if cErr != nil {
+		return s.dbErr("count old receipts failed", cErr)
+	}
+	if oldReceiptCount > 0 {
+		if err := s.images.MarkAllDeleted(ctx, orderID, string(model.ImageReceipt)); err != nil {
+			return s.dbErr("cleanup receipts failed", err)
+		}
+	}
+
+	// 状态回待接单 + 清场（保留 audited 审核信息）
+	order.Status = string(model.OrderPendingAccept)
+	// 注意：Repairer 是关联字段，loadOrder 预加载后其 ID 非空；
+	// 若只清 RepairerID 而保留 Repairer.ID，GORM Save 会回写 repairer_id，
+	// 必须把关联一并置零值才能真正清空接单人。
+	order.RepairerID = nil
+	order.Repairer = model.User{}
+	order.AcceptedAt = nil
+	order.CompletedAt = nil
+	order.SignatureStatus = string(model.SignatureNone)
+	order.RejectReason = ""
+	// 注：order.Remark（维修备注/结单说明）保留——用户确认仅清 RepairerID + 财务字段，未要求清维修备注
+	order.RepairContent = ""
+	order.Quantity = 0
+	order.UnitPrice = 0
+	order.Metadata = datatypes.JSON("{}")
+	if err := s.orders.Update(ctx, order); err != nil {
+		return s.dbErr("update order failed", err)
+	}
+
+	// 时间轴：主记录（退单原因）
+	if err := s.appendAdminTimeline(ctx, order, op.UserID, string(model.ActionReturnToPool), from, string(model.OrderPendingAccept), reason, ip); err != nil {
+		return err
+	}
+	// 时间轴：清理收据图留痕
+	if oldReceiptCount > 0 {
+		cleanupRemark := fmt.Sprintf("已清理上一任师傅的收据图（共 %d 张）", oldReceiptCount)
+		if err := s.appendAdminTimeline(ctx, order, op.UserID, string(model.ActionCleanupReceipts), from, string(model.OrderPendingAccept), cleanupRemark, ip); err != nil {
+			return err
+		}
+	}
+
+	// 通知报修人：工单退回待接单（复用「工单状态提醒」模板，仅通知报修人）
+	if s.notifier != nil {
+		s.notifier.NotifyOrderReturnedToPool(ctx, order, reason)
+	}
+	s.logger.Info("order returned to pool",
+		zap.String("order_id", order.ID), zap.String("operator_id", op.UserID), zap.Int64("cleaned_receipts", oldReceiptCount))
+	return nil
+}
+
 // CompleteOrderInput 完工登记入参 (5.6, req②/④)
 type CompleteOrderInput struct {
 	Remark        string
@@ -1717,6 +1830,7 @@ var ownerOnlyActions = map[string]bool{
 	string(model.ActionUploadReceipt): true,
 	string(model.ActionSign):          true,
 	string(model.ActionReject):        true,
+	string(model.ActionReturnToPool):  true, // 退单回池：仅接单人本人或超管
 }
 
 // statusSliceContains 状态筛选列表是否包含指定状态
@@ -1770,16 +1884,18 @@ func adminAvailableActions(status, signatureStatus string) []AdminAction {
 			{Action: string(model.ActionReject), Label: "退回", ToStatus: string(model.OrderRejected), RequireReason: true, ReasonMinLength: 2, ConfirmMessage: "退回后工单进入「已退回」，报修人可修改重新提交，确认退回？"},
 		}
 	case model.OrderProcessing:
-		// 待补签：仅展示「上传签字单，正式完工」+ 退回（不再展示普通完工）
+		// 待补签：仅展示「上传签字单，正式完工」+ 退回 + 退单回池（不再展示普通完工）
 		if status == string(model.OrderProcessing) && orderSignaturePending {
 			return []AdminAction{
 				{Action: string(model.ActionSign), Label: "上传签字单，正式完工", ToStatus: string(model.OrderCompleted), ConfirmMessage: "确认上传签字单并正式完工该工单？"},
 				{Action: string(model.ActionReject), Label: "退回", ToStatus: string(model.OrderRejected), RequireReason: true, ReasonMinLength: 2, ConfirmMessage: "退回后工单进入「已退回」，报修人可修改重新提交，确认退回？"},
+				{Action: string(model.ActionReturnToPool), Label: "退单回池", ToStatus: string(model.OrderPendingAccept), RequireReason: true, ReasonMinLength: 2, ConfirmMessage: "退单后工单回到待接单池，由其他维修员重新接单，确认？"},
 			}
 		}
 		return []AdminAction{
 			{Action: string(model.ActionComplete), Label: "完工", ToStatus: string(model.OrderCompleted), ConfirmMessage: "确认完工该工单？"},
 			{Action: string(model.ActionReject), Label: "退回", ToStatus: string(model.OrderRejected), RequireReason: true, ReasonMinLength: 2, ConfirmMessage: "退回后工单进入「已退回」，报修人可修改重新提交，确认退回？"},
+			{Action: string(model.ActionReturnToPool), Label: "退单回池", ToStatus: string(model.OrderPendingAccept), RequireReason: true, ReasonMinLength: 2, ConfirmMessage: "退单后工单回到待接单池，由其他维修员重新接单，确认？"},
 		}
 	case model.OrderCompleted:
 		return []AdminAction{

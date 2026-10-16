@@ -3,12 +3,12 @@ import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
 import { useUserStore } from '@/stores/user'
+import ServiceIcon from '@/components/ServiceIcon.vue'
+import { defaultModeFromRole } from '@/order/modes'
 
 const route = useRoute()
 const router = useRouter()
 const userStore = useUserStore()
-
-const activeMenu = computed(() => route.path)
 
 const displayName = computed(() => userStore.userInfo?.nickname || '管理员')
 
@@ -19,56 +19,99 @@ const roleLabel = computed(() => {
   return ''
 })
 
-const menus = computed<Array<{ path: string; title: string; icon: string }>>(() => {
-  const items: Array<{ path: string; title: string; icon: string }> = []
-  const has = (predicate: (p: string) => boolean) => items.some(i => predicate(i.path))
+interface MenuItem {
+  /** el-menu 的 index（可带 query，如 /orders?mode=review&tag=pending_review） */
+  index: string
+  title: string
+  /** 项目根 icons/*.svg 的图标 key（优先）；缺省用 Element Plus 图标名 */
+  svg?: string
+  icon?: string
+}
+
+const menus = computed<MenuItem[]>(() => {
+  const items: MenuItem[] = []
+  const push = (m: MenuItem) => {
+    // 按 index 去重，避免多角色（如既是业务员又是审核员）出现重复入口
+    if (!items.some(i => i.index === m.index)) items.push(m)
+  }
 
   // 所有角色统一的首页入口（按角色渲染待办队列）
-  items.push({ path: '/', title: '首页', icon: 'HomeFilled' })
+  push({ index: '/', title: '首页', svg: 'home' })
 
+  // 单位审核员：我的工单 / 审核工单 / 报修 / 企业管理（单单位走详情，多单位走列表）/ 统计
+  if (userStore.hasReviewerRole) {
+    push({ index: '/orders?mode=my_repair', title: '我的工单', svg: 'my' })
+    push({ index: '/orders?mode=review&tag=pending_review', title: '审核工单', svg: 'rev' })
+    push({ index: '/orders/create', title: '报修', svg: 'fix' })
+    const first = userStore.reviewerEnterprises[0]
+    if (first) {
+      push({ index: `/enterprises/${first.enterprise_id}`, title: '企业管理', svg: 'ent' })
+    }
+    push({ index: '/stats', title: '统计', svg: 'stats' })
+  }
+
+  // 维修业务员（含超管）：接单大厅 / 我的维修 / 报修 / 统计
+  // （企业管理为超管专属：业务维修员无权管理企业，V1.7.1 起移除其入口）
   if (userStore.isStoreStaff) {
-    items.push(
-      { path: '/orders', title: '工单管理', icon: 'Tickets' },
-      // 代单位上报故障（与小程序同源接口，后端校验该单位成员身份）
-      { path: '/orders/create', title: '上报工单', icon: 'EditPen' },
-      { path: '/stats', title: '统计', icon: 'DataAnalysis' },
-      { path: '/enterprises', title: '企业管理', icon: 'OfficeBuilding' }
-    )
-    if (userStore.isSuperAdmin) {
-      items.push(
-        { path: '/dictionary', title: '项目字典', icon: 'Collection' },
-        { path: '/users', title: '用户管理', icon: 'User' },
-        // V1.5 经营范围：业务员能看到哪些客户企业的数据
-        { path: '/repairers', title: '经营范围', icon: 'Connection' },
-        // 系统设置（完工时限等超管参数）
-        { path: '/settings', title: '系统设置', icon: 'Setting' }
+    push({ index: '/orders?mode=worker_task&tag=pending_accept', title: '接单大厅', svg: 'hall' })
+    push({ index: '/orders?mode=worker_task&tag=mine', title: '我的维修', svg: 'my' })
+    push({ index: '/orders/create', title: '报修', svg: 'fix' })
+    push({ index: '/stats', title: '统计', svg: 'stats' })
+  }
+
+  // 超管专属管理项（沿用 Element Plus 图标）
+  if (userStore.isSuperAdmin) {
+    push({ index: '/enterprises', title: '企业管理', svg: 'ent' })
+    push({ index: '/dictionary', title: '项目字典', icon: 'Collection' })
+    push({ index: '/users', title: '用户管理', icon: 'User' })
+    push({ index: '/repairers', title: '经营范围', icon: 'Connection' })
+    push({ index: '/settings', title: '系统设置', icon: 'Setting' })
+  }
+
+  return items
+})
+
+/** 当前高亮的菜单 index：工单类入口按 mode(+tag) 精确命中 */
+const activeMenu = computed<string>(() => {
+  const path = route.path
+  const q = route.query
+  const match = (index: string) => menus.value.find(m => m.index === index)?.index
+  if (path === '/orders') {
+    const mode =
+      (typeof q.mode === 'string' && q.mode) ||
+      defaultModeFromRole({
+        isStoreStaff: userStore.isStoreStaff,
+        hasReviewerRole: userStore.hasReviewerRole
+      })
+    if (mode === 'review') return match('/orders?mode=review&tag=pending_review') || path
+    if (mode === 'worker_task') {
+      return (
+        (q.tag === 'pending_accept'
+          ? match('/orders?mode=worker_task&tag=pending_accept')
+          : match('/orders?mode=worker_task&tag=mine')) || path
       )
     }
+    return match('/orders?mode=my_repair') || path
   }
-  // 兼任多角色时追加审核员专属入口（按 path 去重，避免重复菜单）
-  if (userStore.hasReviewerRole) {
-    // 工单管理：审核员复用与店方同一模块（自带"本单位"限定 + "待审核"默认 Tab + 待审核行就地审核/退回）
-    if (!has(p => p === '/orders')) {
-      items.push({ path: '/orders', title: '工单管理', icon: 'Tickets' })
-    }
-    if (!has(p => p === '/orders/create')) {
-      items.push({ path: '/orders/create', title: '上报工单', icon: 'EditPen' })
-    }
-    const first = userStore.reviewerEnterprises[0]
-    // 去重：店方已加「企业管理」列表页（精确 '/enterprises'）或任一企业详情（'/enterprises/' 前缀）时不再追加
-    if (first && !has(p => p === '/enterprises' || p.startsWith('/enterprises/'))) {
-      items.push({
-        path: `/enterprises/${first.enterprise_id}`,
-        title: '企业管理',
-        icon: 'OfficeBuilding'
-      })
-    }
-    // 统计（限本单位，隐藏企业对比/维修员业绩）
-    if (!has(p => p === '/stats')) {
-      items.push({ path: '/stats', title: '统计', icon: 'DataAnalysis' })
-    }
+  if (path === '/orders/create') return match('/orders/create') || path
+  if (path.startsWith('/enterprises')) {
+    const exact = menus.value.find(m => m.index === path)
+    const anyEnt = menus.value.find(m => m.index.startsWith('/enterprises'))
+    return exact?.index || anyEnt?.index || path
   }
-  return items
+  if (path === '/stats') return match('/stats') || path
+  if (path === '/dictionary') return match('/dictionary') || path
+  if (path === '/users') return match('/users') || path
+  if (path === '/repairers') return match('/repairers') || path
+  if (path === '/settings') return match('/settings') || path
+  if (path === '/') return match('/') || path
+  return path
+})
+
+/** 页头标题：取当前高亮菜单的标题，否则回退路由 meta.title */
+const headerTitle = computed(() => {
+  const hit = menus.value.find(m => m.index === activeMenu.value)
+  return hit?.title || (route.meta.title as string) || ''
 })
 
 const handleLogout = async () => {
@@ -90,15 +133,19 @@ const handleLogout = async () => {
         <span class="logo-title">报修系统</span>
       </div>
       <el-menu :default-active="activeMenu" router class="menu">
-        <el-menu-item v-for="item in menus" :key="item.path" :index="item.path">
-          <el-icon><component :is="item.icon" /></el-icon>
-          <span>{{ item.title }}</span>
+        <el-menu-item v-for="item in menus" :key="item.index" :index="item.index">
+          <!-- svg 图标包一层固定宽度的 .menu-ico，与下方 el-icon 项保持同一文字起点 -->
+          <span v-if="item.svg" class="menu-ico">
+            <ServiceIcon :name="item.svg" :size="20" />
+          </span>
+          <el-icon v-else><component :is="item.icon" /></el-icon>
+          <span class="menu-txt">{{ item.title }}</span>
         </el-menu-item>
       </el-menu>
     </el-aside>
     <el-container>
       <el-header class="header">
-        <div class="page-title">{{ route.meta.title }}</div>
+        <div class="page-title">{{ headerTitle }}</div>
         <div class="user-area">
           <el-avatar :size="32" :src="userStore.userInfo?.avatar_url">
             {{ displayName.charAt(0) }}
@@ -153,11 +200,19 @@ const handleLogout = async () => {
   flex: 1;
   border-right: none;
   background-color: transparent;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .menu :deep(.el-menu-item) {
   color: rgba(255, 255, 255, 0.68);
   position: relative;
+  /* 菜单项之间留出呼吸间距（圆角悬浮条样式），不再挤成一整列 */
+  margin: 4px 12px;
+  height: 46px;
+  line-height: 46px;
+  border-radius: 8px;
+  font-size: 14px;
 }
 
 .menu :deep(.el-menu-item:hover) {
@@ -177,7 +232,22 @@ const handleLogout = async () => {
   top: 0;
   bottom: 0;
   width: 3px;
+  border-radius: 3px 0 0 3px;
   background: var(--xn-primary);
+}
+
+/* 自绘 svg 图标：与 el-icon 同宽对齐，图标与文字留出 8px 间距 */
+.menu :deep(.menu-ico) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  margin-right: 8px;
+  flex-shrink: 0;
+}
+
+.menu :deep(.menu-txt) {
+  white-space: nowrap;
 }
 
 .header {
@@ -210,5 +280,7 @@ const handleLogout = async () => {
   background-color: var(--xn-bg);
   padding: 16px;
   overflow-y: auto;
+  /* 预留滚动条槽位：内容变高（如展开对账明细）出现滚动条时，整页不再横向抖动 */
+  scrollbar-gutter: stable;
 }
 </style>

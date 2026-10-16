@@ -295,6 +295,7 @@ func registerRoutes(r *gin.Engine, db *repository.DB, authH *handler.AuthHandler
 			admin.POST("/orders/:order_id/review", adminH.Audit)                 // 兼容旧版 /review (行为同 audit)
 			admin.POST("/orders/:order_id/accept", adminH.Accept)                // 接单 (5.4)
 			admin.POST("/orders/:order_id/reject", adminH.Reject)                // 退回 (5.5)
+			admin.POST("/orders/:order_id/return", adminH.ReturnToPool)          // 退单回池 (V1.9: processing→pending_accept)
 			admin.POST("/orders/:order_id/complete", adminH.Complete)            // 完工 (5.6)
 			admin.POST("/orders/:order_id/reopen", adminH.Reopen)                // 重新打开 (5.16)
 			admin.POST("/orders/:order_id/finance", adminH.UpdateFinance)        // 修改对账信息 (5.6.1)

@@ -1,22 +1,43 @@
 <script setup lang="ts">
 /**
- * 首页 · 待办看板（按状态聚合，非时间流）
+ * 首页 · 待办看板（角色化，镜像小程序 V1.7）
  *
- * 上半：3-4 张状态卡，每张给出该状态的工单总数、未读数与最近 1-2 条工单；
- *       未读 = 存在他人产生的、晚于「我最后一次查看该工单」的动态。
- * 下半：常驻服务入口（不再受待办数量门控）。
+ * 上半：按角色出待办卡片矩阵（审核员/维修员/普通），每张卡给总数 + 未读数 + 最近 1-2 条；
+ *       卡片按 personal 分组为「我的」(我报修的) 与「待办」(角色工作)；
+ *       未读 = 存在他人产生、晚于我上次查看该工单的动态。
+ * 下半：角色化服务入口（审核员 4 项 / 维修员 2 项；超管额外可见企业管理/数据统计）。
+ *
+ * 与小程序一致：首页全部单位，不出现单位切换条（单位收敛仅发生在列表页）。
  */
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import ServiceIcon from '@/components/ServiceIcon.vue'
 import { useUserStore } from '@/stores/user'
 import { adminAPI } from '@/api/admin'
+import {
+  cardKeyToMode,
+  cardKeyToTag,
+  type OrderMode
+} from '@/order/modes'
+import { tagCls } from '@/order/tags'
 import type { DashboardCard, DashboardOrder } from '@/types'
 
 const router = useRouter()
 const userStore = useUserStore()
 
+const cards = ref<DashboardCard[]>([])
+const unreadTotal = ref(0)
+const loading = ref(false)
+
+// 各卡片展开态（key → 是否已展开全部）与预览快照
+const expandedKeys = ref<Record<string, boolean>>({})
+const previewMap = ref<Record<string, DashboardOrder[]>>({})
+const loadingCardKey = ref('')
+
+// 角色化服务入口（审核员优先；与小程序 home 服务入口矩阵一致）
 interface ServiceEntry {
   key: string
+  /** 图标 key（src/order/serviceIcons.ts，同源于根目录 icons/*.svg） */
   icon: string
   title: string
   sub: string
@@ -24,36 +45,101 @@ interface ServiceEntry {
   action: () => void
 }
 
-const cards = ref<DashboardCard[]>([])
-const unreadTotal = ref(0)
-const loading = ref(false)
+const serviceEntries = computed<ServiceEntry[]>(() => {
+  const out: ServiceEntry[] = []
+  if (userStore.hasReviewerRole) {
+    out.push(
+      {
+        key: 'enterprise',
+        icon: 'ent',
+        title: '企业管理',
+        sub: '成员与邀请码',
+        cls: 'staff',
+        action: () => router.push({ name: 'EnterpriseList' })
+      },
+      {
+        key: 'my_orders',
+        icon: 'my',
+        title: '我的工单',
+        sub: '我上报的工单',
+        cls: 'plain',
+        action: () => goList('my_repair')
+      },
+      {
+        key: 'create',
+        icon: 'fix',
+        title: '报修',
+        sub: '提交新工单',
+        cls: 'plain',
+        action: () => router.push({ name: 'OrderCreate' })
+      },
+      {
+        key: 'review',
+        icon: 'rev',
+        title: '审核工单',
+        sub: '待我审核',
+        cls: 'primary',
+        action: () => goList('review', 'pending_review')
+      }
+    )
+  } else if (userStore.isStoreStaff) {
+    // 维修业务员（含超管）：接单大厅 / 我的维修
+    out.push(
+      {
+        key: 'hall',
+        icon: 'hall',
+        title: '接单大厅',
+        sub: '待接工单',
+        cls: 'primary',
+        action: () => goList('worker_task', 'pending_accept')
+      },
+      {
+        key: 'my_repair_work',
+        icon: 'my',
+        title: '我的维修',
+        sub: '我接的单',
+        cls: 'staff',
+        action: () => goList('worker_task', 'mine')
+      }
+    )
+    // 超管额外可见企业管理 / 数据统计
+    if (userStore.isSuperAdmin) {
+      out.push(
+        {
+          key: 'enterprise_super',
+          icon: 'ent',
+          title: '企业管理',
+          sub: '单位与成员',
+          cls: 'staff',
+          action: () => router.push({ name: 'EnterpriseList' })
+        },
+        {
+          key: 'stats_super',
+          icon: 'stats',
+          title: '数据统计',
+          sub: '运营概览',
+          cls: 'primary',
+          action: () => router.push({ name: 'Stats' })
+        }
+      )
+    }
+  }
+  return out
+})
 
-// ── 审核员多单位：首页同样提供「切换单位」 ──
-const reviewerUnits = computed(() => userStore.reviewerEnterprises)
-const showUnitSwitch = computed(() => reviewerUnits.value.length > 1)
-const activeUnitId = ref(reviewerUnits.value[0]?.enterprise_id || '')
-
-/**
- * 卡片 key → 工单列表的 status 筛选值（V1.7 角色化卡片矩阵）
- * 空串 = 不过滤（全部）：进行中 / 提醒 两张卡命中多状态，跳列表时统一落在「全部」
- */
-const STATUS_OF_KEY: Record<string, string> = {
-  pending_review: 'reported',
-  repairer_processing: 'processing',
-  pending_accept: 'pending_accept',
-  in_progress: '',
-  notice: ''
-}
-
+/** 首页全部单位（不再按单单位收敛），拉取本人全部相关工单卡片 */
 const fetchDashboard = async () => {
   loading.value = true
   try {
-    const params = userStore.hasReviewerRole && activeUnitId.value ? { enterprise_id: activeUnitId.value } : undefined
-    const res = await adminAPI.getDashboard(params)
-    // client 响应拦截器返回信封 { code, message, data }
-    const data = (res as unknown as { data: { cards: DashboardCard[]; unread_total: number } }).data
+    const res = await adminAPI.getDashboard()
+    const data = res.data
     cards.value = data?.cards || []
     unreadTotal.value = data?.unread_total || 0
+    // 记录预览快照，供「查看全部」收起时还原
+    const preview: Record<string, DashboardOrder[]> = {}
+    for (const c of cards.value) preview[c.key] = c.orders
+    previewMap.value = preview
+    expandedKeys.value = {}
   } catch {
     cards.value = []
     unreadTotal.value = 0
@@ -62,54 +148,62 @@ const fetchDashboard = async () => {
   }
 }
 
-const handleUnitChange = () => fetchDashboard()
+/** 空卡隐藏：后端已过滤一层，这里再兜一次底（total==0 不显示） */
+const visibleCards = computed(() => cards.value.filter(c => c.total > 0))
+const personalCards = computed(() => visibleCards.value.filter(c => c.personal))
+const workCards = computed(() => visibleCards.value.filter(c => !c.personal))
 
-/** 点击卡片标题 → 工单列表并自动选中对应状态 */
-const goOrders = (c: DashboardCard) => {
-  const query: Record<string, string> = { status: STATUS_OF_KEY[c.key] || '' }
-  if (activeUnitId.value) query.enterprise = activeUnitId.value
+/** 看板分组：个人在前、工作在后；空组不出现 */
+const boardSections = computed(() => {
+  const secs: { title: string; cards: DashboardCard[] }[] = []
+  if (personalCards.value.length) secs.push({ title: '我的', cards: personalCards.value })
+  if (workCards.value.length) secs.push({ title: '待办', cards: workCards.value })
+  return secs
+})
+/** 未读总数挂在首个分组标题上（个人组优先） */
+const unreadSectionTitle = computed(() => {
+  if (personalCards.value.length) return '我的'
+  if (workCards.value.length) return '待办'
+  return ''
+})
+
+/** 跳工单列表页（带 mode + 可选 tag） */
+const goList = (mode: OrderMode, tag?: string) => {
+  const query: Record<string, string> = { mode }
+  if (tag) query.tag = tag
   router.push({ name: 'OrderList', query })
 }
 
-/** 点击卡片内的工单 → 直达详情，并标记已读 */
-const goDetail = async (row: DashboardOrder) => {
-  adminAPI.markOrderRead(row.id).catch(() => {})
-  router.push(`/orders/${row.id}`)
+/** 卡片标题 → 工单列表对应 Tab */
+const goCard = (c: DashboardCard) => goList(cardKeyToMode(c.key), cardKeyToTag(c.key))
+
+/** 卡片内工单 → 直达详情并标记已读 */
+const goDetail = async (_c: DashboardCard, o: DashboardOrder) => {
+  adminAPI.markOrderRead(o.id).catch(() => {})
+  router.push(`/orders/${o.id}`)
 }
 
-const serviceEntries = computed<ServiceEntry[]>(() => {
-  const out: ServiceEntry[] = [
-    {
-      key: 'orders',
-      icon: '单',
-      title: '工单管理',
-      sub: '全部工单列表',
-      cls: 'plain',
-      action: () => router.push({ name: 'OrderList' })
+/** 「查看全部 / 收起」：展开调全量接口突破 3 条预览上限，再点收起还原预览 */
+const expandCard = async (c: DashboardCard) => {
+  if (expandedKeys.value[c.key]) {
+    c.orders = previewMap.value[c.key] || []
+    expandedKeys.value[c.key] = false
+    return
+  }
+  loadingCardKey.value = c.key
+  try {
+    const res = await adminAPI.getDashboardCard(c.key)
+    if (res.data?.orders) {
+      previewMap.value[c.key] = c.orders
+      c.orders = res.data.orders
+      expandedKeys.value[c.key] = true
     }
-  ]
-  if (userStore.isStoreStaff || userStore.hasReviewerRole) {
-    out.push({
-      key: 'stats',
-      icon: '统',
-      title: '数据统计',
-      sub: '企业与业务员统计',
-      cls: 'primary',
-      action: () => router.push({ name: 'Stats' })
-    })
+  } catch {
+    // 静默失败，保留预览
+  } finally {
+    loadingCardKey.value = ''
   }
-  if (userStore.hasReviewerRole) {
-    out.push({
-      key: 'enterprise',
-      icon: '企',
-      title: '企业管理',
-      sub: '成员与邀请码',
-      cls: 'staff',
-      action: () => router.push({ name: 'EnterpriseList' })
-    })
-  }
-  return out
-})
+}
 
 const nickname = computed(() => userStore.userInfo?.nickname || '管理员')
 
@@ -130,9 +224,6 @@ const greeting = computed(() => {
   return '晚上好'
 })
 
-/** display_tag_type → 胶囊配色 */
-const tagCls = (type: string) => `tag-${type || 'info'}`
-
 onMounted(fetchDashboard)
 </script>
 
@@ -149,47 +240,60 @@ onMounted(fetchDashboard)
       <el-tag v-if="roleLabel" type="warning" size="small">{{ roleLabel }}</el-tag>
     </div>
 
-    <div v-if="showUnitSwitch" class="unit-bar">
-      <el-icon class="unit-icon"><Switch /></el-icon>
-      <span class="unit-hint">您担任 {{ reviewerUnits.length }} 个单位的审核员，请切换单位查看待审核工单</span>
-      <el-select v-model="activeUnitId" size="small" class="unit-select" @change="handleUnitChange">
-        <el-option
-          v-for="u in reviewerUnits"
-          :key="u.enterprise_id"
-          :label="u.enterprise_name"
-          :value="u.enterprise_id"
-        />
-      </el-select>
-    </div>
-
     <div v-loading="loading" class="board">
-      <div v-for="c in cards" :key="c.key" class="bcard">
-        <div class="bcard-head">
-          <span class="bcard-title">{{ c.label }}</span>
-          <span class="bcard-total">({{ c.total }})</span>
-          <el-badge v-if="c.unread > 0" :value="c.unread" class="bcard-badge" />
-          <el-button link type="primary" class="bcard-more" @click="goOrders(c)">详情 →</el-button>
+      <template v-for="sec in boardSections" :key="sec.title">
+        <div class="board-hd">
+          <span class="board-title">{{ sec.title }}</span>
+          <span v-if="unreadTotal > 0 && sec.title === unreadSectionTitle" class="board-unread">
+            {{ unreadTotal }} 条未读
+          </span>
         </div>
 
-        <div v-if="!c.orders.length" class="bcard-empty">暂无</div>
-        <div v-else class="bcard-list">
-          <div v-for="o in c.orders" :key="o.id" class="orow" @click="goDetail(o)">
-            <span class="orow-dot" :class="{ 'orow-dot-on': o.unread }" />
-            <span class="orow-tag" :class="tagCls(o.display_tag_type)">{{ o.display_tag }}</span>
-            <span class="orow-desc">{{ o.description || '（无故障描述）' }}</span>
-            <span class="orow-ent">{{ o.enterprise_name }}</span>
+        <div v-for="c in sec.cards" :key="c.key" class="bcard">
+          <div class="bcard-head" @click="goCard(c)">
+            <span class="bcard-title">{{ c.label }}</span>
+            <span v-if="c.unread > 0" class="bcard-unread-dot" title="有未读工单" />
+            <span class="bcard-total">({{ c.total }})</span>
+          </div>
+
+          <div v-if="!c.orders.length" class="bcard-empty">暂无</div>
+          <div v-else class="bcard-list">
+            <div
+              v-for="o in c.orders"
+              :key="o.id"
+              class="orow"
+              @click="goDetail(c, o)"
+            >
+              <span class="orow-dot" :class="{ 'orow-dot-on': o.unread }" />
+              <span class="orow-tag" :class="tagCls(o.display_tag_type)">{{ o.display_tag }}</span>
+              <span class="orow-desc">{{ o.description || '（无故障描述）' }}</span>
+              <span class="orow-ent">{{ o.enterprise_name }}</span>
+            </div>
+          </div>
+
+          <div
+            v-if="expandedKeys[c.key] || c.total > c.orders.length"
+            class="bcard-foot"
+            @click="expandCard(c)"
+          >
+            <span class="bcard-foot-txt">
+              {{ expandedKeys[c.key] ? '收起' : `查看全部 ${c.total} 条` }}
+            </span>
+            <span class="bcard-foot-arw">{{ expandedKeys[c.key] ? '▲' : '▼' }}</span>
           </div>
         </div>
-      </div>
+      </template>
 
-      <el-empty v-if="!loading && !cards.length" description="当前没有与您相关的工单" />
+      <el-empty v-if="!loading && !visibleCards.length" description="当前没有与您相关的工单" />
     </div>
 
     <div class="svc">
       <div class="svc-title">服务</div>
-      <div class="entry-grid">
+      <div class="entry-grid" :class="{ 'entry-grid--4': serviceEntries.length > 2 }">
         <div v-for="e in serviceEntries" :key="e.key" class="entry-card" @click="e.action()">
-          <span class="entry-ico" :class="e.cls">{{ e.icon }}</span>
+          <span class="entry-ico" :class="e.cls">
+            <ServiceIcon :name="e.icon" :size="20" />
+          </span>
           <span class="entry-title">{{ e.title }}</span>
           <span class="entry-sub">{{ e.sub }}</span>
         </div>
@@ -227,35 +331,27 @@ onMounted(fetchDashboard)
   color: #dc2626;
 }
 
-.unit-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 14px;
-  padding: 8px 12px;
-  border: 1px solid #b3d8ff;
-  border-radius: 8px;
-  background-color: #ecf5ff;
-}
-
-.unit-icon {
-  color: #409eff;
-  flex-shrink: 0;
-}
-
-.unit-hint {
-  font-size: 13px;
-  color: #409eff;
-}
-
-.unit-select {
-  width: 280px;
-  margin-left: auto;
-}
-
 /* 待办看板 */
 .board {
   min-height: 80px;
+}
+
+.board-hd {
+  display: flex;
+  align-items: center;
+  padding: 4px 2px 12px;
+}
+
+.board-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.board-unread {
+  margin-left: auto;
+  font-size: 13px;
+  color: #dc2626;
 }
 
 .bcard {
@@ -271,6 +367,11 @@ onMounted(fetchDashboard)
   align-items: center;
   gap: 10px;
   padding: 14px 16px 12px;
+  cursor: pointer;
+}
+
+.bcard-head:hover {
+  background-color: #fafafa;
 }
 
 .bcard-title {
@@ -284,12 +385,12 @@ onMounted(fetchDashboard)
   color: #909399;
 }
 
-.bcard-badge {
-  margin-top: -2px;
-}
-
-.bcard-more {
-  margin-left: auto;
+.bcard-unread-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #dc2626;
+  flex-shrink: 0;
 }
 
 .bcard-empty {
@@ -331,8 +432,6 @@ onMounted(fetchDashboard)
   padding: 1px 8px;
   border-radius: 4px;
   font-size: 12px;
-  background: #f1efe8;
-  color: #5f5e5a;
 }
 
 .orow-desc {
@@ -349,6 +448,26 @@ onMounted(fetchDashboard)
   flex-shrink: 0;
   font-size: 12px;
   color: #909399;
+}
+
+.bcard-foot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px 0 14px;
+  border-top: 1px solid #f2f6fc;
+  cursor: pointer;
+}
+
+.bcard-foot-txt {
+  font-size: 13px;
+  color: #0f766e;
+}
+
+.bcard-foot-arw {
+  margin-left: 6px;
+  font-size: 11px;
+  color: #0f766e;
 }
 
 .tag-warning {
@@ -386,8 +505,12 @@ onMounted(fetchDashboard)
 
 .entry-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  grid-template-columns: repeat(2, 1fr);
   gap: 12px;
+}
+
+.entry-grid--4 {
+  grid-template-columns: repeat(4, 1fr);
 }
 
 .entry-card {
@@ -408,11 +531,9 @@ onMounted(fetchDashboard)
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  width: 34px;
+  height: 34px;
   border-radius: 8px;
-  font-size: 14px;
-  font-weight: 600;
   margin-bottom: 10px;
 }
 

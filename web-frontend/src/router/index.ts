@@ -54,7 +54,8 @@ const routes = [
         path: 'enterprises',
         name: 'EnterpriseList',
         component: () => import('@/views/enterprises/list.vue'),
-        meta: { title: '企业管理', permissions: ['store'] }
+        // 企业列表仅超管（业务维修员无权管理企业）；审核员从首页直达自己单位的详情页
+        meta: { title: '企业管理', permissions: ['super'] }
       },
       {
         path: 'enterprises/:id',

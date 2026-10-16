@@ -332,7 +332,23 @@ func (h *AdminHandler) Reject(c *gin.Context) {
 	response.OK(c, gin.H{"status": "rejected"})
 }
 
-// Complete 完工登记 (POST /admin/orders/:order_id/complete, 5.6, req②)
+// ReturnToPool 退单回池 (POST /admin/orders/:order_id/return, V1.9)
+func (h *AdminHandler) ReturnToPool(c *gin.Context) {
+	var req struct {
+		Reason string `json:"reason" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Warn("ReturnToPool Admin: invalid request body", zap.Error(err), zap.String("order_id", c.Param("order_id")))
+		response.Fail(c, apperrors.ErrInvalidParam.WithMessage("缺少退单原因"))
+		return
+	}
+	if err := h.orders.ReturnToPool(c.Request.Context(), opOf(c), c.Param("order_id"), req.Reason, c.ClientIP()); err != nil {
+		h.logger.Error("ReturnToPool Admin: service error", zap.Error(err), zap.String("order_id", c.Param("order_id")), zap.String("operator_id", c.GetString("user_id")))
+		response.FailError(c, err)
+		return
+	}
+	response.OK(c, gin.H{"status": "pending_accept"})
+}
 func (h *AdminHandler) Complete(c *gin.Context) {
 	var req struct {
 		Remark        string               `json:"remark"`
