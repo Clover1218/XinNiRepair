@@ -11,6 +11,7 @@
 *.dylib
 backend/cmd/server/__debug_bin*
 backend/build/
+backend/bin/
 
 # ── 日志 ──
 logs/
@@ -33,7 +34,6 @@ unpackage/
 # ── 编辑器/IDE ──
 .vscode/*
 **/.vscode
-backend/bin/
 !.vscode/extensions.json
 .idea/
 .hbuilderx/
